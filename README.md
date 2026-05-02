@@ -35,6 +35,21 @@ but adapted to Azahar's UDP RPC instead of an in-emulator Lua console.
 > **Step-by-step walkthrough:** see [docs/TUTORIAL.md](docs/TUTORIAL.md)
 > for a full first-time setup + soft-reset starter hunt.
 
+## Download
+
+Every push to `main` rebuilds a rolling "latest" release. The download
+URL never changes — it always points at the most recent commit:
+
+**[Download the latest build →](https://github.com/romanrdecaro-arch/pokebot-3ds/releases/latest/download/pokebot-3ds.zip)**
+
+Or browse the [Releases page](https://github.com/romanrdecaro-arch/pokebot-3ds/releases)
+to grab a specific commit.
+
+If you'd rather use git directly:
+```
+git clone https://github.com/romanrdecaro-arch/pokebot-3ds.git
+```
+
 ## Quick start
 
 1. **Install Azahar** and load your Gen 6/7 game. Make sure

@@ -1,0 +1,84 @@
+name: Release
+
+# Build a downloadable zip on every push to main and replace the
+# rolling "latest" release with it. The Releases page therefore
+# always points at the most recent commit; users can grab the
+# project from a single stable URL:
+#
+#   https://github.com/<owner>/pokebot-3ds/releases/latest
+#
+# The asset link below works the same way:
+#
+#   https://github.com/<owner>/pokebot-3ds/releases/latest/download/pokebot-3ds.zip
+#
+# `make_latest: true` is what tells GitHub to set this release as
+# the "Latest" badge on the Releases page; combined with re-using
+# the `latest` tag it gives us a single self-updating download.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read short commit metadata
+        id: meta
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)"          >> "$GITHUB_OUTPUT"
+          echo "subject=$(git log -1 --pretty=%s)"          >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +'%Y-%m-%d %H:%M UTC')"      >> "$GITHUB_OUTPUT"
+
+      - name: Build downloadable zip
+        run: |
+          mkdir -p dist
+          # Exclude developer-only artefacts and any local override
+          # files. The zip mirrors what a fresh `git clone` looks like
+          # minus the .git history and CI plumbing.
+          zip -r dist/pokebot-3ds.zip . \
+            -x ".git/*" \
+               ".github/*" \
+               "__pycache__/*" \
+               "*/__pycache__/*" \
+               "*.pyc" \
+               "config.local.yaml" \
+               "*.local.yaml" \
+               "dist/*"
+          ls -la dist/
+
+      - name: Update rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build (${{ steps.meta.outputs.sha }})
+          body: |
+            Auto-built from `main` on ${{ steps.meta.outputs.date }}.
+
+            **Latest commit:** ${{ steps.meta.outputs.subject }}
+            (`${{ github.sha }}`)
+
+            ## How to run
+
+            1. Download `pokebot-3ds.zip` from the Assets below.
+            2. Unzip somewhere persistent (e.g. `C:\pokebot-3ds`).
+            3. **Windows:** double-click `pokebot-3ds.bat`.
+               Other platforms: `python launcher.py`.
+
+            The launcher auto-installs `PyYAML` and `pynput` on first
+            run if they're missing, then opens the GUI. See the
+            project README and `docs/TUTORIAL.md` (both included in
+            the zip) for the full walkthrough.
+          files: dist/pokebot-3ds.zip
+          make_latest: true
+          # Re-use the same tag every push. Without this the action
+          # would refuse to overwrite an existing release.
+          prerelease: false
