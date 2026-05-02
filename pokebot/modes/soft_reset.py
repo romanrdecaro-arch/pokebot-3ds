@@ -119,42 +119,65 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
     ctx.input.tap("DpadLeft", hold_s=0.1)
     time.sleep(0.4)
 
-    # Step 2 — A-mash until memory goes still (== menu is open and
-    # waiting for input).
-    SAMPLE_ADDR = 0x33000000   # FCRAM ext-heap in Gen 6/7
-    SAMPLE_SIZE = 4096
-    STABLE_THRESHOLD = 3       # consecutive identical reads = "still"
-    last_sample = None
-    stable_runs = 0
-    menu_detected_at = -1
+    # Step 2 — A-mash. Adaptive (memory-stability poll) when we can
+    # find a readable sample; falls back to a fixed pre_taps count
+    # whenever the RPC can't reach the sample address (some X/Y
+    # builds use a different heap layout than USUM, and a 4KB read
+    # at an unmapped address can stall for 12s on retries).
+    SAMPLE_SIZE = 256          # 1 UDP packet; ~10ms when reachable
+    STABLE_THRESHOLD = 3
+    # Prefer party_base region when known (definitely mapped on the
+    # game we're running). On the first iteration before discovery,
+    # try the conservative FCRAM ext-heap default.
+    sample_addr = ctx.game.offsets.party_base or 0x33000000
 
-    log.info(f"X/Y: A-mashing with memory-stability detection "
-             f"(cap {pre_taps * 3} presses)")
-    for i in range(pre_taps * 3):
-        if ctx.should_stop():
-            return False
-        ctx.input.tap("A", hold_s=0.05)
-        time.sleep(gap)
-        try:
-            sample = ctx.rpc.read(SAMPLE_ADDR, SAMPLE_SIZE)
-        except Exception:
-            sample = None
-        if sample is not None and sample == last_sample:
-            stable_runs += 1
-            if stable_runs >= STABLE_THRESHOLD:
-                menu_detected_at = i + 1
-                break
+    # Probe once with a hard cap: if the first read fails, skip the
+    # adaptive path entirely so we don't burn 30 seconds on retries.
+    polling_works = True
+    try:
+        probe = ctx.rpc.read(sample_addr, SAMPLE_SIZE)
+        if not probe:
+            polling_works = False
+    except Exception:
+        polling_works = False
+
+    if polling_works:
+        log.info(f"X/Y: A-mashing with stability poll @ {sample_addr:#010x} "
+                 f"(cap {pre_taps * 3} presses)")
+        last_sample = probe
+        stable_runs = 0
+        menu_detected_at = -1
+        for i in range(pre_taps * 3):
+            if ctx.should_stop():
+                return False
+            ctx.input.tap("A", hold_s=0.05)
+            time.sleep(gap)
+            try:
+                sample = ctx.rpc.read(sample_addr, SAMPLE_SIZE)
+            except Exception:
+                sample = None
+            if sample is not None and sample == last_sample:
+                stable_runs += 1
+                if stable_runs >= STABLE_THRESHOLD:
+                    menu_detected_at = i + 1
+                    break
+            else:
+                stable_runs = 0
+            last_sample = sample
+        if menu_detected_at > 0:
+            log.info(f"X/Y: menu open detected after "
+                     f"{menu_detected_at} A presses (stable sample)")
         else:
-            stable_runs = 0
-        last_sample = sample
-
-    if menu_detected_at > 0:
-        log.info(f"X/Y: menu open detected after {menu_detected_at} A presses "
-                 f"({stable_runs}× stable {SAMPLE_SIZE}B sample)")
+            log.warning("X/Y: stability never reached cap; proceeding "
+                        "to navigation anyway")
     else:
-        log.warning("X/Y: didn't detect a stable menu state — proceeding "
-                    "with navigation anyway and relying on species check "
-                    "to catch a wrong-starter result.")
+        log.info(f"X/Y: sample addr {sample_addr:#010x} unreadable — "
+                 f"falling back to fixed mash of {pre_taps} A presses")
+        for _ in range(pre_taps):
+            if ctx.should_stop():
+                return False
+            ctx.input.tap("A", hold_s=0.05)
+            time.sleep(gap)
 
     # Step 3 — cursor navigation now that we know the menu is up.
     if starter == "chespin":
