@@ -580,19 +580,17 @@ class _App(tk.Tk):
                                          wraplength=205, justify="left")
         self._game_detect_lbl.pack(fill="x", padx=12, pady=(0, 4))
 
-        # ── Game ────────────────────────────────────────────────────────────
+        # ── Game (auto-detected from Azahar) ────────────────────────────────
         self._lbl(p, "GAME")
-        try:
-            from pokebot import games as gmod
-            keys = list(gmod.GAMES.keys())
-        except Exception:
-            keys = []
-        default_game = self._cfg.get("game", keys[0] if keys else "")
-        self._game_var = tk.StringVar(value=default_game)
-        self._game_cb = ttk.Combobox(p, textvariable=self._game_var,
-                                     values=keys, state="readonly", width=24,
-                                     style="Dark.TCombobox")
-        self._game_cb.pack(padx=12, pady=2)
+        # The game is detected from Azahar's process list; the var still
+        # backs the starter sub-dropdown filtering and CLI args, but the
+        # user no longer picks it manually.
+        self._game_var = tk.StringVar(value="")
+        self._game_display_lbl = tk.Label(
+            p, text="Waiting for Azahar…", bg=_PANEL, fg=_MUTED,
+            font=("Segoe UI", 10, "bold"), anchor="w",
+            wraplength=235, justify="left")
+        self._game_display_lbl.pack(fill="x", padx=12, pady=2)
         self._game_var.trace_add("write", self._on_game_change)
 
         # ── Method ──────────────────────────────────────────────────────────
@@ -647,18 +645,34 @@ class _App(tk.Tk):
         # ── Options ──────────────────────────────────────────────────────────
         self._sep(p)
         self._dry_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(p, text="Dry run (no keypresses)",
+        tk.Checkbutton(p, text="Dry run",
                        variable=self._dry_var,
                        bg=_PANEL, fg=_TEXT, selectcolor=_PANEL,
                        activebackground=_PANEL,
-                       font=("Segoe UI", 10)).pack(anchor="w", padx=16, pady=2)
+                       font=("Segoe UI", 10)).pack(anchor="w", padx=16,
+                                                    pady=(2, 0))
+        tk.Label(p, bg=_PANEL, fg=_MUTED,
+                 font=("Segoe UI", 8, "italic"),
+                 anchor="w", wraplength=235, justify="left",
+                 text="Bot logs the keys it would press but doesn't "
+                      "actually send them to Azahar. Use to verify "
+                      "memory reads work without controlling the game."
+                 ).pack(anchor="w", padx=34, pady=(0, 4))
 
         self._verb_var = tk.BooleanVar(value=False)
         tk.Checkbutton(p, text="Verbose logging",
                        variable=self._verb_var,
                        bg=_PANEL, fg=_TEXT, selectcolor=_PANEL,
                        activebackground=_PANEL,
-                       font=("Segoe UI", 10)).pack(anchor="w", padx=16, pady=2)
+                       font=("Segoe UI", 10)).pack(anchor="w", padx=16,
+                                                    pady=(2, 0))
+        tk.Label(p, bg=_PANEL, fg=_MUTED,
+                 font=("Segoe UI", 8, "italic"),
+                 anchor="w", wraplength=235, justify="left",
+                 text="DEBUG-level log output: every RPC call, parse "
+                      "result, and decision. Noisy but invaluable for "
+                      "diagnosing why the bot isn't behaving."
+                 ).pack(anchor="w", padx=34, pady=(0, 4))
 
         # ── Start / Stop ─────────────────────────────────────────────────────
         self._sep(p)
@@ -776,6 +790,34 @@ class _App(tk.Tk):
                 return m
         return None
 
+    def _has_offsets_configured(self) -> bool:
+        """True if the bot has a usable party_base for the detected game."""
+        # Always re-read config.yaml so offsets pasted after the launcher
+        # opened are picked up without a relaunch.
+        try:
+            self._cfg = _load_config()
+        except Exception:
+            pass
+        # 1. config.yaml override.
+        cfg = (self._cfg or {}).get("offsets") or {}
+        for v in cfg.values():
+            if not v:
+                continue
+            try:
+                if (int(v, 0) if isinstance(v, str) else int(v)):
+                    return True
+            except (TypeError, ValueError):
+                continue
+        # 2. Game registry pre-set offsets.
+        try:
+            from pokebot.games import GAMES
+            g = GAMES.get(self._game_var.get())
+            if g and (g.offsets.party_base or g.offsets.foe_base):
+                return True
+        except Exception:
+            pass
+        return False
+
     def _refresh_starter_options(self):
         """Repopulate the starter sub-dropdown for the current game."""
         try:
@@ -830,18 +872,27 @@ class _App(tk.Tk):
             self._azahar_lbl.config(text="● Azahar not detected", fg=_DANGER)
             self._game_detect_lbl.config(
                 text="Open Azahar and load a Gen 6/7 game.")
+            self._game_display_lbl.config(text="Waiting for Azahar…",
+                                          fg=_MUTED)
+            if self._game_var.get():
+                self._game_var.set("")
             self._last_detected_game = None
             return
         if state == "running":
             self._azahar_lbl.config(text="● Azahar running", fg=_WARN)
             self._game_detect_lbl.config(
                 text="No Pokémon Gen 6/7 process loaded yet.")
+            self._game_display_lbl.config(text="No game loaded", fg=_WARN)
+            if self._game_var.get():
+                self._game_var.set("")
             self._last_detected_game = None
             return
         if state == "game":
             self._azahar_lbl.config(text="● Azahar + game ready", fg=_GOOD)
             self._game_detect_lbl.config(
                 text=f"Detected: {status.get('game', '?')}")
+            self._game_display_lbl.config(
+                text=status.get("game", "?"), fg=_GOOD)
             tid = status.get("title_id")
             if tid:
                 try:
@@ -905,11 +956,29 @@ class _App(tk.Tk):
     def _start_bot(self):
         if self._bot.running:
             return
+        if not self._game_var.get():
+            messagebox.showwarning(
+                "No game detected",
+                "Azahar isn't running a Gen 6/7 game yet. Open Azahar "
+                "and load your ROM, then try again.")
+            return
         method = self._selected_method()
         if not method:
             messagebox.showwarning(
                 "No method selected",
                 "Pick a method from the dropdown first.")
+            return
+        # Pre-flight offset check — soft_reset / encounter / observe all
+        # need at least party_base to do anything useful. The bot's own
+        # error is buried in the log; surface a clear modal instead.
+        if not self._has_offsets_configured():
+            messagebox.showwarning(
+                "Offsets not configured",
+                "No party_base offset is set for this game.\n\n"
+                "Click 'Find Offsets (scan RAM)' in the sidebar with "
+                "the game on the overworld, then paste the resulting "
+                "addresses into config.yaml under 'offsets:' before "
+                "starting the bot.")
             return
         # Validate starter sub-selection when method requires one.
         if method.label == "Starters":
