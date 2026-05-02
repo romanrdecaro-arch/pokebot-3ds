@@ -14,6 +14,7 @@ It will:
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 import sys
 import threading
@@ -132,7 +133,6 @@ class _BotProcess:
 # ---------------------------------------------------------------------------
 
 import tkinter as tk
-from tkinter import font as tkfont
 from tkinter import scrolledtext, messagebox, ttk
 
 _BG     = "#0d1117"
@@ -314,11 +314,18 @@ class _App(tk.Tk):
         except Exception:
             g = None
 
-        cfg_off = self._cfg.get("offsets", {})
-        has_cfg = any(
-            int(v, 0) if isinstance(v, str) else int(v)
-            for v in cfg_off.values() if v
-        ) if cfg_off else False
+        cfg_off = self._cfg.get("offsets") or {}
+        has_cfg = False
+        for v in cfg_off.values():
+            if not v:
+                continue
+            try:
+                n = int(v, 0) if isinstance(v, str) else int(v)
+            except (TypeError, ValueError):
+                continue
+            if n:
+                has_cfg = True
+                break
 
         if has_cfg:
             self._offset_lbl.config(
@@ -365,10 +372,20 @@ class _App(tk.Tk):
 
     def _open_config(self):
         cfg = ROOT / "config.yaml"
-        if cfg.exists():
-            os.startfile(str(cfg))
-        else:
+        if not cfg.exists():
             messagebox.showinfo("Not found", f"config.yaml not found at:\n{cfg}")
+            return
+        try:
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(str(cfg))  # type: ignore[attr-defined]
+            elif system == "Darwin":
+                subprocess.Popen(["open", str(cfg)])
+            else:
+                subprocess.Popen(["xdg-open", str(cfg)])
+        except Exception as exc:
+            messagebox.showerror("Could not open",
+                                 f"Failed to open config.yaml: {exc}")
 
     def _run_find_offsets(self):
         if self._bot.running:
