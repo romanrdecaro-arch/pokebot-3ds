@@ -73,6 +73,9 @@ def main(argv=None):
                     help="override game registry key")
     ap.add_argument("--dry-run", action="store_true",
                     help="don't actually press keys (useful for setup)")
+    ap.add_argument("--starter", default=None,
+                    help="starter to hunt in soft_reset mode "
+                         "(e.g. chespin, fennekin, froakie)")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args(argv)
 
@@ -89,9 +92,10 @@ def main(argv=None):
         logging.warning(f"{cfg_path} not found; using defaults")
         config = {}
 
-    if args.mode:    config["mode"] = args.mode
-    if args.game:    config["game"] = args.game
-    if args.dry_run: config.setdefault("input", {})["dry_run"] = True
+    if args.mode:     config["mode"] = args.mode
+    if args.game:     config["game"] = args.game
+    if args.dry_run:  config.setdefault("input", {})["dry_run"] = True
+    if args.starter:  config.setdefault("soft_reset", {})["starter"] = args.starter
 
     # delayed import so --help works without dependencies
     from pokebot.bot import Bot

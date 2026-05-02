@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import time
 
+from ..games import starter_species, starters_for
 from ..parser import decrypt_pkm, parse_pkm
 
 log = logging.getLogger(__name__)
@@ -30,10 +31,21 @@ def run(ctx):
     advance_taps = int(cfg.get("advance_taps", 60)) # button mashes after reset
     advance_gap  = float(cfg.get("advance_gap", 0.3))
     post_reset   = float(cfg.get("post_reset_wait", 4.0))
+    starter_name = cfg.get("starter")
 
     if not ctx.game.offsets.party_base:
         log.error("party_base offset is 0 -- cannot run soft_reset.")
         return
+
+    starter_id = None
+    if starter_name:
+        starter_id = starter_species(ctx.game.key, str(starter_name))
+        if starter_id:
+            log.info(f"Hunting starter: {starter_name} (species #{starter_id})")
+        else:
+            known = list(starters_for(ctx.game.key).keys())
+            log.warning(f"Unknown starter '{starter_name}' for {ctx.game.key}. "
+                        f"Known: {known or '(none registered)'}")
 
     attempt = 0
     while not ctx.should_stop():
@@ -80,12 +92,27 @@ def run(ctx):
             level=pkm.party["level"] if pkm.party else None,
             moves=pkm.moves,
         )
-        if ctx.target and ctx.target.matches(pkm):
-            log.info(f"TARGET! attempt {attempt}: {ctx.target.describe(pkm)}")
+
+        # Hard gate on starter species. If the user picked a different
+        # starter than expected (saved in front of wrong Pokéball), reset
+        # without bothering to evaluate target criteria.
+        if starter_id is not None and pkm.species != starter_id:
+            log.info(f"wrong species (#{pkm.species}); resetting")
+            _do_reset(ctx, post_reset)
+            continue
+
+        # If only a starter is set and there are no extra rules, every
+        # correctly-species candidate counts as a hit.
+        target_has_rules = bool(ctx.target and ctx.target.rules)
+        is_hit = ctx.target.matches(pkm) if target_has_rules else (starter_id is not None)
+        if is_hit:
+            reason = ctx.target.describe(pkm) if target_has_rules \
+                else f"starter #{pkm.species}"
+            log.info(f"TARGET! attempt {attempt}: {reason}")
             ctx.dashboard.broadcast(
                 "target_hit",
                 attempt=attempt,
-                reason=ctx.target.describe(pkm),
+                reason=reason,
                 species=pkm.species, shiny=pkm.shiny,
                 nature=pkm.nature, ivs=pkm.ivs,
             )

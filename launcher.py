@@ -18,6 +18,7 @@ import platform
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -158,6 +159,8 @@ class _App(tk.Tk):
         self._cfg = _load_config()
         self._bot = _BotProcess(self._on_bot_line, self._on_bot_exit)
         self._offset_proc: subprocess.Popen | None = None
+        self._poll_alive = True
+        self._last_detected_game: str | None = None
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -165,6 +168,9 @@ class _App(tk.Tk):
         if _AUTO_INSTALLED:
             self._log(f"Auto-installed: {', '.join(_AUTO_INSTALLED)}", "good")
         self._log("Ready. Configure offsets in config.yaml, then press Start.")
+
+        threading.Thread(target=self._status_poll_loop,
+                         daemon=True, name="StatusPoll").start()
 
     # ---- Layout -----------------------------------------------------------
 
@@ -207,6 +213,18 @@ class _App(tk.Tk):
         tk.Frame(parent, bg=_BORDER, height=1).pack(fill="x", padx=8, pady=4)
 
     def _build_sidebar(self, p):
+        # ── Azahar live status ──────────────────────────────────────────────
+        self._lbl(p, "AZAHAR STATUS")
+        self._azahar_lbl = tk.Label(p, text="● checking…",
+                                    bg=_PANEL, fg=_MUTED,
+                                    font=("Segoe UI", 10), anchor="w")
+        self._azahar_lbl.pack(fill="x", padx=12, pady=(0, 1))
+        self._game_detect_lbl = tk.Label(p, text="",
+                                         bg=_PANEL, fg=_MUTED,
+                                         font=("Segoe UI", 9), anchor="w",
+                                         wraplength=205, justify="left")
+        self._game_detect_lbl.pack(fill="x", padx=12, pady=(0, 4))
+
         # ── Game ────────────────────────────────────────────────────────────
         self._lbl(p, "GAME")
         try:
@@ -216,10 +234,10 @@ class _App(tk.Tk):
             keys = []
         default_game = self._cfg.get("game", keys[0] if keys else "")
         self._game_var = tk.StringVar(value=default_game)
-        game_cb = ttk.Combobox(p, textvariable=self._game_var,
-                               values=keys, state="readonly", width=24)
-        game_cb.pack(padx=12, pady=2)
-        self._game_var.trace_add("write", self._refresh_offset_status)
+        self._game_cb = ttk.Combobox(p, textvariable=self._game_var,
+                                     values=keys, state="readonly", width=24)
+        self._game_cb.pack(padx=12, pady=2)
+        self._game_var.trace_add("write", self._on_game_change)
 
         # ── Mode ─────────────────────────────────────────────────────────────
         self._lbl(p, "MODE")
@@ -229,6 +247,20 @@ class _App(tk.Tk):
                            bg=_PANEL, fg=_TEXT, selectcolor=_PANEL,
                            activebackground=_PANEL,
                            font=("Segoe UI", 10)).pack(anchor="w", padx=16)
+        self._mode_var.trace_add("write", self._refresh_starter_visibility)
+
+        # ── Starter (only meaningful for soft_reset) ────────────────────────
+        self._starter_frame = tk.Frame(p, bg=_PANEL)
+        self._starter_frame.pack(fill="x", pady=(4, 0))
+        self._lbl(self._starter_frame, "STARTER (soft-reset)")
+        self._starter_var = tk.StringVar(value="(any)")
+        self._starter_cb = ttk.Combobox(self._starter_frame,
+                                        textvariable=self._starter_var,
+                                        values=["(any)"],
+                                        state="readonly", width=24)
+        self._starter_cb.pack(padx=12, pady=2)
+        self._refresh_starter_options()
+        self._refresh_starter_visibility()
 
         # ── Options ──────────────────────────────────────────────────────────
         self._sep(p)
@@ -305,6 +337,79 @@ class _App(tk.Tk):
                          ("muted", _MUTED)):
             self._log_box.tag_config(tag, foreground=col)
 
+    # ---- Game / starter helpers --------------------------------------------
+
+    def _on_game_change(self, *_):
+        self._refresh_offset_status()
+        self._refresh_starter_options()
+
+    def _refresh_starter_options(self):
+        try:
+            from pokebot.games import starters_for
+            names = list(starters_for(self._game_var.get()).keys())
+        except Exception:
+            names = []
+        values = ["(any)"] + names
+        self._starter_cb.configure(values=values)
+        if self._starter_var.get() not in values:
+            self._starter_var.set("(any)")
+
+    def _refresh_starter_visibility(self, *_):
+        if self._mode_var.get() == "soft_reset":
+            self._starter_frame.pack(fill="x", pady=(4, 0))
+        else:
+            self._starter_frame.pack_forget()
+
+    # ---- Live Azahar status polling ----------------------------------------
+
+    def _status_poll_loop(self):
+        # Lazy-imported so the poller works even if a stale `pokebot`
+        # build is on disk; we re-import each tick.
+        while self._poll_alive:
+            status = {"state": "no_rpc"}
+            try:
+                from pokebot.citra_rpc import quick_status
+                status = quick_status(timeout=0.4)
+            except Exception:
+                pass
+            try:
+                self.after(0, self._apply_status, status)
+            except Exception:
+                return
+            time.sleep(2.0)
+
+    def _apply_status(self, status: dict):
+        state = status.get("state", "no_rpc")
+        if state == "no_rpc":
+            self._azahar_lbl.config(text="● Azahar not detected", fg=_DANGER)
+            self._game_detect_lbl.config(
+                text="Open Azahar and load a Gen 6/7 game.")
+            self._last_detected_game = None
+            return
+        if state == "running":
+            self._azahar_lbl.config(text="● Azahar running", fg=_WARN)
+            self._game_detect_lbl.config(
+                text="No Pokémon Gen 6/7 process loaded yet.")
+            self._last_detected_game = None
+            return
+        if state == "game":
+            self._azahar_lbl.config(text="● Azahar + game ready", fg=_GOOD)
+            self._game_detect_lbl.config(
+                text=f"Detected: {status.get('game', '?')}")
+            tid = status.get("title_id")
+            if tid:
+                try:
+                    from pokebot.games import find_game_by_title_id
+                    g = find_game_by_title_id(tid)
+                except Exception:
+                    g = None
+                if g and g.key != self._last_detected_game:
+                    self._last_detected_game = g.key
+                    if self._game_var.get() != g.key:
+                        self._game_var.set(g.key)
+                        self._log(f"Auto-selected detected game: {g.key}",
+                                  "accent")
+
     # ---- Offset status helper ----------------------------------------------
 
     def _refresh_offset_status(self, *_):
@@ -349,6 +454,10 @@ class _App(tk.Tk):
         game = self._game_var.get()
         if game:
             args += ["--game", game]
+        if self._mode_var.get() == "soft_reset":
+            starter = self._starter_var.get()
+            if starter and starter != "(any)":
+                args += ["--starter", starter]
         if self._dry_var.get():
             args += ["--dry-run"]
         if self._verb_var.get():
@@ -466,6 +575,7 @@ class _App(tk.Tk):
         self._log_box.config(state="disabled")
 
     def _on_close(self):
+        self._poll_alive = False
         if self._bot.running:
             if messagebox.askyesno("Quit", "The bot is running. Stop it and quit?"):
                 self._bot.stop()

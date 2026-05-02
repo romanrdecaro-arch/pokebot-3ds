@@ -44,6 +44,13 @@ soft_reset:
   advance_taps: 60      # how many A-taps to mash through dialogue
   advance_gap: 0.3      # seconds between mashes
   post_reset_wait: 4.0  # seconds after L+R+Start before mashing again
+  # Optional: lock the bot to a specific starter for the current game.
+  # Wrong-species results soft-reset without evaluating the target.
+  # Names per game:
+  #   X / Y                          chespin, fennekin, froakie
+  #   Omega Ruby / Alpha Sapphire    treecko, torchic, mudkip
+  #   Sun / Moon / USUM              rowlet, litten, popplio
+  # starter: chespin
 
 # Memory offsets for your specific game/version.
 # Run `python -m pokebot.find_offsets` to discover these automatically,

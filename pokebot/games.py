@@ -175,6 +175,29 @@ def list_games() -> list[Game]:
     return sorted(GAMES.values(), key=lambda g: g.key)
 
 
+# --------------------------------------------------------------------
+# Starter Pokémon per game (national-dex IDs).
+# Keys are lowercase nicknames; the launcher uses them in its dropdown.
+# --------------------------------------------------------------------
+
+STARTERS: dict[str, dict[str, int]] = {
+    "X-USA":         {"chespin": 650, "fennekin": 653, "froakie": 656},
+    "Y-USA":         {"chespin": 650, "fennekin": 653, "froakie": 656},
+    "OR-USA":        {"treecko": 252, "torchic": 255, "mudkip": 258},
+    "AS-USA":        {"treecko": 252, "torchic": 255, "mudkip": 258},
+    "SM-USA-1.2":    {"rowlet": 722,  "litten": 725,   "popplio": 728},
+    "USUM-USA-1.2":  {"rowlet": 722,  "litten": 725,   "popplio": 728},
+}
+
+
+def starters_for(game_key: str) -> dict[str, int]:
+    return STARTERS.get(game_key, {})
+
+
+def starter_species(game_key: str, name: str) -> Optional[int]:
+    return STARTERS.get(game_key, {}).get(name.lower())
+
+
 # 3DS virtual address ranges. The application heap (FCRAM mapped) spans
 # roughly 0x08000000 - 0x40000000 from the game's perspective. The bulk
 # of game-managed objects (including the player's party) live in the

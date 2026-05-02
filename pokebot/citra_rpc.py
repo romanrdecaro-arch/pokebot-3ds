@@ -222,6 +222,38 @@ class CitraRPC:
             return False
 
 
+def quick_status(host: str = "127.0.0.1", port: int = CITRA_PORT,
+                 timeout: float = 0.4) -> dict:
+    """Non-blocking probe used by the launcher to poll Azahar.
+
+    Returns a dict with ``state`` set to one of:
+      ``"no_rpc"``  – Azahar isn't running or scripting is disabled.
+      ``"running"`` – Azahar is up but no Gen 6/7 Pokémon process is loaded.
+      ``"game"``    – A Pokémon title is loaded; ``title_id`` and
+                      ``game_key`` are filled in.
+    Never raises.
+    """
+    rpc = CitraRPC(host=host, port=port, timeout=timeout, retries=1)
+    try:
+        try:
+            procs = rpc.list_processes()
+        except Exception:
+            return {"state": "no_rpc"}
+        for pid, (tid, name) in procs.items():
+            if tid in POKEMON_TITLE_IDS:
+                game_name, region = POKEMON_TITLE_IDS[tid]
+                return {
+                    "state":   "game",
+                    "title_id": tid,
+                    "pid":      pid,
+                    "name":     name,
+                    "game":     f"{game_name} ({region})",
+                }
+        return {"state": "running"}
+    finally:
+        rpc.close()
+
+
 def wait_for_emulator(host: str = "127.0.0.1", port: int = CITRA_PORT,
                       timeout: float = 30.0) -> CitraRPC:
     """Block until Azahar's RPC is responding, then return a connected client."""

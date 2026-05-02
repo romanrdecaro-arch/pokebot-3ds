@@ -25,8 +25,9 @@ but adapted to Azahar's UDP RPC instead of an in-emulator Lua console.
   - `observe` — passive read-only; mirrors party + foe to dashboard
   - `encounter` — walks in grass, evaluates each foe vs. target, flees on miss
   - `soft_reset` — for starters / legendaries / gifts (mash A, evaluate, L+R+Start, repeat)
+- **Starter hunting** — pick the specific Gen 6/7 starter (Chespin, Fennekin, Froakie, etc.) and the bot resets until you get the right species — combine with shiny/IV target rules to hunt a specific shiny starter
 - **Target system** — filter by shininess, IVs, nature, gender, species, or ability; combine rules with AND/OR
-- **GUI launcher** ([launcher.py](launcher.py)) — auto-installs deps, picks game/mode, runs offset finder, opens dashboard
+- **GUI launcher** ([launcher.py](launcher.py)) — auto-installs deps, **live-detects Azahar and your loaded game**, picks game/mode/starter, runs offset finder, opens dashboard
 - **Live dashboard** ([dashboard/dashboard.html](dashboard/dashboard.html)) — streams encounters over WebSocket; species names, IV color-coding, runtime stats
 - **Offset finder** — scans FCRAM for valid PK7 records and reports party + foe addresses
 - **PK6/PK7 parser** — full block decryption + shuffle, checksum verification
