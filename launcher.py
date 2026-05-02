@@ -519,11 +519,25 @@ class _App(tk.Tk):
         # ── Header ──────────────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=_PANEL, padx=18, pady=12)
         hdr.pack(fill="x")
-        # Pokéball logo
-        logo = tk.Canvas(hdr, width=34, height=34,
-                         bg=_PANEL, highlightthickness=0)
-        logo.pack(side="left", padx=(0, 12))
-        _draw_pokeball(logo, 34)
+        # Pokéball logo: prefer the high-quality bundled PNG. Fall back
+        # to the Tk Canvas drawing if the asset is missing.
+        logo_path = ROOT / "assets" / "pokeball.png"
+        self._logo_img: tk.PhotoImage | None = None
+        if logo_path.exists():
+            try:
+                full = tk.PhotoImage(file=str(logo_path))
+                # Source is 128px; subsample 3x → 42px, then keep ref.
+                self._logo_img = full.subsample(3, 3)
+            except Exception:
+                self._logo_img = None
+        if self._logo_img is not None:
+            tk.Label(hdr, image=self._logo_img, bg=_PANEL,
+                     bd=0).pack(side="left", padx=(0, 12))
+        else:
+            logo = tk.Canvas(hdr, width=34, height=34,
+                             bg=_PANEL, highlightthickness=0)
+            logo.pack(side="left", padx=(0, 12))
+            _draw_pokeball(logo, 34)
         # Wordmark
         tk.Label(hdr, text="pokebot-3ds", bg=_PANEL, fg=_TEXT,
                  font=("Segoe UI", 16, "bold")).pack(side="left")
@@ -553,10 +567,34 @@ class _App(tk.Tk):
         body = tk.Frame(self, bg=_BG)
         body.pack(fill="both", expand=True, padx=10, pady=10)
 
-        side = tk.Frame(body, bg=_PANEL, width=260)
-        side.pack(side="left", fill="y", padx=(0, 10))
-        side.pack_propagate(False)
-        self._build_sidebar(side)
+        # Scrollable sidebar: a Canvas hosts an inner Frame that the
+        # cards pack into. Without this, the Actions card (with the
+        # Start button) gets pushed below the visible window on
+        # smaller heights.
+        side_outer = tk.Frame(body, bg=_PANEL, width=280)
+        side_outer.pack(side="left", fill="y", padx=(0, 10))
+        side_outer.pack_propagate(False)
+        side_canvas = tk.Canvas(side_outer, bg=_PANEL,
+                                highlightthickness=0, bd=0)
+        side_canvas.pack(side="left", fill="both", expand=True)
+        side_inner = tk.Frame(side_canvas, bg=_PANEL)
+        side_window = side_canvas.create_window(
+            (0, 0), window=side_inner, anchor="nw")
+        def _on_inner_configure(_):
+            side_canvas.configure(scrollregion=side_canvas.bbox("all"))
+        def _on_canvas_configure(e):
+            side_canvas.itemconfigure(side_window, width=e.width)
+        side_inner.bind("<Configure>", _on_inner_configure)
+        side_canvas.bind("<Configure>", _on_canvas_configure)
+        # Mousewheel scrolling when the cursor is anywhere over the
+        # sidebar. We use bind (not bind_all) so the encounter table's
+        # own mousewheel binding still works on the right pane.
+        def _wheel(e):
+            side_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        for w in (side_canvas, side_inner):
+            w.bind("<Enter>", lambda e: side_canvas.bind_all("<MouseWheel>", _wheel))
+            w.bind("<Leave>", lambda e: side_canvas.unbind_all("<MouseWheel>"))
+        self._build_sidebar(side_inner)
 
         right = tk.Frame(body, bg=_PANEL)
         right.pack(side="left", fill="both", expand=True)
@@ -651,7 +689,11 @@ class _App(tk.Tk):
         self._starter_hint.pack(fill="x", pady=(2, 0))
 
         # TARGET FILTER (always visible)
-        tk.Frame(hunt_card, bg=_BORDER, height=1).pack(fill="x", pady=(10, 8))
+        # Keep a reference to the divider so _on_method_change can pack
+        # the starter frame BEFORE it (between method and target rather
+        # than below the target combo).
+        self._target_divider = tk.Frame(hunt_card, bg=_BORDER, height=1)
+        self._target_divider.pack(fill="x", pady=(10, 8))
         tk.Label(hunt_card, text="Target filter",
                  bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 9, "bold"),
@@ -877,9 +919,12 @@ class _App(tk.Tk):
             warn_parts.append(m.notes)
         self._method_warn.config(text="\n".join(warn_parts))
 
-        # Show / hide the starter sub-dropdown based on method.
+        # Show / hide the starter sub-dropdown based on method. Pack
+        # it BEFORE the target divider so the order inside Hunt card
+        # is Method → Starter → Target.
         if m and m.label == "Starters":
-            self._starter_frame.pack(fill="x", pady=(4, 0))
+            self._starter_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
             self._starter_hint.config(
                 text="Save in front of the starter table — see "
                      "TUTORIAL.md for the exact position per game.")

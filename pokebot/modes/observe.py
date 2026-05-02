@@ -23,6 +23,7 @@ def run(ctx):
     log.info("Mode: observe")
     last_party_sig = None
     last_foe_sig = None
+    seen_party_keys: set[tuple] = set()  # (species, pid) we've already announced
     poll_interval = 0.25
 
     while not ctx.should_stop():
@@ -44,6 +45,24 @@ def run(ctx):
                     pt = decrypt_pkm(raw)
                     pkm = parse_pkm(pt)
                     party_data.append(_summary(pkm, slot))
+                    # Broadcast any party-new entries as 'encounter' events
+                    # so the launcher's Recently Seen tab logs gifts,
+                    # starters, and hatched eggs while in manual mode.
+                    key = (pkm.species, pkm.pid)
+                    if key not in seen_party_keys and pkm.checksum_valid:
+                        seen_party_keys.add(key)
+                        ctx.dashboard.broadcast(
+                            "encounter",
+                            species=pkm.species, nickname=pkm.nickname,
+                            shiny=pkm.shiny, nature=pkm.nature,
+                            gender=pkm.gender, ivs=pkm.ivs, pid=pkm.pid,
+                            tsv=pkm.tsv, psv=pkm.psv,
+                            ability_id=pkm.ability_id,
+                            ability_num=pkm.ability_num,
+                            level=(pkm.party["level"] if pkm.party else None),
+                            moves=pkm.moves,
+                            source=f"party slot {slot}",
+                        )
                 except Exception as e:
                     log.debug(f"parse failed slot {slot}: {e}")
             sig = tuple((p["species"], p["pid"]) for p in party_data)

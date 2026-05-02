@@ -216,11 +216,22 @@ class Method:
 def methods_for(game_key: str) -> list[Method]:
     """Bot methods available for this game.
 
-    Currently only "Starters" is fully implemented (with the X/Y key
-    sequence in soft_reset.py). The launcher pairs this with a starter
-    sub-dropdown populated from STARTERS[game_key].
+    "Starters" runs the full automated soft-reset hunt and pairs with
+    the launcher's starter sub-dropdown.
+
+    "Manual control" runs observe mode — the bot sends no inputs at
+    all, so the player drives Azahar themselves. Useful for hands-on
+    play while still letting the launcher's "Recently Seen" panel pick
+    up wild encounters and any Pokémon added to the party (gifts,
+    starters, hatched eggs).
     """
-    return [Method("Starters", "soft_reset")]
+    return [
+        Method("Starters", "soft_reset"),
+        Method("Manual control", "observe",
+               notes="Bot sends NO inputs — you play normally. The "
+                     "Recently Seen tab still logs wild encounters and "
+                     "party additions as they happen."),
+    ]
 
 
 # 3DS virtual address ranges. The application heap (FCRAM mapped) spans
