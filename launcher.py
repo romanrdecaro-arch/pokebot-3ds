@@ -603,12 +603,28 @@ class _App(tk.Tk):
                                        state="readonly", width=30,
                                        style="Dark.TCombobox")
         self._method_cb.pack(padx=12, pady=2)
-        # Inline shiny-locked warning under the dropdown
+        # Inline shiny-locked / contextual warning under the dropdown
         self._method_warn = tk.Label(p, text="", bg=_PANEL, fg=_WARN,
                                      font=("Segoe UI", 9), anchor="w",
                                      wraplength=235, justify="left")
         self._method_warn.pack(fill="x", padx=12, pady=(2, 0))
         self._method_var.trace_add("write", self._on_method_change)
+
+        # ── Starter sub-dropdown (visible when method=Starters) ─────────────
+        self._starter_frame = tk.Frame(p, bg=_PANEL)
+        self._lbl(self._starter_frame, "STARTER")
+        self._starter_var = tk.StringVar(value="")
+        self._starter_cb = ttk.Combobox(self._starter_frame,
+                                        textvariable=self._starter_var,
+                                        values=[],
+                                        state="readonly", width=24,
+                                        style="Dark.TCombobox")
+        self._starter_cb.pack(padx=12, pady=2)
+        self._starter_hint = tk.Label(self._starter_frame, text="",
+                                      bg=_PANEL, fg=_MUTED,
+                                      font=("Segoe UI", 9), anchor="w",
+                                      wraplength=235, justify="left")
+        self._starter_hint.pack(fill="x", padx=12, pady=(2, 0))
         self._refresh_method_options()
 
         # ── Target filter (replaces YAML editing for common cases) ──────────
@@ -751,6 +767,7 @@ class _App(tk.Tk):
         # Preserve user's choice if still valid; otherwise pick a sane default.
         if self._method_var.get() not in labels:
             self._method_var.set(labels[0] if labels else "")
+        self._refresh_starter_options()
         self._on_method_change()
 
     def _selected_method(self):
@@ -758,6 +775,17 @@ class _App(tk.Tk):
             if m.label == self._method_var.get():
                 return m
         return None
+
+    def _refresh_starter_options(self):
+        """Repopulate the starter sub-dropdown for the current game."""
+        try:
+            from pokebot.games import starters_for
+            names = list(starters_for(self._game_var.get()).keys())
+        except Exception:
+            names = []
+        self._starter_cb.configure(values=names)
+        if self._starter_var.get() not in names:
+            self._starter_var.set(names[0] if names else "")
 
     def _on_method_change(self, *_):
         m = self._selected_method()
@@ -768,6 +796,15 @@ class _App(tk.Tk):
         if m and m.notes:
             warn_parts.append(m.notes)
         self._method_warn.config(text="\n".join(warn_parts))
+
+        # Show / hide the starter sub-dropdown based on method.
+        if m and m.label == "Starters":
+            self._starter_frame.pack(fill="x", pady=(4, 0))
+            self._starter_hint.config(
+                text="Save in front of the starter table — see "
+                     "TUTORIAL.md for the exact position per game.")
+        else:
+            self._starter_frame.pack_forget()
 
     # ---- Live Azahar status polling ----------------------------------------
 
@@ -874,12 +911,23 @@ class _App(tk.Tk):
                 "No method selected",
                 "Pick a method from the dropdown first.")
             return
+        # Validate starter sub-selection when method requires one.
+        if method.label == "Starters":
+            picked = self._starter_var.get().strip()
+            if not picked:
+                messagebox.showwarning(
+                    "Pick a starter",
+                    "Select which starter to hunt from the dropdown.")
+                return
+            chosen_starter = picked
+        else:
+            chosen_starter = method.starter
         args = ["--mode", method.mode]
         game = self._game_var.get()
         if game:
             args += ["--game", game]
-        if method.starter:
-            args += ["--starter", method.starter]
+        if chosen_starter:
+            args += ["--starter", chosen_starter]
         flag = self._TARGET_FILTER_FLAG.get(self._target_var.get())
         if flag:
             args += ["--target", flag]

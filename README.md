@@ -32,6 +32,9 @@ but adapted to Azahar's UDP RPC instead of an in-emulator Lua console.
 - **Offset finder** — scans FCRAM for valid PK7 records and reports party + foe addresses
 - **PK6/PK7 parser** — full block decryption + shuffle, checksum verification
 
+> **Step-by-step walkthrough:** see [docs/TUTORIAL.md](docs/TUTORIAL.md)
+> for a full first-time setup + soft-reset starter hunt.
+
 ## Quick start
 
 1. **Install Azahar** and load your Gen 6/7 game. Make sure

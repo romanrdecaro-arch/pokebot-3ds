@@ -213,90 +213,14 @@ class Method:
     notes: str = ""
 
 
-def _common_methods(game_key: str) -> list[Method]:
-    """Methods every Gen 6/7 game shares: observe + wild encounter +
-    a starter soft-reset entry per registered starter for that game."""
-    methods: list[Method] = [
-        Method("Observe (read-only)", "observe"),
-        Method("Wild encounter (tall grass)", "encounter"),
-    ]
-    for name in STARTERS.get(game_key, {}):
-        methods.append(
-            Method(f"Soft-reset starter — {name.title()}",
-                   "soft_reset", starter=name))
-    return methods
-
-
-# Game-specific legendaries / gift Pokémon that are realistic soft-reset
-# targets. Most Gen 6/7 stationary legendaries are shiny-locked; we flag
-# those so the launcher can warn before the user wastes hours hunting.
-_GAME_LEGENDARIES: dict[str, list[Method]] = {
-    "X-USA": [
-        Method("Soft-reset: Xerneas",      "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Mewtwo",       "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Zygarde",      "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Articuno (roaming)", "soft_reset",
-               shiny_locked=True),
-        Method("Soft-reset: Generic gift / legendary", "soft_reset"),
-    ],
-    "Y-USA": [
-        Method("Soft-reset: Yveltal",      "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Mewtwo",       "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Zygarde",      "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Moltres (roaming)", "soft_reset",
-               shiny_locked=True),
-        Method("Soft-reset: Generic gift / legendary", "soft_reset"),
-    ],
-    "OR-USA": [
-        Method("Soft-reset: Groudon",      "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Rayquaza",     "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Latios",       "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Latias (gift)", "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Generic gift / legendary", "soft_reset"),
-    ],
-    "AS-USA": [
-        Method("Soft-reset: Kyogre",       "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Rayquaza",     "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Latias",       "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Latios (gift)", "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Generic gift / legendary", "soft_reset"),
-    ],
-    "SM-USA-1.2": [
-        Method("Soft-reset: Solgaleo / Lunala", "soft_reset",
-               shiny_locked=True),
-        Method("Soft-reset: Tapu Koko",    "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Tapu Lele",    "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Tapu Bulu",    "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Tapu Fini",    "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Cosmog (gift)", "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Type: Null (gift)", "soft_reset",
-               shiny_locked=True),
-        Method("Soft-reset: Generic gift / legendary", "soft_reset"),
-    ],
-    "USUM-USA-1.2": [
-        Method("Soft-reset: Solgaleo / Lunala", "soft_reset",
-               shiny_locked=True),
-        Method("Soft-reset: Necrozma",     "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Tapu Koko",    "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Tapu Lele",    "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Tapu Bulu",    "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Tapu Fini",    "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Cosmog (gift)", "soft_reset", shiny_locked=True),
-        Method("Soft-reset: Type: Null (gift)", "soft_reset",
-               shiny_locked=True),
-        Method("Soft-reset: Zygarde cells/cores", "soft_reset",
-               shiny_locked=True),
-        Method("Soft-reset: Ultra Wormhole legendary",
-               "soft_reset",
-               notes="Ultra-Wormhole-caught legendaries CAN be shiny"),
-        Method("Soft-reset: Generic gift / legendary", "soft_reset"),
-    ],
-}
-
-
 def methods_for(game_key: str) -> list[Method]:
-    """Return the ordered list of bot methods available for this game."""
-    return _common_methods(game_key) + _GAME_LEGENDARIES.get(game_key, [])
+    """Bot methods available for this game.
+
+    Currently only "Starters" is fully implemented (with the X/Y key
+    sequence in soft_reset.py). The launcher pairs this with a starter
+    sub-dropdown populated from STARTERS[game_key].
+    """
+    return [Method("Starters", "soft_reset")]
 
 
 # 3DS virtual address ranges. The application heap (FCRAM mapped) spans

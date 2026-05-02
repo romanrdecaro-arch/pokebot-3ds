@@ -64,7 +64,22 @@ def run(ctx):
                     if sig != last_foe_sig:
                         last_foe_sig = sig
                         s = _summary(pkm, 0)
+                        # 'foe' goes to the web dashboard's foe panel.
+                        # 'encounter' lights up the launcher's "Recently
+                        # Seen" table so observe mode shows live wild
+                        # spawns the same way encounter/soft_reset do.
                         ctx.dashboard.broadcast("foe", **s)
+                        ctx.dashboard.broadcast(
+                            "encounter",
+                            species=pkm.species, nickname=pkm.nickname,
+                            shiny=pkm.shiny, nature=pkm.nature,
+                            gender=pkm.gender, ivs=pkm.ivs, pid=pkm.pid,
+                            tsv=pkm.tsv, psv=pkm.psv,
+                            ability_id=pkm.ability_id,
+                            ability_num=pkm.ability_num,
+                            level=pkm.party["level"] if pkm.party else None,
+                            moves=pkm.moves,
+                        )
                         if ctx.target and ctx.target.matches(pkm):
                             ctx.dashboard.broadcast(
                                 "target_hit",
