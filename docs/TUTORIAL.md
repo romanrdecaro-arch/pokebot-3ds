@@ -180,9 +180,8 @@ guessing.
 
 How to discover the address:
 
-```
-python -m pokebot.find_dialog_flag --save-config config.yaml
-```
+- **Windows:** double-click `find-dialog-flag.bat` in the project folder.
+- **Other platforms:** `python -m pokebot.find_dialog_flag --save-config config.yaml`
 
 It walks you through 4 snapshots: stand on the overworld, then talk
 to an NPC, then dismiss it, then talk to another. The script diffs
