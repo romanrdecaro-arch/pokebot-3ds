@@ -50,8 +50,14 @@ soft_reset:
   # X/Y starter sequence tunables. Defaults assume Fast text speed.
   # If you have text speed on Medium/Slow, raise xy_pre_taps until
   # the bot reliably reaches the menu without overshooting it.
-  xy_pre_taps: 8        # A presses to open the starter selection menu
-  xy_post_taps: 16      # A presses after confirm to receive the starter
+  xy_pre_taps: 8        # A presses to open the starter selection menu.
+                        # Bot also presses DpadLeft (Chespin) or DpadRight
+                        # (Froakie) on every iteration to self-correct the
+                        # menu cursor, so overshooting is safe.
+  xy_post_taps: 30      # Hard upper bound on receive-phase A presses.
+                        # When party_base is known, the bot polls the slot
+                        # and stops as soon as the starter is in the party,
+                        # so the actual count is usually much lower.
   # Optional: lock the bot to a specific starter for the current game.
   # Wrong-species results soft-reset without evaluating the target.
   # Names per game:

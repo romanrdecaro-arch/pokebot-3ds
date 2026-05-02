@@ -87,72 +87,96 @@ def _discover_offsets_inline(ctx) -> bool:
 
 def _xy_starter_sequence(ctx, starter: str, gap: float,
                          pre_taps: int, post_taps: int) -> bool:
-    """Pokémon X / Y starter selection.
+    """Pokémon X / Y starter selection — self-correcting + adaptive.
 
     The player must save in Aquacorde Town in the position pictured
     in TUTORIAL.md (south of the table).
 
-    Sequence:
-      1. DpadLeft once to face the table.
-      2. ``pre_taps`` A presses to reach the starter selection menu.
-         Empirically 6–8 is right with Fast text speed; the previous
-         default (30) was way too many and overshot into the menu,
-         confirming Fennekin (the default cursor) before the bot got
-         to navigate. Tunable via soft_reset.xy_pre_taps.
-      3. From the default cursor (Fennekin, middle):
-           - Chespin:   2× DpadLeft, 2× A
-           - Fennekin:  2× A
-           - Froakie:   2× DpadRight, 2× A
-      4. ``post_taps`` A presses to clear the receive dialogue and
-         the optional 'nickname?' prompt (defaults to No, so A is
-         safe). Tunable via soft_reset.xy_post_taps.
+    Two adaptive mechanisms keep this robust against text-speed and
+    timing drift:
+
+      1. **Self-correcting menu navigation.** During the pre-menu
+         phase we press DpadLeft+A (Chespin) or DpadRight+A
+         (Froakie) on every iteration. The d-pad press is a no-op
+         on a dialogue screen, but the moment the starter selection
+         menu opens it pins the cursor to the chosen Pokéball. Even
+         if ``pre_taps`` overshoots by several presses, the cursor
+         can't drift onto the wrong starter and confirm it — which
+         is the bug that made Chespin pick Fennekin in early runs.
+
+      2. **Memory-polled receive phase.** When ``party_base`` is
+         known, the post-confirm phase A-mashes only until slot 0
+         shows a valid PK7 record. ``post_taps`` becomes a hard
+         upper bound rather than the actual count. On the very
+         first run (party_base not yet discovered) it falls back to
+         a fixed mash of ``post_taps`` and the auto-discovery scan
+         locates party_base afterwards.
 
     Returns True when complete; False if a stop was requested mid-run.
     """
+    from ..parser import decrypt_pkm, parse_pkm
+
     starter = (starter or "").lower()
+    nav = {"chespin": "DpadLeft", "froakie": "DpadRight"}.get(starter)
 
     # Step 1 — face the table.
     ctx.input.tap("DpadLeft", hold_s=0.1)
     time.sleep(0.35)
 
-    # Step 2 — open the starter selection menu.
-    log.info(f"X/Y: pressing A {pre_taps}× to reach starter menu")
+    # Step 2 — open the menu while pinning the cursor to the chosen
+    # Pokéball. Each iteration: optional d-pad press, then A. The
+    # d-pad is a no-op until the menu actually opens, so this is safe
+    # to repeat with any pre_taps count.
+    log.info(f"X/Y: {pre_taps} iterations of "
+             f"{(nav + '+A') if nav else 'A'} to open + select starter")
     for _ in range(pre_taps):
         if ctx.should_stop():
             return False
+        if nav:
+            ctx.input.tap(nav, hold_s=0.08)
+            time.sleep(0.05)
         ctx.input.tap("A", hold_s=0.05)
         time.sleep(gap)
 
-    # Step 3 — cursor navigation. Default cursor is Fennekin (centre).
-    if starter == "chespin":
-        log.info("X/Y: cursor → Chespin (2× DpadLeft)")
-        for _ in range(2):
-            if ctx.should_stop(): return False
-            ctx.input.tap("DpadLeft", hold_s=0.1)
-            time.sleep(0.25)
-    elif starter == "froakie":
-        log.info("X/Y: cursor → Froakie (2× DpadRight)")
-        for _ in range(2):
-            if ctx.should_stop(): return False
-            ctx.input.tap("DpadRight", hold_s=0.1)
-            time.sleep(0.25)
-    else:  # fennekin or anything else
-        log.info("X/Y: cursor stays on Fennekin (no movement)")
-
-    # Confirm twice — open the Pokéball, then 'Yes, take this one'.
+    # Step 3 — confirm twice (open Pokéball + "Yes, take this one").
+    # If the LEFT/RIGHT-A loop above already confirmed, these extra
+    # A's just advance the receive dialogue, which is fine.
     for _ in range(2):
         if ctx.should_stop():
             return False
         ctx.input.tap("A", hold_s=0.05)
         time.sleep(0.6)
 
-    # Step 4 — clear the receive dialogue + nickname prompt.
-    log.info(f"X/Y: pressing A {post_taps}× to receive starter")
-    for _ in range(post_taps):
-        if ctx.should_stop():
-            return False
-        ctx.input.tap("A", hold_s=0.05)
-        time.sleep(gap)
+    # Step 4 — receive phase. Adaptive when we have an offset to poll.
+    have_party_addr = bool(ctx.game.offsets.party_base)
+    if have_party_addr:
+        log.info(f"X/Y: receiving — polling party slot 0 (cap {post_taps} A's)")
+        addr = ctx.game.offsets.party_base
+        for i in range(post_taps):
+            if ctx.should_stop():
+                return False
+            ctx.input.tap("A", hold_s=0.05)
+            time.sleep(gap)
+            # Poll every 2 presses to keep RPC traffic modest.
+            if i % 2 != 0:
+                continue
+            try:
+                raw = ctx.rpc.read(addr, 260)
+                pkm = parse_pkm(decrypt_pkm(raw))
+                if pkm.checksum_valid and pkm.species:
+                    log.info(f"X/Y: starter received after {i+1} A's "
+                             f"(species #{pkm.species})")
+                    return True
+            except Exception:
+                pass
+    else:
+        log.info(f"X/Y: receiving — first run, mashing A {post_taps}× "
+                 "(party_base will be discovered after this)")
+        for _ in range(post_taps):
+            if ctx.should_stop():
+                return False
+            ctx.input.tap("A", hold_s=0.05)
+            time.sleep(gap)
     return True
 
 
