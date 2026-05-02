@@ -85,6 +85,8 @@ def run(ctx):
             species=pkm.species, nickname=pkm.nickname,
             shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
             ivs=pkm.ivs, pid=pkm.pid,
+            tsv=pkm.tsv, psv=pkm.psv,
+            ability_id=pkm.ability_id, ability_num=pkm.ability_num,
             level=pkm.party["level"] if pkm.party else None,
             moves=pkm.moves,
         )

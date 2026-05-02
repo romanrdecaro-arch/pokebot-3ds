@@ -174,13 +174,298 @@ def _draw_pokeball(canvas: tk.Canvas, size: int = 32) -> None:
                        fill="#f4f4f4", outline="")
 
 
+_TYPE_COLORS = {
+    "Normal":   "#a8a878", "Fire":     "#f08030", "Water":    "#6890f0",
+    "Electric": "#f8d030", "Grass":    "#78c850", "Ice":      "#98d8d8",
+    "Fighting": "#c03028", "Poison":   "#a040a0", "Ground":   "#e0c068",
+    "Flying":   "#a890f0", "Psychic":  "#f85888", "Bug":      "#a8b820",
+    "Rock":     "#b8a038", "Ghost":    "#705898", "Dragon":   "#7038f8",
+    "Dark":     "#705848", "Steel":    "#b8b8d0", "Fairy":    "#ee99ac",
+}
+
+_NATURE_NAMES = (
+    "Hardy",  "Lonely", "Brave",   "Adamant", "Naughty",
+    "Bold",   "Docile", "Relaxed", "Impish",  "Lax",
+    "Timid",  "Hasty",  "Serious", "Jolly",   "Naive",
+    "Modest", "Mild",   "Quiet",   "Bashful", "Rash",
+    "Calm",   "Gentle", "Sassy",   "Careful", "Quirky",
+)
+
+
+def _hidden_power(ivs: dict):
+    try:
+        from pokebot.sprites import hidden_power
+        return hidden_power(ivs or {})
+    except Exception:
+        return ("Normal", 30)
+
+
+class _RecentlySeen(tk.Frame):
+    """Sprite-rich encounter table that mirrors the pokebot-gen3 dashboard.
+
+    Each row is a Frame containing: sprite, gender icon, level, PID,
+    Shiny Value (PSV), ability id, nature, IV breakdown with per-stat
+    colour, and Hidden Power type/power.
+    """
+
+    MAX_ROWS = 100  # how many recent encounters to keep on screen
+
+    # Column layout: (label, weight, anchor, monospace?)
+    _HEADERS = (
+        ("",            0, "w", False),  # sprite
+        ("",            0, "center", False),  # sex
+        ("",            0, "center", False),  # level
+        ("PID",         0, "center", True),
+        ("Shiny Value", 0, "center", True),
+        ("Ability",     1, "w", False),
+        ("Nature",      0, "center", False),
+        ("IVs",         1, "w", True),
+        ("Hidden Power", 0, "w", False),
+    )
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=_PANEL)
+        self.pack(fill="both", expand=True)
+
+        # Title bar
+        title_bar = tk.Frame(self, bg=_PANEL)
+        title_bar.pack(fill="x", padx=14, pady=(10, 4))
+        tk.Label(title_bar, text="Recently Seen",
+                 bg=_PANEL, fg=_TEXT,
+                 font=("Segoe UI", 13, "bold")).pack(side="left")
+        self._counter_lbl = tk.Label(title_bar, text="0 encounters",
+                                     bg=_PANEL, fg=_MUTED,
+                                     font=("Segoe UI", 9))
+        self._counter_lbl.pack(side="right")
+
+        # Header row
+        header = tk.Frame(self, bg=_PANEL)
+        header.pack(fill="x", padx=14)
+        for i, (text, w, anchor, _) in enumerate(self._HEADERS):
+            header.grid_columnconfigure(i, weight=w)
+            tk.Label(header, text=text, bg=_PANEL, fg=_MUTED,
+                     font=("Segoe UI", 9, "bold"),
+                     anchor=anchor).grid(row=0, column=i,
+                                         padx=8, pady=(0, 6),
+                                         sticky="ew")
+        tk.Frame(self, bg=_BORDER, height=1).pack(fill="x", padx=14)
+
+        # Scrollable rows area
+        scroll_frame = tk.Frame(self, bg=_PANEL)
+        scroll_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+        self._canvas = tk.Canvas(scroll_frame, bg=_PANEL,
+                                 highlightthickness=0)
+        self._canvas.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(scroll_frame, orient="vertical",
+                           command=self._canvas.yview)
+        sb.pack(side="right", fill="y")
+        self._canvas.configure(yscrollcommand=sb.set)
+        self._rows_frame = tk.Frame(self._canvas, bg=_PANEL)
+        self._rows_frame_id = self._canvas.create_window(
+            (0, 0), window=self._rows_frame, anchor="nw")
+        self._rows_frame.bind(
+            "<Configure>",
+            lambda e: self._canvas.configure(
+                scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind(
+            "<Configure>",
+            lambda e: self._canvas.itemconfigure(
+                self._rows_frame_id, width=e.width))
+        # Mouse wheel scroll
+        self._canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: self._canvas.yview_scroll(int(-1 * (e.delta / 120)),
+                                                "units"))
+
+        self._rows: list[tk.Frame] = []
+        self._sprites: dict[int, tk.PhotoImage] = {}  # keep refs alive
+        self._count = 0
+
+        # Empty placeholder
+        self._empty = tk.Label(self._rows_frame,
+                               text="No encounters yet — start a hunt.",
+                               bg=_PANEL, fg=_MUTED,
+                               font=("Segoe UI", 10, "italic"))
+        self._empty.pack(pady=24)
+
+    # ---- public API --------------------------------------------------------
+
+    def add_pokemon(self, evt: dict):
+        if self._empty:
+            self._empty.destroy()
+            self._empty = None
+        self._count += 1
+        self._counter_lbl.config(text=f"{self._count} encounters")
+
+        row = self._build_row(evt)
+        row.pack(fill="x", padx=4, pady=2)
+        self._rows.insert(0, row)
+        # Move newest row to top
+        for r in self._rows:
+            r.pack_forget()
+        for r in self._rows[: self.MAX_ROWS]:
+            r.pack(fill="x", padx=4, pady=2)
+        # Trim
+        for r in self._rows[self.MAX_ROWS :]:
+            r.destroy()
+        self._rows = self._rows[: self.MAX_ROWS]
+        self._canvas.yview_moveto(0.0)
+
+    # ---- row construction --------------------------------------------------
+
+    def _build_row(self, evt: dict) -> tk.Frame:
+        species_id = int(evt.get("species") or 0)
+        shiny = bool(evt.get("shiny"))
+        gender = evt.get("gender") or "G"
+        level = evt.get("level")
+        pid = int(evt.get("pid") or 0)
+        psv = evt.get("psv")
+        if psv is None and pid:
+            psv = (pid >> 16) ^ (pid & 0xFFFF)
+        ability_id = evt.get("ability_id")
+        ability_num = evt.get("ability_num")
+        nature = evt.get("nature") or ""
+        ivs = evt.get("ivs") or {}
+        hp_type, hp_power = _hidden_power(ivs)
+
+        bg = _PANEL2 if not shiny else "#2a230a"  # warm tint for shiny rows
+        row = tk.Frame(self._rows_frame, bg=bg, padx=6, pady=4,
+                       highlightthickness=1,
+                       highlightbackground="#ffd86b" if shiny else _BORDER)
+        for i, (_, w, _, _) in enumerate(self._HEADERS):
+            row.grid_columnconfigure(i, weight=w)
+
+        # Sprite
+        sprite_lbl = tk.Label(row, bg=bg)
+        sprite_lbl.grid(row=0, column=0, padx=4, pady=2, sticky="w")
+        self._load_sprite_async(species_id, shiny, sprite_lbl)
+
+        # Sex
+        sex_color = {"M": "#5fa9ff", "F": "#ff7eb6", "G": _MUTED}.get(gender, _MUTED)
+        sex_glyph = {"M": "♂", "F": "♀", "G": "—"}.get(gender, "—")
+        tk.Label(row, text=sex_glyph, bg=bg, fg=sex_color,
+                 font=("Segoe UI", 11, "bold")).grid(row=0, column=1, padx=4)
+
+        # Level
+        lvl = f"Lv {level}" if level is not None else "Lv ?"
+        tk.Label(row, text=lvl, bg=bg, fg=_TEXT,
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=2, padx=8)
+
+        # PID
+        tk.Label(row, text=f"{pid:08X}", bg=bg, fg=_TEXT,
+                 font=("Consolas", 10)).grid(row=0, column=3, padx=8)
+
+        # Shiny Value (PSV) — gold pill if shiny, plain text otherwise
+        psv_text = f"{int(psv):05d}" if psv is not None else "—"
+        if shiny:
+            sv_lbl = tk.Label(row, text=f"★ {psv_text}", bg=bg,
+                              fg="#ffd86b", font=("Consolas", 10, "bold"))
+        else:
+            sv_lbl = tk.Label(row, text=f"— {psv_text}", bg=bg,
+                              fg=_MUTED, font=("Consolas", 10))
+        sv_lbl.grid(row=0, column=4, padx=8)
+
+        # Ability
+        ab_text = self._ability_text(ability_id, ability_num)
+        tk.Label(row, text=ab_text, bg=bg, fg=_TEXT,
+                 font=("Segoe UI", 10), anchor="w").grid(row=0, column=5,
+                                                         padx=8, sticky="w")
+
+        # Nature
+        nat_text = nature if isinstance(nature, str) and nature else \
+            (_NATURE_NAMES[int(nature)] if isinstance(nature, int)
+             and 0 <= int(nature) < 25 else "?")
+        tk.Label(row, text=nat_text, bg=bg, fg=_TEXT,
+                 font=("Segoe UI", 10)).grid(row=0, column=6, padx=8)
+
+        # IVs — per-stat coloured (red=31, blue=0, white otherwise)
+        iv_frame = tk.Frame(row, bg=bg)
+        iv_frame.grid(row=0, column=7, padx=8, sticky="w")
+        order = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
+        for i, stat in enumerate(order):
+            v = int(ivs.get(stat, 0))
+            color = _DANGER if v == 31 else (_ACCENT2 if v == 0 else _TEXT)
+            weight = "bold" if v in (0, 31) else "normal"
+            tk.Label(iv_frame, text=str(v), bg=bg, fg=color,
+                     font=("Consolas", 10, weight),
+                     width=3, anchor="center").pack(side="left", padx=1)
+        iv_sum = sum(int(ivs.get(s, 0)) for s in order)
+        tk.Label(iv_frame, text=f"({iv_sum})", bg=bg, fg=_MUTED,
+                 font=("Consolas", 10)).pack(side="left", padx=(6, 0))
+
+        # Hidden Power (type pill + power)
+        hp_frame = tk.Frame(row, bg=bg)
+        hp_frame.grid(row=0, column=8, padx=8, sticky="w")
+        hp_color = _TYPE_COLORS.get(hp_type, "#888")
+        pill = tk.Label(hp_frame, text=hp_type.upper(),
+                        bg=hp_color, fg="#000",
+                        font=("Segoe UI", 8, "bold"),
+                        padx=6, pady=1)
+        pill.pack(side="top", anchor="w")
+        tk.Label(hp_frame, text=f"{hp_power} Power", bg=bg, fg=_MUTED,
+                 font=("Segoe UI", 9)).pack(side="top", anchor="w")
+
+        return row
+
+    # ---- async sprite loading ----------------------------------------------
+
+    def _load_sprite_async(self, species_id: int, shiny: bool,
+                           target: tk.Label):
+        if not species_id:
+            target.config(text="?", fg=_MUTED, width=4, height=2,
+                          font=("Segoe UI", 12, "bold"))
+            return
+        cache_key = species_id * 2 + (1 if shiny else 0)
+        if cache_key in self._sprites:
+            target.config(image=self._sprites[cache_key])
+            return
+        # Spinner placeholder while we fetch
+        target.config(text="…", fg=_MUTED, width=4, height=2,
+                      font=("Segoe UI", 12))
+
+        def _worker():
+            try:
+                from pokebot.sprites import get_sprite_path
+                p = get_sprite_path(species_id, shiny=shiny)
+            except Exception:
+                p = None
+            if p:
+                try:
+                    img = tk.PhotoImage(file=str(p))
+                    self._sprites[cache_key] = img
+                    target.after(0, lambda: target.config(image=img, text=""))
+                    return
+                except Exception:
+                    pass
+            target.after(0, lambda: target.config(
+                text=f"#{species_id}", fg=_MUTED,
+                font=("Consolas", 9)))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ---- small helpers -----------------------------------------------------
+
+    @staticmethod
+    def _ability_text(ability_id, ability_num) -> str:
+        if ability_id is None:
+            return "?"
+        suffix = ""
+        if ability_num == 4:
+            suffix = " (HA)"
+        elif ability_num == 1:
+            suffix = " (1)"
+        elif ability_num == 2:
+            suffix = " (2)"
+        return f"#{ability_id}{suffix}"
+
+
 class _App(tk.Tk):
 
     def __init__(self):
         super().__init__()
         self.title("pokebot-3ds")
-        self.geometry("1000x660")
-        self.minsize(780, 480)
+        self.geometry("1180x720")
+        self.minsize(900, 520)
         self.configure(bg=_BG)
         try:
             ttk.Style().theme_use("clam")
@@ -410,17 +695,40 @@ class _App(tk.Tk):
         return b
 
     def _build_log(self, parent):
-        hdr = tk.Frame(parent, bg=_PANEL)
-        hdr.pack(fill="x", padx=10, pady=(8, 2))
-        tk.Label(hdr, text="LOG", bg=_PANEL, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold")).pack(side="left")
-        tk.Button(hdr, text="Clear", command=self._clear_log,
+        # Two-tab Notebook: "Recently Seen" (sprite encounter table) + "Log".
+        nb = ttk.Notebook(parent)
+        nb.pack(fill="both", expand=True, padx=6, pady=6)
+        try:
+            s = ttk.Style()
+            s.configure("Dark.TNotebook", background=_PANEL, borderwidth=0)
+            s.configure("Dark.TNotebook.Tab",
+                        background=_PANEL, foreground=_MUTED,
+                        padding=(14, 8), borderwidth=0,
+                        font=("Segoe UI", 10, "bold"))
+            s.map("Dark.TNotebook.Tab",
+                  background=[("selected", _PANEL2)],
+                  foreground=[("selected", _TEXT)])
+            nb.configure(style="Dark.TNotebook")
+        except Exception:
+            pass
+
+        # ── Recently Seen tab ───────────────────────────────────────────────
+        seen_tab = tk.Frame(nb, bg=_PANEL)
+        nb.add(seen_tab, text="Recently Seen")
+        self._seen = _RecentlySeen(seen_tab)
+
+        # ── Log tab ─────────────────────────────────────────────────────────
+        log_tab = tk.Frame(nb, bg=_PANEL)
+        nb.add(log_tab, text="Log")
+        log_hdr = tk.Frame(log_tab, bg=_PANEL)
+        log_hdr.pack(fill="x", padx=10, pady=(8, 2))
+        tk.Button(log_hdr, text="Clear", command=self._clear_log,
                   bg=_BORDER, fg=_TEXT, relief="flat",
                   font=("Segoe UI", 8), cursor="hand2",
                   padx=5, pady=2).pack(side="right")
 
         self._log_box = scrolledtext.ScrolledText(
-            parent, bg="#0a0d12", fg=_TEXT,
+            log_tab, bg=_PANEL2, fg=_TEXT,
             font=("Consolas", 10), relief="flat", bd=0,
             state="disabled", wrap="word",
         )
@@ -636,6 +944,16 @@ class _App(tk.Tk):
     # ---- Bot callbacks -----------------------------------------------------
 
     def _on_bot_line(self, line: str):
+        # Structured event line emitted by dashboard_server.broadcast.
+        if line.startswith("EVENT: "):
+            try:
+                import json as _json
+                evt = _json.loads(line[len("EVENT: "):])
+            except Exception:
+                evt = None
+            if evt:
+                self.after(0, self._dispatch_event, evt)
+                return  # don't pollute the log view with raw event JSON
         tag = ""
         ll = line.lower()
         if "error" in ll or "traceback" in ll or "exception" in ll:
@@ -645,6 +963,15 @@ class _App(tk.Tk):
         elif "target hit" in ll or "shiny" in ll:
             tag = "accent"
         self._log_thread(line, tag)
+
+    def _dispatch_event(self, evt: dict):
+        kind = evt.get("type", "")
+        # Encounters and starter candidates both populate the table.
+        if kind in ("encounter", "candidate", "target_hit"):
+            try:
+                self._seen.add_pokemon(evt)
+            except Exception as e:
+                self._log(f"[seen] failed to render: {e}", "warn")
 
     def _on_bot_exit(self, code: int):
         self._log_thread(

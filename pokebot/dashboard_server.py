@@ -65,9 +65,11 @@ class DashboardServer:
     Clients can also send messages back (e.g. UI commands), which are
     enqueued in `inbox` for the bot to consume."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765):
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765,
+                 also_stdout: bool = True):
         self.host = host
         self.port = port
+        self.also_stdout = also_stdout   # mirror events as 'EVENT: ...' lines
         self._stop = threading.Event()
         self._clients: list[socket.socket] = []
         self._clients_lock = threading.Lock()
@@ -89,11 +91,21 @@ class DashboardServer:
 
     # ----- broadcasting -------------------------------------------------
     def broadcast(self, msg_type: str, **fields) -> None:
-        """Send {"type": msg_type, "ts": ..., **fields} to all clients."""
-        payload = json.dumps(
-            {"type": msg_type, "ts": time.time(), **fields},
-            default=str,
-        ).encode()
+        """Send {"type": msg_type, "ts": ..., **fields} to all clients.
+
+        Also emits an ``EVENT: <json>`` line on stdout when ``also_stdout``
+        is enabled, so the launcher's subprocess pipe can render encounters
+        natively without needing a websocket client.
+        """
+        body = {"type": msg_type, "ts": time.time(), **fields}
+        payload = json.dumps(body, default=str).encode()
+        if self.also_stdout:
+            try:
+                # One JSON line, prefix-tagged so the launcher can split it
+                # cleanly from human-readable log lines.
+                print("EVENT: " + payload.decode("utf-8"), flush=True)
+            except Exception:
+                pass
         dead = []
         with self._clients_lock:
             for c in self._clients:
