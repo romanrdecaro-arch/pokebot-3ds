@@ -43,7 +43,9 @@ soft_reset:
   read_slot: 0          # which party slot the gift Pokemon lands in
   advance_taps: 60      # how many A-taps to mash through dialogue
   advance_gap: 0.3      # seconds between mashes
-  post_reset_wait: 4.0  # seconds after L+R+Start before mashing again
+  post_reset_wait: 12.0 # seconds after L+R+Start to wait for boot logos
+                        # (Nintendo 3DS + Game Freak) before mashing A
+                        # through the Title -> Continue -> save flow
   # Optional: lock the bot to a specific starter for the current game.
   # Wrong-species results soft-reset without evaluating the target.
   # Names per game:

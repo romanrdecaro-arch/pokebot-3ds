@@ -971,6 +971,25 @@ class _App(tk.Tk):
                       "warn")
         self._bot.start(args)
         self._set_running(True)
+        # Focus Azahar so keystrokes land there, not on the launcher
+        # itself. The subprocess takes a moment to spin up, so give it
+        # ~750ms before we steal foreground.
+        self.after(750, self._focus_azahar)
+
+    def _focus_azahar(self):
+        try:
+            from pokebot.platform_utils import focus_azahar
+            ok = focus_azahar()
+        except Exception as e:
+            ok = False
+            self._log(f"focus_azahar failed: {e}", "warn")
+        if ok:
+            self._log("Focused Azahar — keystrokes will go there now.",
+                      "muted")
+        else:
+            self._log("Couldn't auto-focus Azahar. Click into the Azahar "
+                      "window once if the bot's keys aren't landing.",
+                      "warn")
 
     def _stop_bot(self):
         self._log("Stopping bot...", "warn")

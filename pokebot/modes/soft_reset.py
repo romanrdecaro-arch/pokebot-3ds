@@ -23,6 +23,7 @@ from pathlib import Path
 
 from ..games import starter_species, starters_for
 from ..parser import decrypt_pkm, parse_pkm
+from ..platform_utils import focus_azahar
 
 log = logging.getLogger(__name__)
 
@@ -299,6 +300,34 @@ def run(ctx):
         _do_reset(ctx, post_reset)
 
 
-def _do_reset(ctx, post_wait: float):
+def _do_reset(ctx, post_wait: float,
+              post_taps: int = 25, post_gap: float = 0.5):
+    """Soft-reset and walk the game back to the player-at-save state.
+
+    L+R+Start sends the 3DS to the title screen. From there we have
+    to drive the game through:
+        Title screen   → press A (or Start)
+        Continue menu  → press A on Continue (default cursor)
+        Save data flash → A
+        any post-load dialog
+    until the player sprite is standing on the save tile again. We
+    just mash A through everything, which works for X/Y where every
+    prompt accepts A.
+    """
     ctx.input.soft_reset()
+    # Boot logos (Nintendo 3DS, Game Freak) — non-interruptible. About
+    # 12s on a typical Azahar config; user-tunable via post_reset_wait.
     time.sleep(post_wait)
+    # Make sure Azahar still has focus before we start mashing again —
+    # the user may have clicked on the launcher or another window.
+    try:
+        focus_azahar()
+    except Exception:
+        pass
+    # Mash A: title → continue → save-data confirmation → "welcome
+    # back" dialog. Stops as soon as the user requests stop.
+    for _ in range(post_taps):
+        if ctx.should_stop():
+            return
+        ctx.input.tap("A", hold_s=0.05)
+        time.sleep(post_gap)
