@@ -164,6 +164,14 @@ _SEQUENCES = {
 
 def run(ctx):
     log.info("Mode: soft_reset")
+    # Pull Azahar to the foreground from inside the bot subprocess so
+    # pynput's keystrokes (sent from this same process context) land
+    # in the right window.
+    try:
+        if focus_azahar():
+            log.info("Azahar window focused.")
+    except Exception as e:
+        log.warning(f"Couldn't focus Azahar at startup: {e}")
     cfg = ctx.config.get("soft_reset", {})
     slot         = int(cfg.get("read_slot", 0))     # which party slot to read
     advance_taps = int(cfg.get("advance_taps", 60)) # generic-mode mashes
@@ -202,6 +210,13 @@ def run(ctx):
         attempt += 1
         log.info(f"Soft reset attempt #{attempt}")
         ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
+
+        # Re-assert focus at the start of each iteration in case the user
+        # alt-tabbed during the previous one.
+        try:
+            focus_azahar()
+        except Exception:
+            pass
 
         # ------------------------------------------------------------------
         # Phase 1 — drive the game from save screen to populated party slot.
