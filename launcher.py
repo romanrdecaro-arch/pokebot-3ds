@@ -682,27 +682,17 @@ class _App(tk.Tk):
                                     bg=_PANEL2, fg=_MUTED, state="disabled",
                                     subtle=True)
 
-        # ── Dashboard ────────────────────────────────────────────────────────
-        self._sep(p)
-        self._btn(p, "Open Dashboard in Browser",
-                  self._open_dashboard, bg=_GOOD)
-
         # ── Tooling ──────────────────────────────────────────────────────────
         self._sep(p)
-        self._lbl(p, "TOOLS")
-        self._scan_btn = self._btn(p, "🔍  Find Offsets (scan RAM)",
-                                   self._run_find_offsets,
-                                   bg=_PANEL2, fg=_ACCENT2, subtle=True)
+        self._btn(p, "Open Dashboard in Browser",
+                  self._open_dashboard, bg=_PANEL2, fg=_GOOD, subtle=True)
         self._btn(p, "⚙  Edit config.yaml",
                   self._open_config, bg=_PANEL2, fg=_TEXT, subtle=True)
-
-        # ── Offset status ────────────────────────────────────────────────────
-        self._sep(p)
-        self._offset_lbl = tk.Label(p, text="", bg=_PANEL, fg=_WARN,
-                                    font=("Segoe UI", 9), anchor="w",
-                                    wraplength=205, justify="left")
-        self._offset_lbl.pack(fill="x", padx=12, pady=4)
-        self._refresh_offset_status()
+        # Hidden manual-override scan button; kept so power users can
+        # rerun find_offsets via the existing _run_find_offsets path.
+        # Auto-discovery covers the common case so it's not in the UI.
+        self._scan_btn = tk.Button(p, command=self._run_find_offsets)
+        self._offset_lbl = tk.Label(p)  # legacy; no longer packed
 
     def _btn(self, parent, text, cmd, bg=_ACCENT, fg="white",
              state="normal", subtle=False):
@@ -907,40 +897,14 @@ class _App(tk.Tk):
                         self._log(f"Auto-selected detected game: {g.key}",
                                   "accent")
 
-    # ---- Offset status helper ----------------------------------------------
+    # ---- Offset status helper (no-op stub; kept so callers don't break) ----
 
     def _refresh_offset_status(self, *_):
-        try:
-            from pokebot import games as gmod
-            g = gmod.GAMES.get(self._game_var.get())
-        except Exception:
-            g = None
-
-        cfg_off = self._cfg.get("offsets") or {}
-        has_cfg = False
-        for v in cfg_off.values():
-            if not v:
-                continue
-            try:
-                n = int(v, 0) if isinstance(v, str) else int(v)
-            except (TypeError, ValueError):
-                continue
-            if n:
-                has_cfg = True
-                break
-
-        if has_cfg:
-            self._offset_lbl.config(
-                fg=_GOOD,
-                text="✓ Offsets set in config.yaml")
-        elif g and (g.offsets.party_base or g.offsets.foe_base):
-            self._offset_lbl.config(
-                fg=_GOOD,
-                text="✓ Offsets in game registry")
-        else:
-            self._offset_lbl.config(
-                fg=_WARN,
-                text="⚠ No offsets found.\nRun 'Find Offsets', then paste\nresults into config.yaml")
+        # The visual offset-status label was removed when auto-discovery
+        # was added — the bot now logs its own offset state. This stub
+        # keeps existing callers (game-change trace, post-scan reload)
+        # working without blowing up.
+        return
 
     # ---- Actions -----------------------------------------------------------
 
@@ -968,18 +932,14 @@ class _App(tk.Tk):
                 "No method selected",
                 "Pick a method from the dropdown first.")
             return
-        # Pre-flight offset check — soft_reset / encounter / observe all
-        # need at least party_base to do anything useful. The bot's own
-        # error is buried in the log; surface a clear modal instead.
+        # No more preflight modal — soft_reset auto-discovers offsets
+        # after the first starter is in the party. The bot logs its
+        # progress, and we just note it here so the user knows the first
+        # iteration takes a bit longer than subsequent ones.
         if not self._has_offsets_configured():
-            messagebox.showwarning(
-                "Offsets not configured",
-                "No party_base offset is set for this game.\n\n"
-                "Click '🔍 Find Offsets (scan RAM)' in the sidebar with "
-                "your party loaded and the game on the overworld. The "
-                "scan saves the discovered addresses to config.yaml "
-                "automatically — no manual editing required.")
-            return
+            self._log("First run — bot will auto-discover memory offsets "
+                      "after the first starter is received (~1 min one-time "
+                      "scan). Subsequent resets are full-speed.", "warn")
         # Validate starter sub-selection when method requires one.
         if method.label == "Starters":
             picked = self._starter_var.get().strip()

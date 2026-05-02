@@ -19,11 +19,65 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 from ..games import starter_species, starters_for
 from ..parser import decrypt_pkm, parse_pkm
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# First-run offset auto-discovery
+# ---------------------------------------------------------------------------
+# Starter hunts begin with an empty party, so the user can't run the offset
+# finder up-front (no party data to find). We solve the chicken-and-egg by
+# running a memory scan after the FIRST starter pickup, when the party has
+# been written exactly once. The scan locates party_base, persists it to
+# config.yaml, and applies it to ctx.game.offsets so every subsequent reset
+# just reads from the known address.
+
+def _discover_offsets_inline(ctx) -> bool:
+    """Scan memory for the freshly-populated party block.
+
+    Returns True if party_base was found, applied, and saved. Logs and
+    returns False on failure (caller should reset and try again).
+    """
+    # Imported lazily so importing soft_reset doesn't drag in find_offsets.
+    from .. import find_offsets as fo
+
+    log.info("Auto-discovering party_base — first-run scan, ~30-90s. "
+             "This only happens once per Azahar session.")
+    try:
+        hits = list(fo.scan(ctx.rpc))
+    except Exception as e:
+        log.warning(f"Memory scan failed: {e}")
+        return False
+    clusters = fo.cluster_hits(hits)
+    discovered = fo.derive_offsets_from_clusters(clusters)
+    if "party_base" not in discovered:
+        log.warning("Scan finished but couldn't isolate the party block. "
+                    "Make sure the bot's input sequence actually placed a "
+                    "Pokémon in slot 0 — try saving in front of the table "
+                    "and re-running.")
+        return False
+
+    for k, v in discovered.items():
+        if hasattr(ctx.game.offsets, k):
+            setattr(ctx.game.offsets, k, v)
+    log.info("Discovered: " + ", ".join(
+        f"{k}={v:#010x}" for k, v in discovered.items()))
+
+    # Persist so the offset survives across launcher restarts.
+    cfg_path = Path(__file__).resolve().parent.parent.parent / "config.yaml"
+    if cfg_path.exists():
+        try:
+            written = fo.write_offsets_to_config(cfg_path, discovered)
+            if written:
+                log.info(f"Saved offsets to {cfg_path.name}: {written}")
+        except Exception as e:
+            log.warning(f"Could not write to {cfg_path}: {e}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +170,13 @@ def run(ctx):
     post_reset   = float(cfg.get("post_reset_wait", 4.0))
     starter_name = cfg.get("starter")
 
-    if not ctx.game.offsets.party_base:
-        log.error("party_base offset is 0 -- cannot run soft_reset.")
-        return
+    # No early-exit on missing offsets — starter hunts begin with an empty
+    # party, so we discover party_base AFTER the first pickup. Set a flag
+    # so the loop below knows to scan once.
+    needs_discovery = not ctx.game.offsets.party_base
+    if needs_discovery:
+        log.info("party_base not configured — will auto-discover after the "
+                 "first starter is in the party.")
 
     starter_id = None
     if starter_name:
@@ -157,6 +215,24 @@ def run(ctx):
                     return
                 ctx.input.tap("A", hold_s=0.05)
                 time.sleep(advance_gap)
+
+        # ------------------------------------------------------------------
+        # Phase 1b (one-time) — discover party_base after the very first
+        # starter pickup, when the party block has just been written.
+        # ------------------------------------------------------------------
+        if needs_discovery:
+            ctx.dashboard.broadcast("offset_scan",
+                                    state="started", attempt=attempt)
+            ok = _discover_offsets_inline(ctx)
+            ctx.dashboard.broadcast("offset_scan",
+                                    state=("ok" if ok else "fail"),
+                                    party_base=ctx.game.offsets.party_base)
+            if not ok:
+                # Couldn't find a party block. Reset and try again — usually
+                # the input sequence didn't actually receive the starter.
+                _do_reset(ctx, post_reset)
+                continue
+            needs_discovery = False
 
         # ------------------------------------------------------------------
         # Phase 2 — read and parse the resulting party slot.
