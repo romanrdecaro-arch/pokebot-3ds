@@ -50,10 +50,11 @@ soft_reset:
   # X/Y starter sequence tunables. Defaults assume Fast text speed.
   # If you have text speed on Medium/Slow, raise xy_pre_taps until
   # the bot reliably reaches the menu without overshooting it.
-  xy_pre_taps: 8        # A presses to open the starter selection menu.
-                        # Bot also presses DpadLeft (Chespin) or DpadRight
-                        # (Froakie) on every iteration to self-correct the
-                        # menu cursor, so overshooting is safe.
+  xy_pre_taps: 18       # A presses to clear Tierno's dialogue and reach
+                        # the starter selection menu. Generous to cover
+                        # Medium text speed; slight overshoot is caught
+                        # by the species-mismatch reset on the next
+                        # iteration.
   xy_post_taps: 30      # Hard upper bound on receive-phase B presses.
                         # B is used (not A) so the 'Want to nickname?'
                         # prompt is auto-answered No instead of opening

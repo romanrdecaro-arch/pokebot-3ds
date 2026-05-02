@@ -20,6 +20,7 @@ Default keybinds below match Azahar's defaults; remap freely.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -76,6 +77,10 @@ class InputDriver:
         self.binds = binds or KeyBinds()
         self.dry_run = dry_run or not PYNPUT_OK
         self._kb = Controller() if PYNPUT_OK and not dry_run else None
+        # Cached Azahar window handle (Windows). Looked up lazily on
+        # first key press; refreshed whenever PostMessage fails.
+        self._azahar_hwnd: int = 0
+        self._postmsg_warned: bool = False
         if not PYNPUT_OK:
             log.warning("pynput not available -- input driver in DRY-RUN mode. "
                         "Install with: pip install pynput")
@@ -92,15 +97,59 @@ class InputDriver:
 
     # -- core operations --------------------------------------------------
     def tap(self, button: str, hold_s: float = 0.05):
-        """Press and release a button."""
-        key = self._key_for(button)
+        """Press and release a button.
+
+        On Windows, posts WM_KEYDOWN/WM_KEYUP directly to Azahar's
+        window so the keypress lands regardless of which app the user
+        is looking at. Falls back to pynput's global keyboard
+        controller on other platforms or when the hwnd lookup fails.
+        """
         if self.dry_run:
             log.info(f"[DRY] tap {button} ({hold_s}s)")
             time.sleep(hold_s)
             return
+
+        # Path A: Windows PostMessage to the Azahar window (no focus
+        # required). Most reliable for emulator automation because
+        # the user can keep doing other things on their PC.
+        if sys.platform.startswith("win"):
+            if self._send_via_postmessage(button, hold_s):
+                return
+
+        # Path B: pynput global keyboard. Requires Azahar to be focused.
+        if self._kb is None:
+            return
+        key = self._key_for(button)
         self._kb.press(key)
         time.sleep(hold_s)
         self._kb.release(key)
+
+    def _send_via_postmessage(self, button: str, hold_s: float) -> bool:
+        try:
+            from .platform_utils import (
+                find_azahar_hwnd, post_key_to_window, char_to_vk,
+            )
+        except Exception:
+            return False
+        char = getattr(self.binds, button, None)
+        vk = char_to_vk(char) if char else None
+        if vk is None:
+            return False
+        if not self._azahar_hwnd:
+            self._azahar_hwnd = find_azahar_hwnd() or 0
+        if not self._azahar_hwnd:
+            if not self._postmsg_warned:
+                log.warning("PostMessage path: no Azahar window found; "
+                            "falling back to pynput (Azahar must be "
+                            "focused for keys to land).")
+                self._postmsg_warned = True
+            return False
+        ok = post_key_to_window(self._azahar_hwnd, vk, hold_s)
+        if not ok:
+            # hwnd may have gone stale (Azahar restarted); try again
+            # next call.
+            self._azahar_hwnd = 0
+        return ok
 
     def hold(self, button: str):
         key = self._key_for(button)

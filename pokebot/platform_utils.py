@@ -15,6 +15,90 @@ import sys
 log = logging.getLogger(__name__)
 
 
+def find_azahar_hwnd(title_substrings=("Azahar", "Citra")) -> int:
+    """Return Azahar's top-level window handle, or 0 if not found.
+
+    Used by the input driver to PostMessage key events directly to
+    Azahar without needing it to be the foreground window.
+    Windows-only; returns 0 on other platforms.
+    """
+    if not sys.platform.startswith("win"):
+        return 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return 0
+    user32 = ctypes.windll.user32
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype  = ctypes.c_int
+    user32.GetWindowTextW.argtypes  = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype   = ctypes.c_int
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype  = wintypes.BOOL
+
+    found = [0]
+
+    def _cb(hwnd, _l):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        n = user32.GetWindowTextLengthW(hwnd)
+        if n <= 0:
+            return True
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, buf, n + 1)
+        title = buf.value or ""
+        if any(s in title for s in title_substrings) and "pokebot" not in title.lower():
+            found[0] = int(hwnd)
+            return False
+        return True
+
+    EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool,
+                                  wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows(EnumProc(_cb), 0)
+    return found[0]
+
+
+def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:
+    """PostMessage WM_KEYDOWN/WM_KEYUP to a window. Bypasses focus.
+
+    Returns True when both messages were posted, False on non-Windows
+    or when the hwnd is invalid. Not affected by which window the user
+    is currently looking at — keys go straight into Azahar's message
+    queue.
+    """
+    if not hwnd or not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+    except Exception:
+        return False
+    user32 = ctypes.windll.user32
+    WM_KEYDOWN = 0x0100
+    WM_KEYUP   = 0x0101
+    # lParam encoding: bit 0-15 repeat count, 16-23 scan code (0 OK),
+    # 30 prev key state (0=up→down for KEYDOWN, 1 for KEYUP).
+    user32.PostMessageW(hwnd, WM_KEYDOWN, vk_code, 0x00000001)
+    import time as _t
+    _t.sleep(hold_s)
+    user32.PostMessageW(hwnd, WM_KEYUP,   vk_code, 0xC0000001)
+    return True
+
+
+def char_to_vk(ch: str):
+    """Return the Win32 virtual-key code for a single ASCII character.
+
+    Handles A-Z (case insensitive) and 0-9. Returns None for other
+    characters (the input driver falls back to pynput in that case).
+    """
+    if not ch or len(ch) != 1:
+        return None
+    c = ch.upper()
+    if 'A' <= c <= 'Z' or '0' <= c <= '9':
+        return ord(c)
+    return None
+
+
 def focus_azahar(title_substrings=("Azahar", "Citra")) -> bool:
     """Best-effort bring-Azahar-to-front.
 

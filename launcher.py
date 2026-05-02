@@ -136,19 +136,22 @@ class _BotProcess:
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
 
-# Pure-black palette. Panels are barely-grey so cards still read against
-# the background without going full GitHub-dark blue.
-_BG     = "#000000"
-_PANEL  = "#0a0a0a"
-_PANEL2 = "#121212"   # slightly raised cards (e.g. log, status pill)
-_BORDER = "#1f1f1f"
-_TEXT   = "#f1f1f1"
-_MUTED  = "#7a7a7a"
-_ACCENT = "#ee1515"   # Pokéball red — primary brand accent
-_ACCENT2 = "#3aa0ff"  # secondary cool accent for info chips
-_GOOD   = "#38d977"
-_WARN   = "#e2b53f"
-_DANGER = "#ff4757"
+# iOS-leaning dark palette: pure-black background with slightly raised
+# 'cards' in iOS Dark's typical surface gray, plus the brand red as the
+# primary action. Borders are barely-there so cards float instead of
+# looking boxed-in.
+_BG     = "#000000"   # iOS dark background
+_PANEL  = "#0a0a0a"   # 'group' container
+_PANEL2 = "#1c1c1e"   # iOS Dark elevated surface
+_PANEL3 = "#2c2c2e"   # iOS Dark grouped table row
+_BORDER = "#262626"
+_TEXT   = "#ffffff"
+_MUTED  = "#8e8e93"   # iOS secondary label
+_ACCENT = "#ee1515"   # Pokéball red — primary CTA
+_ACCENT2 = "#0a84ff"  # iOS systemBlue
+_GOOD   = "#30d158"   # iOS systemGreen
+_WARN   = "#ffd60a"   # iOS systemYellow
+_DANGER = "#ff453a"   # iOS systemRed
 
 
 def _draw_pokeball(canvas: tk.Canvas, size: int = 32) -> None:
@@ -560,73 +563,99 @@ class _App(tk.Tk):
         self._build_log(right)
 
     def _lbl(self, parent, text):
-        tk.Label(parent, text=text, bg=_PANEL, fg=_MUTED,
+        tk.Label(parent, text=text.upper(), bg=parent.cget("bg"), fg=_MUTED,
                  font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(fill="x", padx=12, pady=(12, 2))
+                 anchor="w").pack(fill="x", padx=4, pady=(0, 6))
 
     def _sep(self, parent):
         tk.Frame(parent, bg=_BORDER, height=1).pack(fill="x", padx=8, pady=4)
 
-    def _build_sidebar(self, p):
-        # ── Azahar live status ──────────────────────────────────────────────
-        self._lbl(p, "AZAHAR STATUS")
-        self._azahar_lbl = tk.Label(p, text="● checking…",
-                                    bg=_PANEL, fg=_MUTED,
-                                    font=("Segoe UI", 10), anchor="w")
-        self._azahar_lbl.pack(fill="x", padx=12, pady=(0, 1))
-        self._game_detect_lbl = tk.Label(p, text="",
-                                         bg=_PANEL, fg=_MUTED,
-                                         font=("Segoe UI", 9), anchor="w",
-                                         wraplength=205, justify="left")
-        self._game_detect_lbl.pack(fill="x", padx=12, pady=(0, 4))
+    def _card(self, parent, title: str | None = None) -> tk.Frame:
+        """An iOS-style grouped card. Returns the inner content frame."""
+        wrap = tk.Frame(parent, bg=_PANEL)
+        wrap.pack(fill="x", padx=12, pady=(0, 14))
+        if title:
+            tk.Label(wrap, text=title.upper(), bg=_PANEL, fg=_MUTED,
+                     font=("Segoe UI", 9, "bold"),
+                     anchor="w").pack(fill="x", padx=4, pady=(0, 6))
+        card = tk.Frame(wrap, bg=_PANEL2, padx=14, pady=12,
+                        highlightthickness=1,
+                        highlightbackground=_BORDER)
+        card.pack(fill="x")
+        return card
 
-        # ── Game (auto-detected from Azahar) ────────────────────────────────
-        self._lbl(p, "GAME")
-        # The game is detected from Azahar's process list; the var still
-        # backs the starter sub-dropdown filtering and CLI args, but the
-        # user no longer picks it manually.
+    def _build_sidebar(self, p):
+        # Wrap sidebar contents in a top-padded frame so cards float.
+        tk.Frame(p, bg=_PANEL, height=14).pack(fill="x")
+
+        # ── Card: Azahar / detected game ────────────────────────────────────
+        status_card = self._card(p, "Status")
+        self._azahar_lbl = tk.Label(status_card, text="● checking…",
+                                    bg=_PANEL2, fg=_MUTED,
+                                    font=("Segoe UI", 11), anchor="w")
+        self._azahar_lbl.pack(fill="x", pady=(0, 4))
         self._game_var = tk.StringVar(value="")
         self._game_display_lbl = tk.Label(
-            p, text="Waiting for Azahar…", bg=_PANEL, fg=_MUTED,
-            font=("Segoe UI", 10, "bold"), anchor="w",
+            status_card, text="Waiting for Azahar…",
+            bg=_PANEL2, fg=_MUTED,
+            font=("Segoe UI", 13, "bold"), anchor="w",
             wraplength=235, justify="left")
-        self._game_display_lbl.pack(fill="x", padx=12, pady=2)
+        self._game_display_lbl.pack(fill="x", pady=(0, 2))
+        self._game_detect_lbl = tk.Label(
+            status_card, text="",
+            bg=_PANEL2, fg=_MUTED,
+            font=("Segoe UI", 9), anchor="w",
+            wraplength=235, justify="left")
+        self._game_detect_lbl.pack(fill="x")
         self._game_var.trace_add("write", self._on_game_change)
 
-        # ── Method ──────────────────────────────────────────────────────────
-        self._lbl(p, "METHOD")
+        # ── Card: Hunt setup (Method / Starter / Target) ────────────────────
+        hunt_card = self._card(p, "Hunt")
+
+        # METHOD
+        tk.Label(hunt_card, text="Method", bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", pady=(0, 4))
         self._method_var = tk.StringVar(value="")
-        self._method_cb = ttk.Combobox(p, textvariable=self._method_var,
+        self._method_cb = ttk.Combobox(hunt_card, textvariable=self._method_var,
                                        values=[],
-                                       state="readonly", width=30,
+                                       state="readonly",
                                        style="Dark.TCombobox")
-        self._method_cb.pack(padx=12, pady=2)
-        # Inline shiny-locked / contextual warning under the dropdown
-        self._method_warn = tk.Label(p, text="", bg=_PANEL, fg=_WARN,
+        self._method_cb.pack(fill="x")
+        self._method_warn = tk.Label(hunt_card, text="",
+                                     bg=_PANEL2, fg=_WARN,
                                      font=("Segoe UI", 9), anchor="w",
                                      wraplength=235, justify="left")
-        self._method_warn.pack(fill="x", padx=12, pady=(2, 0))
+        self._method_warn.pack(fill="x", pady=(2, 0))
         self._method_var.trace_add("write", self._on_method_change)
 
-        # ── Starter sub-dropdown (visible when method=Starters) ─────────────
-        self._starter_frame = tk.Frame(p, bg=_PANEL)
-        self._lbl(self._starter_frame, "STARTER")
+        # STARTER (sub-dropdown, only visible when method=Starters)
+        self._starter_frame = tk.Frame(hunt_card, bg=_PANEL2)
+        tk.Frame(self._starter_frame, bg=_BORDER, height=1).pack(
+            fill="x", pady=(10, 8))
+        tk.Label(self._starter_frame, text="Starter",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", pady=(0, 4))
         self._starter_var = tk.StringVar(value="")
         self._starter_cb = ttk.Combobox(self._starter_frame,
                                         textvariable=self._starter_var,
-                                        values=[],
-                                        state="readonly", width=24,
+                                        values=[], state="readonly",
                                         style="Dark.TCombobox")
-        self._starter_cb.pack(padx=12, pady=2)
+        self._starter_cb.pack(fill="x")
         self._starter_hint = tk.Label(self._starter_frame, text="",
-                                      bg=_PANEL, fg=_MUTED,
-                                      font=("Segoe UI", 9), anchor="w",
+                                      bg=_PANEL2, fg=_MUTED,
+                                      font=("Segoe UI", 9, "italic"),
+                                      anchor="w",
                                       wraplength=235, justify="left")
-        self._starter_hint.pack(fill="x", padx=12, pady=(2, 0))
-        self._refresh_method_options()
+        self._starter_hint.pack(fill="x", pady=(2, 0))
 
-        # ── Target filter (replaces YAML editing for common cases) ──────────
-        self._lbl(p, "TARGET FILTER")
+        # TARGET FILTER (always visible)
+        tk.Frame(hunt_card, bg=_BORDER, height=1).pack(fill="x", pady=(10, 8))
+        tk.Label(hunt_card, text="Target filter",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", pady=(0, 4))
         self._target_choices = [
             "From config.yaml",
             "Any (first match)",
@@ -636,63 +665,77 @@ class _App(tk.Tk):
             "Shiny + 4+ perfect IVs",
         ]
         self._target_var = tk.StringVar(value="From config.yaml")
-        self._target_cb = ttk.Combobox(p, textvariable=self._target_var,
+        self._target_cb = ttk.Combobox(hunt_card, textvariable=self._target_var,
                                        values=self._target_choices,
-                                       state="readonly", width=24,
+                                       state="readonly",
                                        style="Dark.TCombobox")
-        self._target_cb.pack(padx=12, pady=2)
+        self._target_cb.pack(fill="x")
+        self._refresh_method_options()
 
-        # ── Options ──────────────────────────────────────────────────────────
-        self._sep(p)
+        # ── Card: Options ───────────────────────────────────────────────────
+        opt_card = self._card(p, "Options")
         self._dry_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(p, text="Dry run",
+        tk.Checkbutton(opt_card, text="Dry run",
                        variable=self._dry_var,
-                       bg=_PANEL, fg=_TEXT, selectcolor=_PANEL,
-                       activebackground=_PANEL,
-                       font=("Segoe UI", 10)).pack(anchor="w", padx=16,
-                                                    pady=(2, 0))
-        tk.Label(p, bg=_PANEL, fg=_MUTED,
+                       bg=_PANEL2, fg=_TEXT, selectcolor=_PANEL2,
+                       activebackground=_PANEL2,
+                       font=("Segoe UI", 10)).pack(anchor="w")
+        tk.Label(opt_card, bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 8, "italic"),
                  anchor="w", wraplength=235, justify="left",
-                 text="Bot logs the keys it would press but doesn't "
-                      "actually send them to Azahar. Use to verify "
-                      "memory reads work without controlling the game."
-                 ).pack(anchor="w", padx=34, pady=(0, 4))
+                 text="Logs keys without sending them. Useful for "
+                      "checking memory reads without controlling Azahar."
+                 ).pack(anchor="w", padx=20, pady=(0, 8))
 
         self._verb_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(p, text="Verbose logging",
+        tk.Checkbutton(opt_card, text="Verbose logging",
                        variable=self._verb_var,
-                       bg=_PANEL, fg=_TEXT, selectcolor=_PANEL,
-                       activebackground=_PANEL,
-                       font=("Segoe UI", 10)).pack(anchor="w", padx=16,
-                                                    pady=(2, 0))
-        tk.Label(p, bg=_PANEL, fg=_MUTED,
+                       bg=_PANEL2, fg=_TEXT, selectcolor=_PANEL2,
+                       activebackground=_PANEL2,
+                       font=("Segoe UI", 10)).pack(anchor="w")
+        tk.Label(opt_card, bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 8, "italic"),
                  anchor="w", wraplength=235, justify="left",
-                 text="DEBUG-level log output: every RPC call, parse "
-                      "result, and decision. Noisy but invaluable for "
-                      "diagnosing why the bot isn't behaving."
-                 ).pack(anchor="w", padx=34, pady=(0, 4))
+                 text="DEBUG-level output: every RPC call and decision. "
+                      "Noisy but useful for diagnosing issues."
+                 ).pack(anchor="w", padx=20)
 
-        # ── Start / Stop ─────────────────────────────────────────────────────
-        self._sep(p)
-        self._start_btn = self._btn(p, "▶  Start Bot", self._start_bot,
-                                    bg=_ACCENT)
-        self._stop_btn  = self._btn(p, "■  Stop Bot",  self._stop_bot,
-                                    bg=_PANEL2, fg=_MUTED, state="disabled",
-                                    subtle=True)
-
-        # ── Tooling ──────────────────────────────────────────────────────────
-        self._sep(p)
-        self._btn(p, "Open Dashboard in Browser",
-                  self._open_dashboard, bg=_PANEL2, fg=_GOOD, subtle=True)
-        self._btn(p, "⚙  Edit config.yaml",
-                  self._open_config, bg=_PANEL2, fg=_TEXT, subtle=True)
-        # Hidden manual-override scan button; kept so power users can
-        # rerun find_offsets via the existing _run_find_offsets path.
-        # Auto-discovery covers the common case so it's not in the UI.
+        # ── Card: Actions ───────────────────────────────────────────────────
+        act_card = self._card(p)  # no title; just the buttons stacked
+        # Big primary CTA
+        self._start_btn = tk.Button(
+            act_card, text="▶  Start Bot", command=self._start_bot,
+            bg=_ACCENT, fg="white", relief="flat", bd=0,
+            font=("Segoe UI", 11, "bold"), cursor="hand2",
+            activebackground=_ACCENT, activeforeground="white",
+            padx=10, pady=10, highlightthickness=0)
+        self._start_btn.pack(fill="x", pady=(0, 6))
+        self._stop_btn = tk.Button(
+            act_card, text="■  Stop Bot", command=self._stop_bot,
+            bg=_PANEL3, fg=_MUTED, relief="flat", bd=0,
+            font=("Segoe UI", 10), cursor="hand2", state="disabled",
+            activebackground=_PANEL3, activeforeground=_MUTED,
+            padx=10, pady=8, highlightthickness=0)
+        self._stop_btn.pack(fill="x", pady=(0, 10))
+        # Secondary buttons
+        tk.Frame(act_card, bg=_BORDER, height=1).pack(fill="x", pady=(0, 10))
+        tk.Button(act_card, text="Open Dashboard",
+                  command=self._open_dashboard,
+                  bg=_PANEL3, fg=_ACCENT2, relief="flat", bd=0,
+                  font=("Segoe UI", 10), cursor="hand2",
+                  activebackground=_PANEL3, activeforeground=_ACCENT2,
+                  padx=10, pady=8, highlightthickness=0
+                  ).pack(fill="x", pady=(0, 6))
+        tk.Button(act_card, text="Edit config.yaml",
+                  command=self._open_config,
+                  bg=_PANEL3, fg=_TEXT, relief="flat", bd=0,
+                  font=("Segoe UI", 10), cursor="hand2",
+                  activebackground=_PANEL3, activeforeground=_TEXT,
+                  padx=10, pady=8, highlightthickness=0
+                  ).pack(fill="x")
+        # Hidden manual-override scan button (CLI fallback only).
         self._scan_btn = tk.Button(p, command=self._run_find_offsets)
-        self._offset_lbl = tk.Label(p)  # legacy; no longer packed
+        self._offset_lbl = tk.Label(p)
 
     def _btn(self, parent, text, cmd, bg=_ACCENT, fg="white",
              state="normal", subtle=False):
@@ -809,15 +852,20 @@ class _App(tk.Tk):
         return False
 
     def _refresh_starter_options(self):
-        """Repopulate the starter sub-dropdown for the current game."""
+        """Repopulate the starter sub-dropdown for the current game.
+
+        Display names are properly capitalized ('Chespin', 'Fennekin'),
+        but the lowercase form is what flows through to the CLI flag.
+        """
         try:
             from pokebot.games import starters_for
             names = list(starters_for(self._game_var.get()).keys())
         except Exception:
             names = []
-        self._starter_cb.configure(values=names)
-        if self._starter_var.get() not in names:
-            self._starter_var.set(names[0] if names else "")
+        display = [n.capitalize() for n in names]
+        self._starter_cb.configure(values=display)
+        if self._starter_var.get() not in display:
+            self._starter_var.set(display[0] if display else "")
 
     def _on_method_change(self, *_):
         m = self._selected_method()
@@ -948,7 +996,8 @@ class _App(tk.Tk):
                     "Pick a starter",
                     "Select which starter to hunt from the dropdown.")
                 return
-            chosen_starter = picked
+            # Dropdown shows 'Chespin' but the bot expects 'chespin'.
+            chosen_starter = picked.lower()
         else:
             chosen_starter = method.starter
         args = ["--mode", method.mode]
@@ -1122,8 +1171,8 @@ class _App(tk.Tk):
             self._dot.config(fg=_GOOD)
             self._status_lbl.config(text="running", fg=_GOOD)
             self._start_btn.config(state="disabled",
-                                   bg=_PANEL2, fg=_MUTED,
-                                   activebackground=_PANEL2)
+                                   bg=_PANEL3, fg=_MUTED,
+                                   activebackground=_PANEL3)
             self._stop_btn.config(state="normal",
                                   bg=_DANGER, fg="white",
                                   activebackground=_DANGER)
@@ -1134,8 +1183,8 @@ class _App(tk.Tk):
                                    bg=_ACCENT, fg="white",
                                    activebackground=_ACCENT)
             self._stop_btn.config(state="disabled",
-                                  bg=_PANEL2, fg=_MUTED,
-                                  activebackground=_PANEL2)
+                                  bg=_PANEL3, fg=_MUTED,
+                                  activebackground=_PANEL3)
 
     def _log(self, text: str, tag: str = ""):
         self._log_box.config(state="normal")
