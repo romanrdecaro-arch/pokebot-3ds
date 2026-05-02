@@ -54,10 +54,12 @@ soft_reset:
                         # Bot also presses DpadLeft (Chespin) or DpadRight
                         # (Froakie) on every iteration to self-correct the
                         # menu cursor, so overshooting is safe.
-  xy_post_taps: 30      # Hard upper bound on receive-phase A presses.
-                        # When party_base is known, the bot polls the slot
-                        # and stops as soon as the starter is in the party,
-                        # so the actual count is usually much lower.
+  xy_post_taps: 30      # Hard upper bound on receive-phase B presses.
+                        # B is used (not A) so the 'Want to nickname?'
+                        # prompt is auto-answered No instead of opening
+                        # nickname entry. When party_base is known, the
+                        # bot polls slot 0 and stops as soon as the
+                        # starter is in the party.
   # Optional: lock the bot to a specific starter for the current game.
   # Wrong-species results soft-reset without evaluating the target.
   # Names per game:

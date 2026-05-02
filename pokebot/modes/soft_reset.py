@@ -147,15 +147,19 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
         ctx.input.tap("A", hold_s=0.05)
         time.sleep(0.6)
 
-    # Step 4 — receive phase. Adaptive when we have an offset to poll.
+    # Step 4 — receive phase. Mash B (not A) until the starter is in
+    # the party. B advances dialog like A but is safe on the
+    # 'Want to nickname?' Yes/No prompt — it cancels with 'No' instead
+    # of opening nickname entry, which would trap the bot mid-hunt.
     have_party_addr = bool(ctx.game.offsets.party_base)
     if have_party_addr:
-        log.info(f"X/Y: receiving — polling party slot 0 (cap {post_taps} A's)")
+        log.info(f"X/Y: receiving — mashing B until party slot 0 fills "
+                 f"(cap {post_taps} presses)")
         addr = ctx.game.offsets.party_base
         for i in range(post_taps):
             if ctx.should_stop():
                 return False
-            ctx.input.tap("A", hold_s=0.05)
+            ctx.input.tap("B", hold_s=0.05)
             time.sleep(gap)
             # Poll every 2 presses to keep RPC traffic modest.
             if i % 2 != 0:
@@ -164,18 +168,18 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
                 raw = ctx.rpc.read(addr, 260)
                 pkm = parse_pkm(decrypt_pkm(raw))
                 if pkm.checksum_valid and pkm.species:
-                    log.info(f"X/Y: starter received after {i+1} A's "
+                    log.info(f"X/Y: starter in party after {i+1} B's "
                              f"(species #{pkm.species})")
                     return True
             except Exception:
                 pass
     else:
-        log.info(f"X/Y: receiving — first run, mashing A {post_taps}× "
+        log.info(f"X/Y: receiving — first run, mashing B {post_taps}× "
                  "(party_base will be discovered after this)")
         for _ in range(post_taps):
             if ctx.should_stop():
                 return False
-            ctx.input.tap("A", hold_s=0.05)
+            ctx.input.tap("B", hold_s=0.05)
             time.sleep(gap)
     return True
 
