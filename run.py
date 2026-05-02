@@ -63,6 +63,21 @@ except ImportError:
         return out
 
 
+_TARGET_PRESETS = {
+    # "any" = match the first thing we see (single empty rule = no constraints).
+    "any":            {"mode": "all",  "rules": [{}]},
+    "shiny":          {"mode": "all",  "rules": [{"shiny": True}]},
+    "perfect6":       {"mode": "all",  "rules": [{"perfect_iv_count_min": 6}]},
+    "perfect5":       {"mode": "all",  "rules": [{"perfect_iv_count_min": 5}]},
+    "shiny+perfect4": {"mode": "all",
+                       "rules": [{"shiny": True, "perfect_iv_count_min": 4}]},
+}
+
+
+def _target_preset(name: str) -> dict:
+    return _TARGET_PRESETS[name]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="pokebot-3ds")
     ap.add_argument("--config", default="config.yaml",
@@ -76,6 +91,10 @@ def main(argv=None):
     ap.add_argument("--starter", default=None,
                     help="starter to hunt in soft_reset mode "
                          "(e.g. chespin, fennekin, froakie)")
+    ap.add_argument("--target", default=None,
+                    choices=["any", "shiny", "perfect6", "perfect5",
+                             "shiny+perfect4"],
+                    help="override target filter (else use config.yaml)")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args(argv)
 
@@ -96,6 +115,7 @@ def main(argv=None):
     if args.game:     config["game"] = args.game
     if args.dry_run:  config.setdefault("input", {})["dry_run"] = True
     if args.starter:  config.setdefault("soft_reset", {})["starter"] = args.starter
+    if args.target:   config["target"] = _target_preset(args.target)
 
     # delayed import so --help works without dependencies
     from pokebot.bot import Bot

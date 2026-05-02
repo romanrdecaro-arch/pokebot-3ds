@@ -136,15 +136,42 @@ class _BotProcess:
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
 
-_BG     = "#0d1117"
-_PANEL  = "#161b22"
-_BORDER = "#30363d"
-_TEXT   = "#c9d1d9"
-_MUTED  = "#8b949e"
-_ACCENT = "#58a6ff"
-_GOOD   = "#3fb950"
-_WARN   = "#d29922"
-_DANGER = "#f85149"
+# Pure-black palette. Panels are barely-grey so cards still read against
+# the background without going full GitHub-dark blue.
+_BG     = "#000000"
+_PANEL  = "#0a0a0a"
+_PANEL2 = "#121212"   # slightly raised cards (e.g. log, status pill)
+_BORDER = "#1f1f1f"
+_TEXT   = "#f1f1f1"
+_MUTED  = "#7a7a7a"
+_ACCENT = "#ee1515"   # Pokéball red — primary brand accent
+_ACCENT2 = "#3aa0ff"  # secondary cool accent for info chips
+_GOOD   = "#38d977"
+_WARN   = "#e2b53f"
+_DANGER = "#ff4757"
+
+
+def _draw_pokeball(canvas: tk.Canvas, size: int = 32) -> None:
+    """Render a Pokéball glyph on a square Tk canvas."""
+    pad = 2
+    a, b = pad, size - pad
+    mid_y_top    = (size // 2) - 2
+    mid_y_bottom = (size // 2) + 2
+    # Top red half + bottom white half. We use create_arc so each half
+    # gets the proper rounded shape.
+    canvas.create_arc(a, a, b, b, start=0,   extent=180,
+                      fill=_ACCENT, outline="#0d0d0d", width=2)
+    canvas.create_arc(a, a, b, b, start=180, extent=180,
+                      fill="#f4f4f4", outline="#0d0d0d", width=2)
+    # Equator band (covers the seam between the two halves).
+    canvas.create_rectangle(a + 1, mid_y_top, b - 1, mid_y_bottom,
+                            fill="#0d0d0d", outline="")
+    # Center button: outer black, inner white.
+    cx, cy = size // 2, size // 2
+    canvas.create_oval(cx - 5, cy - 5, cx + 5, cy + 5,
+                       fill="#0d0d0d", outline="")
+    canvas.create_oval(cx - 3, cy - 3, cx + 3, cy + 3,
+                       fill="#f4f4f4", outline="")
 
 
 class _App(tk.Tk):
@@ -152,9 +179,14 @@ class _App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("pokebot-3ds")
-        self.geometry("960x620")
-        self.minsize(720, 440)
+        self.geometry("1000x660")
+        self.minsize(780, 480)
         self.configure(bg=_BG)
+        try:
+            ttk.Style().theme_use("clam")
+        except Exception:
+            pass
+        self._tweak_ttk_theme()
 
         self._cfg = _load_config()
         self._bot = _BotProcess(self._on_bot_line, self._on_bot_exit)
@@ -174,29 +206,67 @@ class _App(tk.Tk):
 
     # ---- Layout -----------------------------------------------------------
 
+    def _tweak_ttk_theme(self):
+        """Restyle ttk Combobox to fit the dark palette."""
+        s = ttk.Style()
+        s.configure("Dark.TCombobox",
+                    fieldbackground=_PANEL2, background=_PANEL2,
+                    foreground=_TEXT, arrowcolor=_TEXT,
+                    bordercolor=_BORDER, lightcolor=_BORDER,
+                    darkcolor=_BORDER, selectbackground=_PANEL2,
+                    selectforeground=_TEXT, padding=4)
+        s.map("Dark.TCombobox",
+              fieldbackground=[("readonly", _PANEL2)],
+              foreground=[("readonly", _TEXT)],
+              selectbackground=[("readonly", _PANEL2)],
+              selectforeground=[("readonly", _TEXT)])
+        # Combobox dropdown listbox uses option-db, not Style.
+        self.option_add("*TCombobox*Listbox.background", _PANEL2)
+        self.option_add("*TCombobox*Listbox.foreground", _TEXT)
+        self.option_add("*TCombobox*Listbox.selectBackground", _ACCENT)
+        self.option_add("*TCombobox*Listbox.selectForeground", "white")
+        self.option_add("*TCombobox*Listbox.borderWidth", 0)
+
     def _build(self):
         # ── Header ──────────────────────────────────────────────────────────
-        hdr = tk.Frame(self, bg=_PANEL, padx=16, pady=10)
+        hdr = tk.Frame(self, bg=_PANEL, padx=18, pady=12)
         hdr.pack(fill="x")
+        # Pokéball logo
+        logo = tk.Canvas(hdr, width=34, height=34,
+                         bg=_PANEL, highlightthickness=0)
+        logo.pack(side="left", padx=(0, 12))
+        _draw_pokeball(logo, 34)
+        # Wordmark
         tk.Label(hdr, text="pokebot-3ds", bg=_PANEL, fg=_TEXT,
-                 font=("Segoe UI", 15, "bold")).pack(side="left")
-        self._dot = tk.Label(hdr, text="●", bg=_PANEL, fg=_MUTED,
-                             font=("Segoe UI", 11))
-        self._dot.pack(side="left", padx=(14, 3))
-        self._status_lbl = tk.Label(hdr, text="stopped", bg=_PANEL, fg=_MUTED,
-                                    font=("Segoe UI", 11))
-        self._status_lbl.pack(side="left")
+                 font=("Segoe UI", 16, "bold")).pack(side="left")
+        tk.Label(hdr, text="3DS Gen 6/7 automation",
+                 bg=_PANEL, fg=_MUTED,
+                 font=("Segoe UI", 9)).pack(side="left", padx=(10, 0), pady=(6, 0))
+        # Right-aligned: bot run status pill
         tk.Frame(hdr, bg=_PANEL).pack(side="left", fill="x", expand=True)
+        pill = tk.Frame(hdr, bg=_PANEL2, padx=10, pady=4)
+        pill.pack(side="right", padx=(8, 0))
+        self._dot = tk.Label(pill, text="●", bg=_PANEL2, fg=_MUTED,
+                             font=("Segoe UI", 11))
+        self._dot.pack(side="left", padx=(0, 4))
+        self._status_lbl = tk.Label(pill, text="stopped",
+                                    bg=_PANEL2, fg=_MUTED,
+                                    font=("Segoe UI", 10, "bold"))
+        self._status_lbl.pack(side="left")
         tk.Label(hdr,
                  text=f"Python {sys.version.split()[0]}",
-                 bg=_PANEL, fg=_MUTED, font=("Segoe UI", 9)).pack(side="right")
+                 bg=_PANEL, fg=_MUTED, font=("Segoe UI", 9)).pack(side="right",
+                                                                  padx=(0, 12))
+
+        # Thin divider under the header
+        tk.Frame(self, bg=_BORDER, height=1).pack(fill="x")
 
         # ── Body: sidebar + log ─────────────────────────────────────────────
         body = tk.Frame(self, bg=_BG)
-        body.pack(fill="both", expand=True, padx=8, pady=8)
+        body.pack(fill="both", expand=True, padx=10, pady=10)
 
-        side = tk.Frame(body, bg=_PANEL, width=230)
-        side.pack(side="left", fill="y", padx=(0, 8))
+        side = tk.Frame(body, bg=_PANEL, width=260)
+        side.pack(side="left", fill="y", padx=(0, 10))
         side.pack_propagate(False)
         self._build_sidebar(side)
 
@@ -235,7 +305,8 @@ class _App(tk.Tk):
         default_game = self._cfg.get("game", keys[0] if keys else "")
         self._game_var = tk.StringVar(value=default_game)
         self._game_cb = ttk.Combobox(p, textvariable=self._game_var,
-                                     values=keys, state="readonly", width=24)
+                                     values=keys, state="readonly", width=24,
+                                     style="Dark.TCombobox")
         self._game_cb.pack(padx=12, pady=2)
         self._game_var.trace_add("write", self._on_game_change)
 
@@ -257,10 +328,28 @@ class _App(tk.Tk):
         self._starter_cb = ttk.Combobox(self._starter_frame,
                                         textvariable=self._starter_var,
                                         values=["(any)"],
-                                        state="readonly", width=24)
+                                        state="readonly", width=24,
+                                        style="Dark.TCombobox")
         self._starter_cb.pack(padx=12, pady=2)
         self._refresh_starter_options()
         self._refresh_starter_visibility()
+
+        # ── Target filter (replaces YAML editing for common cases) ──────────
+        self._lbl(p, "TARGET FILTER")
+        self._target_choices = [
+            "From config.yaml",
+            "Any (first match)",
+            "Shiny only",
+            "Perfect IVs (6×31)",
+            "5+ perfect IVs",
+            "Shiny + 4+ perfect IVs",
+        ]
+        self._target_var = tk.StringVar(value="From config.yaml")
+        self._target_cb = ttk.Combobox(p, textvariable=self._target_var,
+                                       values=self._target_choices,
+                                       state="readonly", width=24,
+                                       style="Dark.TCombobox")
+        self._target_cb.pack(padx=12, pady=2)
 
         # ── Options ──────────────────────────────────────────────────────────
         self._sep(p)
@@ -283,7 +372,8 @@ class _App(tk.Tk):
         self._start_btn = self._btn(p, "▶  Start Bot", self._start_bot,
                                     bg=_ACCENT)
         self._stop_btn  = self._btn(p, "■  Stop Bot",  self._stop_bot,
-                                    bg=_BORDER, fg=_MUTED, state="disabled")
+                                    bg=_PANEL2, fg=_MUTED, state="disabled",
+                                    subtle=True)
 
         # ── Dashboard ────────────────────────────────────────────────────────
         self._sep(p)
@@ -293,11 +383,11 @@ class _App(tk.Tk):
         # ── Tooling ──────────────────────────────────────────────────────────
         self._sep(p)
         self._lbl(p, "TOOLS")
-        self._scan_btn = self._btn(p, "🔍 Find Offsets (scan RAM)",
+        self._scan_btn = self._btn(p, "🔍  Find Offsets (scan RAM)",
                                    self._run_find_offsets,
-                                   bg=_PANEL, fg=_ACCENT)
+                                   bg=_PANEL2, fg=_ACCENT2, subtle=True)
         self._btn(p, "⚙  Edit config.yaml",
-                  self._open_config, bg=_PANEL, fg=_TEXT)
+                  self._open_config, bg=_PANEL2, fg=_TEXT, subtle=True)
 
         # ── Offset status ────────────────────────────────────────────────────
         self._sep(p)
@@ -307,12 +397,16 @@ class _App(tk.Tk):
         self._offset_lbl.pack(fill="x", padx=12, pady=4)
         self._refresh_offset_status()
 
-    def _btn(self, parent, text, cmd, bg=_ACCENT, fg="white", state="normal"):
+    def _btn(self, parent, text, cmd, bg=_ACCENT, fg="white",
+             state="normal", subtle=False):
         b = tk.Button(parent, text=text, command=cmd,
                       bg=bg, fg=fg, relief="flat",
-                      font=("Segoe UI", 10), cursor="hand2",
-                      padx=8, pady=5, state=state)
-        b.pack(fill="x", padx=12, pady=2)
+                      font=("Segoe UI", 10, "bold" if not subtle else "normal"),
+                      cursor="hand2",
+                      activebackground=bg, activeforeground=fg,
+                      padx=10, pady=7, bd=0, state=state,
+                      highlightthickness=0)
+        b.pack(fill="x", padx=12, pady=3)
         return b
 
     def _build_log(self, parent):
@@ -447,6 +541,15 @@ class _App(tk.Tk):
 
     # ---- Actions -----------------------------------------------------------
 
+    _TARGET_FILTER_FLAG = {
+        "From config.yaml":         None,
+        "Any (first match)":        "any",
+        "Shiny only":               "shiny",
+        "Perfect IVs (6×31)":       "perfect6",
+        "5+ perfect IVs":           "perfect5",
+        "Shiny + 4+ perfect IVs":   "shiny+perfect4",
+    }
+
     def _start_bot(self):
         if self._bot.running:
             return
@@ -458,6 +561,9 @@ class _App(tk.Tk):
             starter = self._starter_var.get()
             if starter and starter != "(any)":
                 args += ["--starter", starter]
+        flag = self._TARGET_FILTER_FLAG.get(self._target_var.get())
+        if flag:
+            args += ["--target", flag]
         if self._dry_var.get():
             args += ["--dry-run"]
         if self._verb_var.get():
@@ -552,13 +658,21 @@ class _App(tk.Tk):
         if running:
             self._dot.config(fg=_GOOD)
             self._status_lbl.config(text="running", fg=_GOOD)
-            self._start_btn.config(state="disabled", bg=_BORDER, fg=_MUTED)
-            self._stop_btn.config(state="normal", bg=_DANGER, fg="white")
+            self._start_btn.config(state="disabled",
+                                   bg=_PANEL2, fg=_MUTED,
+                                   activebackground=_PANEL2)
+            self._stop_btn.config(state="normal",
+                                  bg=_DANGER, fg="white",
+                                  activebackground=_DANGER)
         else:
             self._dot.config(fg=_MUTED)
             self._status_lbl.config(text="stopped", fg=_MUTED)
-            self._start_btn.config(state="normal", bg=_ACCENT, fg="white")
-            self._stop_btn.config(state="disabled", bg=_BORDER, fg=_MUTED)
+            self._start_btn.config(state="normal",
+                                   bg=_ACCENT, fg="white",
+                                   activebackground=_ACCENT)
+            self._stop_btn.config(state="disabled",
+                                  bg=_PANEL2, fg=_MUTED,
+                                  activebackground=_PANEL2)
 
     def _log(self, text: str, tag: str = ""):
         self._log_box.config(state="normal")
