@@ -169,6 +169,30 @@ With either of those on, the emulator deadlocks before booting.
 That's encounter mode, not soft-reset mode — make sure the **METHOD**
 dropdown says *Starters*, not *Wild encounter*.
 
+## Optional: find the dialog flag
+
+The default soft-reset uses a fixed A-press count to clear Tierno's
+dialogue. That's fine on Fast text speed but unreliable on Medium /
+Slow. For surgical timing, find the in-memory **dialog flag** — a
+byte that flips to non-zero whenever any text box / menu / cutscene
+is on screen — and the bot can wait for it to clear instead of
+guessing.
+
+How to discover the address:
+
+```
+python -m pokebot.find_dialog_flag --save-config config.yaml
+```
+
+It walks you through 4 snapshots: stand on the overworld, then talk
+to an NPC, then dismiss it, then talk to another. The script diffs
+the snapshots and reports a ranked list of candidate addresses. The
+top pick is auto-saved to `config.yaml` under `offsets.dialog_flag`.
+
+Once the address is set, the bot uses it for adaptive exit detection
+on the receive phase (waits for the flag to drop back to 0 instead
+of mashing a fixed number of B presses).
+
 ## Resuming after a crash
 
 Saved your hunt count somewhere visible? The bot doesn't persist

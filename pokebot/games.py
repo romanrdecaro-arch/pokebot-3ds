@@ -52,6 +52,11 @@ class GameOffsets:
     in_battle_flag: int = 0   # u8/u32 that flips when a battle starts
     battle_state:   int = 0   # broader state machine (menu, attack, etc.)
 
+    # UI state — flips when a dialog box / menu / interruptive prompt
+    # is on screen (and back to 0 when the player can move). Found via
+    # `python -m pokebot.find_dialog_flag`.
+    dialog_flag:    int = 0
+
     # Overworld
     map_id:         int = 0
     player_x:       int = 0
