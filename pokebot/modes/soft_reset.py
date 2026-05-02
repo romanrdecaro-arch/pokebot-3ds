@@ -87,60 +87,92 @@ def _discover_offsets_inline(ctx) -> bool:
 
 def _xy_starter_sequence(ctx, starter: str, gap: float,
                          pre_taps: int, post_taps: int) -> bool:
-    """Pokémon X / Y starter selection — self-correcting + adaptive.
+    """Pokémon X / Y starter selection — fully adaptive.
 
-    The player must save in Aquacorde Town in the position pictured
-    in TUTORIAL.md (south of the table).
+    Two memory-based detectors replace the old "guess the count" timing:
 
-    Two adaptive mechanisms keep this robust against text-speed and
-    timing drift:
+      1. **Memory-stability detector for the starter menu.** While
+         dialogue is rendering, the game's RAM churns constantly
+         (text buffers, sprite frames, animations). The moment
+         dialogue ends and the cursor sits idle on the menu, that
+         memory goes still. We sample a 4KB chunk of FCRAM between
+         A presses and stop pressing as soon as the sample is
+         identical for ``stable_threshold`` consecutive reads.
 
-      1. **Self-correcting menu navigation.** During the pre-menu
-         phase we press DpadLeft+A (Chespin) or DpadRight+A
-         (Froakie) on every iteration. The d-pad press is a no-op
-         on a dialogue screen, but the moment the starter selection
-         menu opens it pins the cursor to the chosen Pokéball. Even
-         if ``pre_taps`` overshoots by several presses, the cursor
-         can't drift onto the wrong starter and confirm it — which
-         is the bug that made Chespin pick Fennekin in early runs.
+      2. **Party-slot poll for the receive phase.** Once the cursor
+         is confirmed and we're mashing through the receive dialog,
+         we poll party slot 0 (when ``party_base`` is known) and
+         exit as soon as a valid PK7 record appears.
 
-      2. **Memory-polled receive phase.** When ``party_base`` is
-         known, the post-confirm phase A-mashes only until slot 0
-         shows a valid PK7 record. ``post_taps`` becomes a hard
-         upper bound rather than the actual count. On the very
-         first run (party_base not yet discovered) it falls back to
-         a fixed mash of ``post_taps`` and the auto-discovery scan
-         locates party_base afterwards.
+    The pre/post tap counts in config.yaml become hard upper bounds
+    instead of exact targets — the bot will normally exit each
+    phase well before reaching them.
 
     Returns True when complete; False if a stop was requested mid-run.
     """
     from ..parser import decrypt_pkm, parse_pkm
 
     starter = (starter or "").lower()
-    nav = {"chespin": "DpadLeft", "froakie": "DpadRight"}.get(starter)
 
-    # Step 1 — face the table.
+    # Step 1 — face the table (single press only; further d-pad presses
+    # would walk the player away if dialogue hasn't started yet).
     ctx.input.tap("DpadLeft", hold_s=0.1)
-    time.sleep(0.35)
+    time.sleep(0.4)
 
-    # Step 2 — open the menu while pinning the cursor to the chosen
-    # Pokéball. Each iteration: optional d-pad press, then A. The
-    # d-pad is a no-op until the menu actually opens, so this is safe
-    # to repeat with any pre_taps count.
-    log.info(f"X/Y: {pre_taps} iterations of "
-             f"{(nav + '+A') if nav else 'A'} to open + select starter")
-    for _ in range(pre_taps):
+    # Step 2 — A-mash until memory goes still (== menu is open and
+    # waiting for input).
+    SAMPLE_ADDR = 0x33000000   # FCRAM ext-heap in Gen 6/7
+    SAMPLE_SIZE = 4096
+    STABLE_THRESHOLD = 3       # consecutive identical reads = "still"
+    last_sample = None
+    stable_runs = 0
+    menu_detected_at = -1
+
+    log.info(f"X/Y: A-mashing with memory-stability detection "
+             f"(cap {pre_taps * 3} presses)")
+    for i in range(pre_taps * 3):
         if ctx.should_stop():
             return False
-        if nav:
-            ctx.input.tap(nav, hold_s=0.08)
-            time.sleep(0.05)
         ctx.input.tap("A", hold_s=0.05)
         time.sleep(gap)
+        try:
+            sample = ctx.rpc.read(SAMPLE_ADDR, SAMPLE_SIZE)
+        except Exception:
+            sample = None
+        if sample is not None and sample == last_sample:
+            stable_runs += 1
+            if stable_runs >= STABLE_THRESHOLD:
+                menu_detected_at = i + 1
+                break
+        else:
+            stable_runs = 0
+        last_sample = sample
 
-    # Step 3 — confirm twice (open Pokéball + "Yes, take this one").
-    # If the LEFT/RIGHT-A loop above already confirmed, these extra
-    # A's just advance the receive dialogue, which is fine.
+    if menu_detected_at > 0:
+        log.info(f"X/Y: menu open detected after {menu_detected_at} A presses "
+                 f"({stable_runs}× stable {SAMPLE_SIZE}B sample)")
+    else:
+        log.warning("X/Y: didn't detect a stable menu state — proceeding "
+                    "with navigation anyway and relying on species check "
+                    "to catch a wrong-starter result.")
+
+    # Step 3 — cursor navigation now that we know the menu is up.
+    if starter == "chespin":
+        log.info("X/Y: cursor → Chespin (2× DpadLeft)")
+        for _ in range(2):
+            if ctx.should_stop(): return False
+            ctx.input.tap("DpadLeft", hold_s=0.1)
+            time.sleep(0.25)
+    elif starter == "froakie":
+        log.info("X/Y: cursor → Froakie (2× DpadRight)")
+        for _ in range(2):
+            if ctx.should_stop(): return False
+            ctx.input.tap("DpadRight", hold_s=0.1)
+            time.sleep(0.25)
+    else:
+        log.info("X/Y: cursor stays on Fennekin (no movement)")
+
+    # Step 4 — confirm twice (open Pokéball + 'Yes, take this one').
     for _ in range(2):
         if ctx.should_stop():
             return False
