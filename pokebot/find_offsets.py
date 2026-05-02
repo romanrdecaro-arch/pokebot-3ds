@@ -32,12 +32,115 @@ import argparse
 import logging
 import sys
 import time
+from pathlib import Path
 
 from .citra_rpc import CitraRPC, wait_for_emulator
 from .games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS
 from .parser import decrypt_pkm, parse_pkm
 
 log = logging.getLogger(__name__)
+
+
+def derive_offsets_from_clusters(clusters: list[dict]) -> dict:
+    """Pick the most likely party / foe addresses out of clustered hits.
+
+    Returns a dict with any of ``party_base``, ``party_stride``, ``foe_base``
+    that we could identify with high confidence.
+    """
+    out: dict = {}
+    foe_candidates = []
+    for c in clusters:
+        n = len(c["members"])
+        if 5 <= n <= 7 and c["stride"] and 480 <= c["stride"] <= 500:
+            # Prefer the densest plausible-stride cluster as the party.
+            if "party_base" not in out or n > out.get("_party_n", 0):
+                out["party_base"]   = c["start"]
+                out["party_stride"] = c["stride"]
+                out["_party_n"]     = n
+        elif n == 1 and c["stride"] is None:
+            foe_candidates.append(c["members"][0][0])
+    out.pop("_party_n", None)
+    # If exactly one loner exists it's almost certainly the active foe slot.
+    # When the scan happens on the overworld there's usually no foe at all,
+    # so we stay quiet rather than guessing wrong.
+    if len(foe_candidates) == 1:
+        out["foe_base"] = foe_candidates[0]
+    return out
+
+
+def write_offsets_to_config(cfg_path: Path, offsets: dict) -> list[str]:
+    """Write the discovered offsets in-place into config.yaml.
+
+    Preserves comments, ordering, and indentation by doing a line-aware
+    rewrite rather than going through PyYAML. Only keys already present
+    under the ``offsets:`` block (or any top-level offset entry) are
+    updated; new keys are appended at the end of the block.
+    Returns the list of keys actually changed.
+    """
+    if not cfg_path.exists():
+        return []
+    text = cfg_path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+
+    pending = dict(offsets)
+    written: list[str] = []
+    in_offsets_block = False
+    block_indent: str | None = None
+    out: list[str] = []
+    last_block_line_idx: int | None = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Detect the "offsets:" block header
+        if stripped == "offsets:":
+            in_offsets_block = True
+            block_indent = None
+            out.append(line)
+            continue
+        # Once in the block, infer the child indent from the first non-empty
+        # non-comment line; bail out of the block on a less-indented line.
+        if in_offsets_block:
+            if stripped == "" or stripped.startswith("#"):
+                out.append(line)
+                continue
+            indent = line[: len(line) - len(line.lstrip())]
+            if block_indent is None:
+                block_indent = indent
+            if not indent.startswith(block_indent) or len(indent) < len(block_indent):
+                # Block ended.
+                in_offsets_block = False
+                # Append any pending unknown keys before this line.
+                for k, v in list(pending.items()):
+                    out.append(f"{block_indent}{k}: {v:#010x}\n")
+                    written.append(k)
+                    pending.pop(k)
+                out.append(line)
+                continue
+            # Replace value if this line's key is one we want to update.
+            key = stripped.split(":", 1)[0].strip()
+            if key in pending:
+                v = pending.pop(key)
+                out.append(f"{block_indent}{key}: {v:#010x}\n")
+                written.append(key)
+            else:
+                out.append(line)
+            last_block_line_idx = len(out) - 1
+            continue
+        out.append(line)
+
+    # If the file ended while still inside the block, flush remaining keys.
+    if in_offsets_block and pending:
+        if block_indent is None:
+            block_indent = "  "
+        # Make sure the last block line ended with a newline.
+        if out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        for k, v in pending.items():
+            out.append(f"{block_indent}{k}: {v:#010x}\n")
+            written.append(k)
+
+    cfg_path.write_text("".join(out), encoding="utf-8")
+    return written
 
 
 def is_likely_pk7(raw: bytes) -> tuple[bool, dict | None]:
@@ -137,6 +240,9 @@ def main(argv=None):
     ap.add_argument("--step",  type=int, default=4)
     ap.add_argument("--full-heap", action="store_true",
                     help="scan whole 3DS heap (slow)")
+    ap.add_argument("--save-config", default=None,
+                    help="path to config.yaml; discovered offsets are "
+                         "written there automatically when set")
     args = ap.parse_args(argv)
 
     if args.full_heap:
@@ -180,6 +286,30 @@ def main(argv=None):
         elif n >= 25:
             log.info(f"  PC BOX area: starts at {c['start']:#010x} "
                      f"({n} slots, stride {c['stride']})")
+
+    discovered = derive_offsets_from_clusters(clusters)
+    if not discovered:
+        log.info("\nCouldn't auto-identify offsets. Try walking around in "
+                 "the overworld to refresh the party block, then re-scan.")
+        return
+
+    if args.save_config:
+        cfg_path = Path(args.save_config)
+        try:
+            written = write_offsets_to_config(cfg_path, discovered)
+            if written:
+                log.info(f"\nWROTE_OFFSETS: {cfg_path} updated keys=[{','.join(written)}]")
+                for k in written:
+                    log.info(f"  {k} = {discovered[k]:#010x}")
+            else:
+                log.info(f"\nNothing changed in {cfg_path}.")
+        except Exception as e:
+            log.error(f"Failed to write offsets to {cfg_path}: {e}")
+    else:
+        log.info("\nDiscovered offsets (paste under `offsets:` in config.yaml,"
+                 " or rerun with --save-config to do it automatically):")
+        for k, v in discovered.items():
+            log.info(f"  {k}: {v:#010x}")
 
 
 if __name__ == "__main__":

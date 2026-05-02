@@ -975,10 +975,10 @@ class _App(tk.Tk):
             messagebox.showwarning(
                 "Offsets not configured",
                 "No party_base offset is set for this game.\n\n"
-                "Click 'Find Offsets (scan RAM)' in the sidebar with "
-                "the game on the overworld, then paste the resulting "
-                "addresses into config.yaml under 'offsets:' before "
-                "starting the bot.")
+                "Click '🔍 Find Offsets (scan RAM)' in the sidebar with "
+                "your party loaded and the game on the overworld. The "
+                "scan saves the discovered addresses to config.yaml "
+                "automatically — no manual editing required.")
             return
         # Validate starter sub-selection when method requires one.
         if method.label == "Starters":
@@ -1056,20 +1056,45 @@ class _App(tk.Tk):
                   "accent")
         self._log("Keep Azahar open with your game on the overworld.", "muted")
         self._scan_btn.config(state="disabled")
+        cfg_path = ROOT / "config.yaml"
+        # Pass --save-config so find_offsets writes the discovered values
+        # straight into config.yaml. The user never has to edit YAML.
         self._offset_proc = subprocess.Popen(
-            [sys.executable, "-m", "pokebot.find_offsets"],
+            [sys.executable, "-m", "pokebot.find_offsets",
+             "--save-config", str(cfg_path)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, cwd=str(ROOT),
         )
+        wrote_offsets = {"ok": False, "summary": ""}
         def _drain():
             assert self._offset_proc and self._offset_proc.stdout
             for line in self._offset_proc.stdout:
-                self._log_thread(line.rstrip(), "muted")
+                line = line.rstrip()
+                # find_offsets emits "WROTE_OFFSETS: ..." on success.
+                if "WROTE_OFFSETS:" in line:
+                    wrote_offsets["ok"] = True
+                    wrote_offsets["summary"] = line.split("WROTE_OFFSETS:", 1)[1].strip()
+                    self._log_thread(line, "good")
+                else:
+                    self._log_thread(line, "muted")
             self._offset_proc.wait()
-            self._log_thread(
-                "Scan complete. Copy the party_base/foe_base addresses above "
-                "into the offsets: section of config.yaml, then restart the bot.",
-                "good")
+            if wrote_offsets["ok"]:
+                self._log_thread(
+                    "Offsets saved to config.yaml automatically. "
+                    "You can press Start Bot now.", "good")
+                # Force the launcher to re-read the config so the
+                # offset preflight check passes immediately.
+                try:
+                    self._cfg = _load_config()
+                except Exception:
+                    pass
+                self.after(0, self._refresh_offset_status)
+            else:
+                self._log_thread(
+                    "Scan finished but couldn't auto-identify offsets. "
+                    "Make sure your party has at least one Pokémon "
+                    "and you're standing in the overworld, then re-scan.",
+                    "warn")
             self.after(0, lambda: self._scan_btn.config(state="normal"))
         threading.Thread(target=_drain, daemon=True).start()
 
