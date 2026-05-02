@@ -117,10 +117,11 @@ class Bot:
                 log.info(f"Config offset overrides: {', '.join(applied)}")
 
         if not (self.game.offsets.party_base or self.game.offsets.foe_base):
-            log.warning("No memory offsets configured. Party and foe reads "
-                        "are disabled. Run `python -m pokebot.find_offsets` "
-                        "to discover addresses, then add them under `offsets:` "
-                        "in config.yaml.")
+            # soft_reset will auto-discover after the first starter pickup,
+            # so this isn't fatal — keep it informational, not a warning.
+            log.info("No memory offsets configured yet. soft_reset will "
+                     "auto-discover party_base after the first starter is "
+                     "in the party; other modes will skip reads until then.")
         elif not self.game.verified:
             log.warning("This game's offsets are NOT verified -- expect "
                         "many features to be no-ops until you verify "
