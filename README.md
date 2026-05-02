@@ -37,9 +37,9 @@ but adapted to Azahar's UDP RPC instead of an in-emulator Lua console.
    *Emulation → Configure → General → Enable scripting* is on.
 
 2. **Launch the GUI:**
-   ```
-   python launcher.py
-   ```
+   - **Windows:** double-click `pokebot-3ds.bat` (or run it from a terminal).
+   - **macOS / Linux / any platform:** `python launcher.py`
+
    (Python 3.10+ recommended. The launcher auto-installs `PyYAML` and
    `pynput` if missing.)
 
@@ -165,6 +165,7 @@ pokebot-3ds/
 ├── requirements.txt
 ├── run.py                    ← CLI entry point
 ├── launcher.py               ← GUI entry point
+├── pokebot-3ds.bat           ← Windows double-click launcher
 ├── config.yaml               ← user config
 ├── pokebot/
 │   ├── parser.py             ← PK6/PK7 decrypt + parse
