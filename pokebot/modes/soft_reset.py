@@ -85,65 +85,70 @@ def _discover_offsets_inline(ctx) -> bool:
 # Per-game starter input sequences
 # ---------------------------------------------------------------------------
 
-def _xy_starter_sequence(ctx, starter: str, gap: float) -> bool:
+def _xy_starter_sequence(ctx, starter: str, gap: float,
+                         pre_taps: int, post_taps: int) -> bool:
     """Pokémon X / Y starter selection.
 
-    The player must save in Aquacorde Town one tile south of the
-    Pokéball table (the position pictured in TUTORIAL.md).
+    The player must save in Aquacorde Town in the position pictured
+    in TUTORIAL.md (south of the table).
 
     Sequence:
-      1. Press DpadLeft once to face the table.
-      2. Mash A through Tierno's setup dialogue until the starter
-         selection menu appears.
+      1. DpadLeft once to face the table.
+      2. ``pre_taps`` A presses to reach the starter selection menu.
+         Empirically 6–8 is right with Fast text speed; the previous
+         default (30) was way too many and overshot into the menu,
+         confirming Fennekin (the default cursor) before the bot got
+         to navigate. Tunable via soft_reset.xy_pre_taps.
       3. From the default cursor (Fennekin, middle):
            - Chespin:   2× DpadLeft, 2× A
            - Fennekin:  2× A
            - Froakie:   2× DpadRight, 2× A
-      4. Mash A through the confirmation + receive dialogue until the
-         party slot has been written.
+      4. ``post_taps`` A presses to clear the receive dialogue and
+         the optional 'nickname?' prompt (defaults to No, so A is
+         safe). Tunable via soft_reset.xy_post_taps.
 
     Returns True when complete; False if a stop was requested mid-run.
     """
     starter = (starter or "").lower()
 
-    # Step 1 — face the table
+    # Step 1 — face the table.
     ctx.input.tap("DpadLeft", hold_s=0.1)
     time.sleep(0.35)
 
-    # Step 2 — mash A until the starter selection menu opens.
-    # Tierno's pre-selection dialogue is around 15-18 lines on the
-    # English script; 30 A presses with a 0.4s gap is enough margin
-    # to reach the menu without overshooting it.
-    for _ in range(30):
+    # Step 2 — open the starter selection menu.
+    log.info(f"X/Y: pressing A {pre_taps}× to reach starter menu")
+    for _ in range(pre_taps):
         if ctx.should_stop():
             return False
         ctx.input.tap("A", hold_s=0.05)
         time.sleep(gap)
 
-    # Step 3 — starter-specific cursor navigation.
+    # Step 3 — cursor navigation. Default cursor is Fennekin (centre).
     if starter == "chespin":
+        log.info("X/Y: cursor → Chespin (2× DpadLeft)")
         for _ in range(2):
             if ctx.should_stop(): return False
             ctx.input.tap("DpadLeft", hold_s=0.1)
             time.sleep(0.25)
     elif starter == "froakie":
+        log.info("X/Y: cursor → Froakie (2× DpadRight)")
         for _ in range(2):
             if ctx.should_stop(): return False
             ctx.input.tap("DpadRight", hold_s=0.1)
             time.sleep(0.25)
-    # Fennekin: cursor already on it; no movement.
+    else:  # fennekin or anything else
+        log.info("X/Y: cursor stays on Fennekin (no movement)")
 
-    # Confirm twice (open Pokéball + "Yes, take this one").
+    # Confirm twice — open the Pokéball, then 'Yes, take this one'.
     for _ in range(2):
         if ctx.should_stop():
             return False
         ctx.input.tap("A", hold_s=0.05)
         time.sleep(0.6)
 
-    # Step 4 — mash A through the receive dialogue until party fills.
-    # A modest fixed budget here; the main loop's checksum-retry below
-    # will keep mashing if the slot still isn't written.
-    for _ in range(35):
+    # Step 4 — clear the receive dialogue + nickname prompt.
+    log.info(f"X/Y: pressing A {post_taps}× to receive starter")
+    for _ in range(post_taps):
         if ctx.should_stop():
             return False
         ctx.input.tap("A", hold_s=0.05)
@@ -178,6 +183,10 @@ def run(ctx):
     advance_gap  = float(cfg.get("advance_gap", 0.3))
     post_reset   = float(cfg.get("post_reset_wait", 4.0))
     starter_name = cfg.get("starter")
+    # X/Y tunables — empirically tuned with Fast text speed. If text
+    # speed is Slow or Medium, bump these proportionally.
+    xy_pre_taps  = int(cfg.get("xy_pre_taps", 8))
+    xy_post_taps = int(cfg.get("xy_post_taps", 16))
 
     # No early-exit on missing offsets — starter hunts begin with an empty
     # party, so we discover party_base AFTER the first pickup. Set a flag
@@ -222,7 +231,8 @@ def run(ctx):
         # Phase 1 — drive the game from save screen to populated party slot.
         # ------------------------------------------------------------------
         if seq_fn and starter_name:
-            if not seq_fn(ctx, starter_name, advance_gap):
+            if not seq_fn(ctx, starter_name, advance_gap,
+                          xy_pre_taps, xy_post_taps):
                 return
         else:
             # Fallback: just mash A until the slot probably exists.

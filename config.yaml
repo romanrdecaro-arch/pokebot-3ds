@@ -41,11 +41,17 @@ input:
 # Mode-specific options
 soft_reset:
   read_slot: 0          # which party slot the gift Pokemon lands in
-  advance_taps: 60      # how many A-taps to mash through dialogue
-  advance_gap: 0.3      # seconds between mashes
+  advance_taps: 60      # generic-mode mashes (non-X/Y games)
+  advance_gap: 0.3      # seconds between A presses
   post_reset_wait: 12.0 # seconds after L+R+Start to wait for boot logos
                         # (Nintendo 3DS + Game Freak) before mashing A
                         # through the Title -> Continue -> save flow
+
+  # X/Y starter sequence tunables. Defaults assume Fast text speed.
+  # If you have text speed on Medium/Slow, raise xy_pre_taps until
+  # the bot reliably reaches the menu without overshooting it.
+  xy_pre_taps: 8        # A presses to open the starter selection menu
+  xy_post_taps: 16      # A presses after confirm to receive the starter
   # Optional: lock the bot to a specific starter for the current game.
   # Wrong-species results soft-reset without evaluating the target.
   # Names per game:
