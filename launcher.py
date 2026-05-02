@@ -595,29 +595,21 @@ class _App(tk.Tk):
         self._game_cb.pack(padx=12, pady=2)
         self._game_var.trace_add("write", self._on_game_change)
 
-        # ── Mode ─────────────────────────────────────────────────────────────
-        self._lbl(p, "MODE")
-        self._mode_var = tk.StringVar(value=self._cfg.get("mode", "observe"))
-        for m in ("observe", "encounter", "soft_reset"):
-            tk.Radiobutton(p, text=m, variable=self._mode_var, value=m,
-                           bg=_PANEL, fg=_TEXT, selectcolor=_PANEL,
-                           activebackground=_PANEL,
-                           font=("Segoe UI", 10)).pack(anchor="w", padx=16)
-        self._mode_var.trace_add("write", self._refresh_starter_visibility)
-
-        # ── Starter (only meaningful for soft_reset) ────────────────────────
-        self._starter_frame = tk.Frame(p, bg=_PANEL)
-        self._starter_frame.pack(fill="x", pady=(4, 0))
-        self._lbl(self._starter_frame, "STARTER (soft-reset)")
-        self._starter_var = tk.StringVar(value="(any)")
-        self._starter_cb = ttk.Combobox(self._starter_frame,
-                                        textvariable=self._starter_var,
-                                        values=["(any)"],
-                                        state="readonly", width=24,
-                                        style="Dark.TCombobox")
-        self._starter_cb.pack(padx=12, pady=2)
-        self._refresh_starter_options()
-        self._refresh_starter_visibility()
+        # ── Method ──────────────────────────────────────────────────────────
+        self._lbl(p, "METHOD")
+        self._method_var = tk.StringVar(value="")
+        self._method_cb = ttk.Combobox(p, textvariable=self._method_var,
+                                       values=[],
+                                       state="readonly", width=30,
+                                       style="Dark.TCombobox")
+        self._method_cb.pack(padx=12, pady=2)
+        # Inline shiny-locked warning under the dropdown
+        self._method_warn = tk.Label(p, text="", bg=_PANEL, fg=_WARN,
+                                     font=("Segoe UI", 9), anchor="w",
+                                     wraplength=235, justify="left")
+        self._method_warn.pack(fill="x", padx=12, pady=(2, 0))
+        self._method_var.trace_add("write", self._on_method_change)
+        self._refresh_method_options()
 
         # ── Target filter (replaces YAML editing for common cases) ──────────
         self._lbl(p, "TARGET FILTER")
@@ -739,28 +731,43 @@ class _App(tk.Tk):
                          ("muted", _MUTED)):
             self._log_box.tag_config(tag, foreground=col)
 
-    # ---- Game / starter helpers --------------------------------------------
+    # ---- Game / method helpers --------------------------------------------
 
     def _on_game_change(self, *_):
         self._refresh_offset_status()
-        self._refresh_starter_options()
+        self._refresh_method_options()
 
-    def _refresh_starter_options(self):
+    def _current_methods(self):
         try:
-            from pokebot.games import starters_for
-            names = list(starters_for(self._game_var.get()).keys())
+            from pokebot.games import methods_for
+            return methods_for(self._game_var.get())
         except Exception:
-            names = []
-        values = ["(any)"] + names
-        self._starter_cb.configure(values=values)
-        if self._starter_var.get() not in values:
-            self._starter_var.set("(any)")
+            return []
 
-    def _refresh_starter_visibility(self, *_):
-        if self._mode_var.get() == "soft_reset":
-            self._starter_frame.pack(fill="x", pady=(4, 0))
-        else:
-            self._starter_frame.pack_forget()
+    def _refresh_method_options(self):
+        methods = self._current_methods()
+        labels = [m.label for m in methods]
+        self._method_cb.configure(values=labels)
+        # Preserve user's choice if still valid; otherwise pick a sane default.
+        if self._method_var.get() not in labels:
+            self._method_var.set(labels[0] if labels else "")
+        self._on_method_change()
+
+    def _selected_method(self):
+        for m in self._current_methods():
+            if m.label == self._method_var.get():
+                return m
+        return None
+
+    def _on_method_change(self, *_):
+        m = self._selected_method()
+        warn_parts = []
+        if m and m.shiny_locked:
+            warn_parts.append("⚠ Shiny-locked: this Pokémon cannot be "
+                              "shiny in this game (see README).")
+        if m and m.notes:
+            warn_parts.append(m.notes)
+        self._method_warn.config(text="\n".join(warn_parts))
 
     # ---- Live Azahar status polling ----------------------------------------
 
@@ -861,14 +868,18 @@ class _App(tk.Tk):
     def _start_bot(self):
         if self._bot.running:
             return
-        args = ["--mode", self._mode_var.get()]
+        method = self._selected_method()
+        if not method:
+            messagebox.showwarning(
+                "No method selected",
+                "Pick a method from the dropdown first.")
+            return
+        args = ["--mode", method.mode]
         game = self._game_var.get()
         if game:
             args += ["--game", game]
-        if self._mode_var.get() == "soft_reset":
-            starter = self._starter_var.get()
-            if starter and starter != "(any)":
-                args += ["--starter", starter]
+        if method.starter:
+            args += ["--starter", method.starter]
         flag = self._TARGET_FILTER_FLAG.get(self._target_var.get())
         if flag:
             args += ["--target", flag]
@@ -876,7 +887,11 @@ class _App(tk.Tk):
             args += ["--dry-run"]
         if self._verb_var.get():
             args += ["--verbose"]
-        self._log("Starting bot...", "accent")
+        self._log(f"Starting bot — {method.label}", "accent")
+        if method.shiny_locked:
+            self._log("Note: target is shiny-locked. Bot will run but "
+                      "this Pokémon cannot legitimately be shiny.",
+                      "warn")
         self._bot.start(args)
         self._set_running(True)
 
