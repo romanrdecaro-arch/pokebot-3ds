@@ -186,6 +186,7 @@ pokebot-3ds/
 ## Credits & references
 
 - [pokebot-nds](https://github.com/wyanido/pokebot-nds) by wyanido — the architectural template this project follows.
+- [pokebot-gen3](https://github.com/wyanido/pokebot-nds) by 40Cakes — the inspiration for this project.
 - [Azahar](https://github.com/azahar-emu/azahar) — the emulator and the bundled `dist/scripting/citra.py` that this project's RPC client is modeled on.
 - [PKHeX](https://github.com/kwsch/PKHeX) — canonical reference for any Pokémon-data-structure question.
 - [Project Pokémon](https://projectpokemon.org/) for the Gen 6/7 PKM structure documentation and Gen 7 RAM map.
