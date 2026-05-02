@@ -15,9 +15,14 @@ import sys
 log = logging.getLogger(__name__)
 
 
-def focus_azahar(title_substrings=("Azahar", "Citra", "Pokémon",
-                                    "Pokemon")) -> bool:
+def focus_azahar(title_substrings=("Azahar", "Citra")) -> bool:
     """Best-effort bring-Azahar-to-front.
+
+    Match list is intentionally narrow: just the emulator brand names.
+    'Pokémon' / 'Pokemon' substrings are NOT included because they
+    match every other Pokémon emulator window the user might have
+    open (DeSmuME with a DS Pokémon ROM, mGBA with a GBA Pokémon ROM,
+    etc.) and the bot would happily steer those instead.
 
     Returns True if a matching window was found and a foreground
     request was issued, False otherwise. Always non-fatal — if the
