@@ -1,0 +1,7 @@
+# Core: only stdlib needed.
+# Recommended for active modes (button presses):
+pynput>=1.7
+
+# Optional: nicer YAML config support (the bundled fallback parser is
+# very limited). Without this, write your config in JSON instead.
+PyYAML>=6.0

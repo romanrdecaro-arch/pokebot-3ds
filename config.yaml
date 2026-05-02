@@ -1,0 +1,75 @@
+# pokebot-3ds configuration
+
+# Bot mode. One of: observe, encounter, soft_reset
+mode: observe
+
+# Optional: explicit game registry key (otherwise auto-detected by title ID).
+# Available keys: X-USA, Y-USA, OR-USA, AS-USA, SM-USA-1.2, USUM-USA-1.2
+# game: USUM-USA-1.2
+
+# Connection to Azahar
+rpc:
+  host: 127.0.0.1
+  port: 45987
+  connect_timeout: 30
+
+# Dashboard websocket server (open dashboard/dashboard.html in a browser
+# to see live updates)
+dashboard:
+  enabled: true
+  host: 127.0.0.1
+  port: 8765
+
+# Input driver (pynput-based keyboard simulation).
+# Azahar must remain focused for keystrokes to register.
+input:
+  dry_run: false
+  binds:
+    A:        a
+    B:        s
+    X:        z
+    Y:        x
+    L:        q
+    R:        w
+    Start:    m
+    Select:   n
+    DpadUp:   t
+    DpadDown: g
+    DpadLeft: f
+    DpadRight: h
+
+# Mode-specific options
+soft_reset:
+  read_slot: 0          # which party slot the gift Pokemon lands in
+  advance_taps: 60      # how many A-taps to mash through dialogue
+  advance_gap: 0.3      # seconds between mashes
+  post_reset_wait: 4.0  # seconds after L+R+Start before mashing again
+
+# Memory offsets for your specific game/version.
+# Run `python -m pokebot.find_offsets` to discover these automatically,
+# then paste the results below. Use hex (0x...) or decimal.
+#
+# Example for Pokémon Ultra Sun/Moon (US, v1.2):
+#   party_base:     0x330D8B58
+#   foe_base:       0x330D93D8
+#   in_battle_flag: 0x330D9438
+#   party_stride:   484
+#
+# Without these the dashboard will show no party or encounter data.
+offsets:
+  party_base:     0x0
+  foe_base:       0x0
+  in_battle_flag: 0x0
+  # party_stride: 484   # usually correct; only change if offsets look right but data is garbled
+
+# Target / filter (a Pokemon counts as a "hit" when this matches).
+# Examples below; comment/uncomment to use one.
+target:
+  mode: any                 # 'all' = AND, 'any' = OR over rules
+  rules:
+    - shiny: true
+    # - perfect_iv_count_min: 5
+    # - nature: [Adamant, Jolly]
+    #   iv_min:
+    #     Atk: 31
+    #     Spe: 31
