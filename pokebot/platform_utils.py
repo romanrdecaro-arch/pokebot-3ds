@@ -59,6 +59,38 @@ def find_azahar_hwnd(title_substrings=("Azahar", "Citra")) -> int:
     return found[0]
 
 
+def click_window(hwnd: int) -> bool:
+    """Send a synthetic mouse click into the window's client area.
+
+    Some Qt builds (Citra/Azahar included) ignore PostMessage'd
+    keystrokes until the window has been "activated" by an actual
+    user click. Calling this once after focus_azahar() typically
+    fixes the "I had to click in to make it work" issue without
+    moving the user's real cursor.
+
+    Returns True on Windows + valid hwnd, False otherwise.
+    """
+    if not hwnd or not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+    except Exception:
+        return False
+    user32 = ctypes.windll.user32
+    WM_LBUTTONDOWN = 0x0201
+    WM_LBUTTONUP   = 0x0202
+    MK_LBUTTON     = 0x0001
+    # Click in client coords (10, 10) — top-left of the rendering
+    # surface, which is just the emulator viewport. lParam packs the
+    # signed (x, y) into low/high 16-bit words.
+    lparam = (10) | (10 << 16)
+    user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+    import time as _t
+    _t.sleep(0.02)
+    user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
+    return True
+
+
 def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:
     """PostMessage WM_KEYDOWN/WM_KEYUP to a window. Bypasses focus.
 
@@ -230,6 +262,12 @@ def _focus_windows(title_substrings) -> bool:
 
     for tid in attached:
         user32.AttachThreadInput(cur_thread, tid, False)
+
+    # Synthetic click into the window's client area. Qt apps often
+    # gate keyboard input routing on having received an actual click;
+    # without this, the user has to click into Azahar manually before
+    # the bot's keypresses register.
+    click_window(target[0])
 
     if not ok:
         log.warning("SetForegroundWindow still returned 0 after the "

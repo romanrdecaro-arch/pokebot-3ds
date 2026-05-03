@@ -567,16 +567,16 @@ class _App(tk.Tk):
         body = tk.Frame(self, bg=_BG)
         body.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Scrollable sidebar: a Canvas hosts an inner Frame that the
-        # cards pack into. Without this, the Actions card (with the
-        # Start button) gets pushed below the visible window on
-        # smaller heights.
+        # Scrollable sidebar with a STICKY action bar at the top.
+        # Start/Stop live above the scroll so they're always visible
+        # regardless of how far down the user has scrolled.
         side_outer = tk.Frame(body, bg=_PANEL, width=280)
         side_outer.pack(side="left", fill="y", padx=(0, 10))
         side_outer.pack_propagate(False)
+        self._build_sticky_actions(side_outer)
         side_canvas = tk.Canvas(side_outer, bg=_PANEL,
                                 highlightthickness=0, bd=0)
-        side_canvas.pack(side="left", fill="both", expand=True)
+        side_canvas.pack(side="top", fill="both", expand=True)
         side_inner = tk.Frame(side_canvas, bg=_PANEL)
         side_window = side_canvas.create_window(
             (0, 0), window=side_inner, anchor="nw")
@@ -742,33 +742,20 @@ class _App(tk.Tk):
                       "Noisy but useful for diagnosing issues."
                  ).pack(anchor="w", padx=20)
 
-        # ── Card: Actions ───────────────────────────────────────────────────
-        act_card = self._card(p)  # no title; just the buttons stacked
-        # Big primary CTA
-        self._start_btn = tk.Button(
-            act_card, text="▶  Start Bot", command=self._start_bot,
-            bg=_ACCENT, fg="white", relief="flat", bd=0,
-            font=("Segoe UI", 11, "bold"), cursor="hand2",
-            activebackground=_ACCENT, activeforeground="white",
-            padx=10, pady=10, highlightthickness=0)
-        self._start_btn.pack(fill="x", pady=(0, 6))
-        self._stop_btn = tk.Button(
-            act_card, text="■  Stop Bot", command=self._stop_bot,
-            bg=_PANEL3, fg=_MUTED, relief="flat", bd=0,
-            font=("Segoe UI", 10), cursor="hand2", state="disabled",
-            activebackground=_PANEL3, activeforeground=_MUTED,
-            padx=10, pady=8, highlightthickness=0)
-        self._stop_btn.pack(fill="x", pady=(0, 10))
-        # Secondary buttons
-        tk.Frame(act_card, bg=_BORDER, height=1).pack(fill="x", pady=(0, 10))
-        tk.Button(act_card, text="Open Dashboard",
+        # ── Card: Tools (Open Dashboard / Edit config) ─────────────────────
+        # The Start / Stop buttons used to live in this card too, but
+        # they were getting pushed off-screen on smaller window heights.
+        # They're now in a sticky bar at the top of the sidebar
+        # (see _build_sticky_actions). Secondary tools stay here.
+        tools = self._card(p, "Tools")
+        tk.Button(tools, text="Open Dashboard",
                   command=self._open_dashboard,
                   bg=_PANEL3, fg=_ACCENT2, relief="flat", bd=0,
                   font=("Segoe UI", 10), cursor="hand2",
                   activebackground=_PANEL3, activeforeground=_ACCENT2,
                   padx=10, pady=8, highlightthickness=0
                   ).pack(fill="x", pady=(0, 6))
-        tk.Button(act_card, text="Edit config.yaml",
+        tk.Button(tools, text="Edit config.yaml",
                   command=self._open_config,
                   bg=_PANEL3, fg=_TEXT, relief="flat", bd=0,
                   font=("Segoe UI", 10), cursor="hand2",
@@ -778,6 +765,27 @@ class _App(tk.Tk):
         # Hidden manual-override scan button (CLI fallback only).
         self._scan_btn = tk.Button(p, command=self._run_find_offsets)
         self._offset_lbl = tk.Label(p)
+
+    def _build_sticky_actions(self, parent):
+        """Always-visible Start/Stop bar at the top of the sidebar."""
+        bar = tk.Frame(parent, bg=_PANEL, padx=12, pady=12)
+        bar.pack(side="top", fill="x")
+        self._start_btn = tk.Button(
+            bar, text="▶  Start Bot", command=self._start_bot,
+            bg=_ACCENT, fg="white", relief="flat", bd=0,
+            font=("Segoe UI", 12, "bold"), cursor="hand2",
+            activebackground=_ACCENT, activeforeground="white",
+            padx=10, pady=12, highlightthickness=0)
+        self._start_btn.pack(fill="x")
+        self._stop_btn = tk.Button(
+            bar, text="■  Stop Bot", command=self._stop_bot,
+            bg=_PANEL3, fg=_MUTED, relief="flat", bd=0,
+            font=("Segoe UI", 10), cursor="hand2", state="disabled",
+            activebackground=_PANEL3, activeforeground=_MUTED,
+            padx=10, pady=8, highlightthickness=0)
+        self._stop_btn.pack(fill="x", pady=(8, 0))
+        # Hairline divider between sticky bar and scrollable area.
+        tk.Frame(parent, bg=_BORDER, height=1).pack(side="top", fill="x")
 
     def _btn(self, parent, text, cmd, bg=_ACCENT, fg="white",
              state="normal", subtle=False):
