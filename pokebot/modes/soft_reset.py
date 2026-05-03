@@ -162,11 +162,38 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
 
     # Step 4 — receive starter. B (not A) so the 'Want to nickname?'
     # prompt is auto-answered No instead of opening name entry.
-    log.info(f"X/Y: {post_taps}× B to receive starter "
+    #
+    # When party_base is known we poll slot 0 between presses and exit
+    # the moment a valid PK6 record appears. The game writes the slot
+    # during the 'received' animation — well before the nickname
+    # prompt — so most iterations exit at ~5-15 B presses instead of
+    # the full cap. The cap itself stays as a safety floor for the
+    # very first run where party_base hasn't been discovered yet.
+    log.info(f"X/Y: up to {post_taps}× B to receive starter "
              f"(gap {receive_gap}s)")
-    for _ in range(post_taps):
-        if not _tap("B", receive_gap):
-            return False
+    party_base = ctx.game.offsets.party_base
+    if party_base:
+        from ..parser import decrypt_pkm, parse_pkm
+        for i in range(post_taps):
+            if not _tap("B", receive_gap):
+                return False
+            # Poll every press once a few have fired (skip the first
+            # 3 since slot 0 can't possibly be ready yet).
+            if i < 3:
+                continue
+            try:
+                raw = ctx.rpc.read(party_base, 260)
+                pkm = parse_pkm(decrypt_pkm(raw))
+                if pkm.checksum_valid and pkm.species:
+                    log.info(f"X/Y: slot 0 written after {i+1} B presses "
+                             f"(species #{pkm.species}) — done.")
+                    return True
+            except Exception:
+                pass
+    else:
+        for _ in range(post_taps):
+            if not _tap("B", receive_gap):
+                return False
     return True
 
 
@@ -201,7 +228,7 @@ def run(ctx):
     starter_name = cfg.get("starter")
     # X/Y tunables — manually counted on real hardware.
     xy_pre_taps    = int(cfg.get("xy_pre_taps", 25))
-    xy_post_taps   = int(cfg.get("xy_post_taps", 50))
+    xy_post_taps   = int(cfg.get("xy_post_taps", 40))
     xy_receive_gap = float(cfg.get("xy_receive_gap", 1.0))
 
     # No early-exit on missing offsets — starter hunts begin with an empty

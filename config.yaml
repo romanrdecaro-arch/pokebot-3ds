@@ -52,7 +52,10 @@ soft_reset:
 
   # X/Y starter sequence — manually counted on real hardware.
   xy_pre_taps:  25       # A presses to clear Tierno's dialogue
-  xy_post_taps: 50       # B presses to receive the starter
+  xy_post_taps: 40       # B presses to receive the starter (hard cap;
+                         # the bot exits early as soon as slot 0 has a
+                         # valid PK6 record, so the actual count is
+                         # usually much lower once party_base is known)
                          # (B avoids opening the nickname-entry screen)
   xy_receive_gap: 1.0    # seconds between each B press in the receive
                          # phase. Faster than advance_gap because the
