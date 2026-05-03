@@ -100,9 +100,9 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
         1× DpadLeft                          (gap)
         25× A — clears Tierno's setup        (gap)
         cursor + confirm:                    (gap)
-            Chespin   → 2× DpadLeft, 2× A
-            Fennekin  → 2× A   (default cursor)
-            Froakie   → 2× DpadRight, 2× A
+            Chespin   → 1× A, 2× DpadLeft, 2× A
+            Fennekin  → 3× A   (default cursor)
+            Froakie   → 1× A, 2× DpadRight, 2× A
         60× B — receives starter             (receive_gap)
                 (B avoids opening nickname entry)
 
@@ -155,8 +155,8 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
             if not _tap("A", gap):
                 return False
     else:  # fennekin (default cursor)
-        log.info("X/Y: cursor on Fennekin (2× A)")
-        for _ in range(2):
+        log.info("X/Y: cursor on Fennekin (3× A)")
+        for _ in range(3):
             if not _tap("A", gap):
                 return False
 
