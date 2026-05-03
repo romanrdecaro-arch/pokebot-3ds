@@ -42,7 +42,7 @@ input:
 soft_reset:
   read_slot: 0           # which party slot the gift Pokemon lands in
   advance_taps: 60       # generic-mode mashes (non-X/Y games)
-  advance_gap: 2.75      # seconds between presses for the pre-menu /
+  advance_gap: 3.0       # seconds between presses for the pre-menu /
                          # navigation phase of the X/Y sequence
   post_reset_wait: 12.0  # seconds after L+R+Start to wait for boot logos
                          # (Nintendo 3DS + Game Freak) before mashing
