@@ -40,27 +40,19 @@ input:
 
 # Mode-specific options
 soft_reset:
-  read_slot: 0          # which party slot the gift Pokemon lands in
-  advance_taps: 60      # generic-mode mashes (non-X/Y games)
-  advance_gap: 0.3      # seconds between A presses
-  post_reset_wait: 12.0 # seconds after L+R+Start to wait for boot logos
-                        # (Nintendo 3DS + Game Freak) before mashing A
-                        # through the Title -> Continue -> save flow
+  read_slot: 0           # which party slot the gift Pokemon lands in
+  advance_taps: 60       # generic-mode mashes (non-X/Y games)
+  advance_gap: 1.0       # seconds between every key press in the X/Y sequence
+  post_reset_wait: 12.0  # seconds after L+R+Start to wait for boot logos
+                         # (Nintendo 3DS + Game Freak) before mashing
+  post_reset_taps: 6     # A presses through Title -> Continue -> save flash
+                         # back to the saved tile
+  post_reset_gap: 1.0    # seconds between each post-reset A press
 
-  # X/Y starter sequence tunables. Defaults assume Fast text speed.
-  # If you have text speed on Medium/Slow, raise xy_pre_taps until
-  # the bot reliably reaches the menu without overshooting it.
-  xy_pre_taps: 18       # A presses to clear Tierno's dialogue and reach
-                        # the starter selection menu. Generous to cover
-                        # Medium text speed; slight overshoot is caught
-                        # by the species-mismatch reset on the next
-                        # iteration.
-  xy_post_taps: 30      # Hard upper bound on receive-phase B presses.
-                        # B is used (not A) so the 'Want to nickname?'
-                        # prompt is auto-answered No instead of opening
-                        # nickname entry. When party_base is known, the
-                        # bot polls slot 0 and stops as soon as the
-                        # starter is in the party.
+  # X/Y starter sequence — manually counted on real hardware.
+  xy_pre_taps:  25       # A presses to clear Tierno's dialogue
+  xy_post_taps: 30       # B presses to receive the starter
+                         # (B avoids opening the nickname-entry screen)
   # Optional: lock the bot to a specific starter for the current game.
   # Wrong-species results soft-reset without evaluating the target.
   # Names per game:

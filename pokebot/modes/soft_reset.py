@@ -87,109 +87,72 @@ def _discover_offsets_inline(ctx) -> bool:
 
 def _xy_starter_sequence(ctx, starter: str, gap: float,
                          pre_taps: int, post_taps: int) -> bool:
-    """Pokémon X / Y starter selection — fully adaptive.
+    """Pokémon X / Y starter sequence — manually counted, fixed timing.
 
-    Two memory-based detectors replace the old "guess the count" timing:
+    Counted by hand on the user's setup. All key presses are spaced by
+    ``gap`` seconds (default 1.0s). The full sequence per attempt is:
 
-      1. **Memory-stability detector for the starter menu.** While
-         dialogue is rendering, the game's RAM churns constantly
-         (text buffers, sprite frames, animations). The moment
-         dialogue ends and the cursor sits idle on the menu, that
-         memory goes still. We sample a 4KB chunk of FCRAM between
-         A presses and stop pressing as soon as the sample is
-         identical for ``stable_threshold`` consecutive reads.
+        1× DpadLeft
+        25× A      (clears Tierno's setup dialogue)
+        cursor:
+            Chespin   → 2× DpadLeft, 2× A
+            Fennekin  → 2× A   (default cursor)
+            Froakie   → 2× DpadRight, 2× A
+        30× B      (receives starter; B avoids opening nickname entry)
 
-      2. **Party-slot poll for the receive phase.** Once the cursor
-         is confirmed and we're mashing through the receive dialog,
-         we poll party slot 0 (when ``party_base`` is known) and
-         exit as soon as a valid PK7 record appears.
-
-    The pre/post tap counts in config.yaml become hard upper bounds
-    instead of exact targets — the bot will normally exit each
-    phase well before reaching them.
+    The species-mismatch reset in the main loop catches a wrong-starter
+    pick on the next iteration.
 
     Returns True when complete; False if a stop was requested mid-run.
     """
-    from ..parser import decrypt_pkm, parse_pkm
-
     starter = (starter or "").lower()
 
-    # Step 1 — face the table (single press only; further d-pad presses
-    # would walk the player away if dialogue hasn't started yet).
-    ctx.input.tap("DpadLeft", hold_s=0.1)
-    time.sleep(0.4)
-
-    # Step 2 — Deterministic A-mash through Tierno's setup dialogue.
-    # The previous memory-stability detector was unreliable: some
-    # FCRAM regions don't change during dialogue, so the detector
-    # bailed after 3 presses while Tierno was still talking. Going
-    # back to a slow-but-steady A-mash with generous count.
-    log.info(f"X/Y: A-mashing {pre_taps}× to clear Tierno's dialogue")
-    for _ in range(pre_taps):
+    def _tap(button: str) -> bool:
         if ctx.should_stop():
             return False
-        ctx.input.tap("A", hold_s=0.05)
+        ctx.input.tap(button, hold_s=0.05)
         time.sleep(gap)
-    # Brief pause so the menu is fully drawn before we navigate.
-    time.sleep(0.7)
+        return True
 
-    # Step 3 — cursor navigation now that we know the menu is up.
-    if starter == "chespin":
-        log.info("X/Y: cursor → Chespin (2× DpadLeft)")
-        for _ in range(2):
-            if ctx.should_stop(): return False
-            ctx.input.tap("DpadLeft", hold_s=0.1)
-            time.sleep(0.25)
-    elif starter == "froakie":
-        log.info("X/Y: cursor → Froakie (2× DpadRight)")
-        for _ in range(2):
-            if ctx.should_stop(): return False
-            ctx.input.tap("DpadRight", hold_s=0.1)
-            time.sleep(0.25)
-    else:
-        log.info("X/Y: cursor stays on Fennekin (no movement)")
+    # Step 1 — face the table.
+    if not _tap("DpadLeft"):
+        return False
 
-    # Step 4 — confirm twice (open Pokéball + 'Yes, take this one').
-    for _ in range(2):
-        if ctx.should_stop():
+    # Step 2 — clear Tierno's setup dialogue.
+    log.info(f"X/Y: 25× A to clear Tierno's dialogue (gap {gap}s)")
+    for _ in range(pre_taps):
+        if not _tap("A"):
             return False
-        ctx.input.tap("A", hold_s=0.05)
-        time.sleep(0.6)
 
-    # Step 4 — receive phase. Mash B (not A) until the starter is in
-    # the party. B advances dialog like A but is safe on the
-    # 'Want to nickname?' Yes/No prompt — it cancels with 'No' instead
-    # of opening nickname entry, which would trap the bot mid-hunt.
-    have_party_addr = bool(ctx.game.offsets.party_base)
-    if have_party_addr:
-        log.info(f"X/Y: receiving — mashing B until party slot 0 fills "
-                 f"(cap {post_taps} presses)")
-        addr = ctx.game.offsets.party_base
-        for i in range(post_taps):
-            if ctx.should_stop():
+    # Step 3 — cursor navigation + confirm.
+    if starter == "chespin":
+        log.info("X/Y: cursor → Chespin (2× DpadLeft, 2× A)")
+        for _ in range(2):
+            if not _tap("DpadLeft"):
                 return False
-            ctx.input.tap("B", hold_s=0.05)
-            time.sleep(gap)
-            # Poll every 2 presses to keep RPC traffic modest.
-            if i % 2 != 0:
-                continue
-            try:
-                raw = ctx.rpc.read(addr, 260)
-                pkm = parse_pkm(decrypt_pkm(raw))
-                if pkm.checksum_valid and pkm.species:
-                    log.info(f"X/Y: starter in party after {i+1} B's "
-                             f"(species #{pkm.species})")
-                    return True
-            except Exception:
-                pass
-    else:
-        log.info(f"X/Y: receiving — first run, mashing B {post_taps}× "
-                 "(party_base will be discovered after this)")
-        for _ in range(post_taps):
-            if ctx.should_stop():
+        for _ in range(2):
+            if not _tap("A"):
                 return False
-            ctx.input.tap("B", hold_s=0.05)
-            time.sleep(gap)
+    elif starter == "froakie":
+        log.info("X/Y: cursor → Froakie (2× DpadRight, 2× A)")
+        for _ in range(2):
+            if not _tap("DpadRight"):
+                return False
+        for _ in range(2):
+            if not _tap("A"):
+                return False
+    else:  # fennekin (default cursor)
+        log.info("X/Y: cursor on Fennekin (2× A)")
+        for _ in range(2):
+            if not _tap("A"):
+                return False
+
+    # Step 4 — receive starter. B (not A) so the 'Want to nickname?'
+    # prompt is auto-answered No instead of opening name entry.
+    log.info(f"X/Y: 30× B to receive starter (gap {gap}s)")
+    for _ in range(post_taps):
+        if not _tap("B"):
+            return False
     return True
 
 
@@ -217,13 +180,14 @@ def run(ctx):
     cfg = ctx.config.get("soft_reset", {})
     slot         = int(cfg.get("read_slot", 0))     # which party slot to read
     advance_taps = int(cfg.get("advance_taps", 60)) # generic-mode mashes
-    advance_gap  = float(cfg.get("advance_gap", 0.3))
-    post_reset   = float(cfg.get("post_reset_wait", 4.0))
+    advance_gap  = float(cfg.get("advance_gap", 1.0))
+    post_reset   = float(cfg.get("post_reset_wait", 12.0))
+    post_reset_taps = int(cfg.get("post_reset_taps", 6))
+    post_reset_gap  = float(cfg.get("post_reset_gap", 1.0))
     starter_name = cfg.get("starter")
-    # X/Y tunables — empirically tuned with Fast text speed. If text
-    # speed is Slow or Medium, bump these proportionally.
-    xy_pre_taps  = int(cfg.get("xy_pre_taps", 8))
-    xy_post_taps = int(cfg.get("xy_post_taps", 16))
+    # X/Y tunables — manually counted on real hardware.
+    xy_pre_taps  = int(cfg.get("xy_pre_taps", 25))
+    xy_post_taps = int(cfg.get("xy_post_taps", 30))
 
     # No early-exit on missing offsets — starter hunts begin with an empty
     # party, so we discover party_base AFTER the first pickup. Set a flag
@@ -293,7 +257,7 @@ def run(ctx):
             if not ok:
                 # Couldn't find a party block. Reset and try again — usually
                 # the input sequence didn't actually receive the starter.
-                _do_reset(ctx, post_reset)
+                _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
                 continue
             needs_discovery = False
 
@@ -307,7 +271,7 @@ def run(ctx):
             pkm = parse_pkm(decrypt_pkm(raw))
         except Exception as e:
             log.warning(f"could not read/parse slot {slot}: {e}")
-            _do_reset(ctx, post_reset)
+            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
 
         if not pkm.checksum_valid:
@@ -319,7 +283,7 @@ def run(ctx):
                 raw = ctx.rpc.read(addr, 260)
                 pkm = parse_pkm(decrypt_pkm(raw))
             except Exception:
-                _do_reset(ctx, post_reset)
+                _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
                 continue
 
         ctx.dashboard.broadcast(
@@ -339,7 +303,7 @@ def run(ctx):
         # ------------------------------------------------------------------
         if starter_id is not None and pkm.species != starter_id:
             log.info(f"wrong species (#{pkm.species}); resetting")
-            _do_reset(ctx, post_reset)
+            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
 
         target_has_rules = bool(ctx.target and ctx.target.rules)
@@ -359,11 +323,11 @@ def run(ctx):
             ctx.request_stop("target hit")
             return
 
-        _do_reset(ctx, post_reset)
+        _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
 
 
 def _do_reset(ctx, post_wait: float,
-              post_taps: int = 25, post_gap: float = 0.5):
+              post_taps: int = 6, post_gap: float = 1.0):
     """Soft-reset and walk the game back to the player-at-save state.
 
     L+R+Start sends the 3DS to the title screen. From there we have
