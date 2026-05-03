@@ -130,8 +130,14 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
             return False
 
     # Step 3 — cursor navigation + confirm.
+    # For Chespin/Froakie we press A once first to wake the cursor —
+    # the d-pad presses don't always register on the very first frame
+    # the menu opens. Fennekin doesn't need it because the cursor
+    # starts on it by default.
     if starter == "chespin":
-        log.info("X/Y: cursor → Chespin (2× DpadLeft, 2× A)")
+        log.info("X/Y: cursor → Chespin (1× A wake, 2× DpadLeft, 2× A)")
+        if not _tap("A", gap):
+            return False
         for _ in range(2):
             if not _tap("DpadLeft", gap):
                 return False
@@ -139,7 +145,9 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
             if not _tap("A", gap):
                 return False
     elif starter == "froakie":
-        log.info("X/Y: cursor → Froakie (2× DpadRight, 2× A)")
+        log.info("X/Y: cursor → Froakie (1× A wake, 2× DpadRight, 2× A)")
+        if not _tap("A", gap):
+            return False
         for _ in range(2):
             if not _tap("DpadRight", gap):
                 return False
@@ -193,7 +201,7 @@ def run(ctx):
     starter_name = cfg.get("starter")
     # X/Y tunables — manually counted on real hardware.
     xy_pre_taps    = int(cfg.get("xy_pre_taps", 25))
-    xy_post_taps   = int(cfg.get("xy_post_taps", 60))
+    xy_post_taps   = int(cfg.get("xy_post_taps", 50))
     xy_receive_gap = float(cfg.get("xy_receive_gap", 1.0))
 
     # No early-exit on missing offsets — starter hunts begin with an empty
@@ -263,8 +271,13 @@ def run(ctx):
                                     state=("ok" if ok else "fail"),
                                     party_base=ctx.game.offsets.party_base)
             if not ok:
-                # Couldn't find a party block. Reset and try again — usually
-                # the input sequence didn't actually receive the starter.
+                log.warning(f"Attempt {attempt}: discovery failed — slot 0 "
+                            f"isn't populated yet. Likely the cursor never "
+                            f"activated and no starter was picked. Resetting.")
+                ctx.dashboard.broadcast(
+                    "read_failure",
+                    attempt=attempt,
+                    reason="party_base discovery failed; slot 0 empty.")
                 _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
                 continue
             needs_discovery = False
@@ -279,11 +292,17 @@ def run(ctx):
             pkm = parse_pkm(decrypt_pkm(raw))
         except Exception as e:
             log.warning(f"could not read/parse slot {slot}: {e}")
+            ctx.dashboard.broadcast(
+                "read_failure",
+                attempt=attempt,
+                reason=f"RPC read at {addr:#010x} failed: {e}")
             _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
 
         if not pkm.checksum_valid:
-            log.debug("checksum invalid; mashing more then retrying")
+            log.warning(f"Attempt {attempt}: slot 0 checksum invalid "
+                        f"(starter probably not in party yet). "
+                        f"Mashing more A's and retrying.")
             for _ in range(25):
                 ctx.input.tap("A", hold_s=0.05)
                 time.sleep(0.2)
