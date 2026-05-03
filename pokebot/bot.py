@@ -177,6 +177,13 @@ class Bot:
             raise ValueError(f"Unknown mode: {mode_name}. "
                              f"Available: {list(MODES)}")
 
+        # Heartbeat — confirms the EVENT pipeline is alive before any
+        # actual game data tries to flow. If the launcher Log tab
+        # doesn't show '✓ event pipeline ok' early in the run, the
+        # bot's stdout isn't reaching the launcher and there's no
+        # point looking at later events.
+        self.dashboard.broadcast("ready", mode=mode_name)
+
         # Initial status broadcast
         self.dashboard.broadcast("status",
             mode=mode_name,

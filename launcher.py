@@ -106,14 +106,24 @@ class _BotProcess:
     def start(self, extra_args: list[str]) -> None:
         if self.running:
             return
-        cmd = [sys.executable, str(ROOT / "run.py")] + extra_args
+        # -u forces unbuffered stdout/stderr in the bot subprocess.
+        # Without it, Python block-buffers when stdout is a pipe, and
+        # the EVENT lines we use for the Recently Seen tab get stuck
+        # in the buffer instead of flowing line-by-line. PYTHONUNBUFFERED
+        # is set on the env too as belt-and-suspenders.
+        cmd = [sys.executable, "-u", str(ROOT / "run.py")] + extra_args
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         self._proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             bufsize=1,
             cwd=str(ROOT),
+            env=env,
         )
         threading.Thread(target=self._drain, daemon=True).start()
 
@@ -1206,7 +1216,9 @@ class _App(tk.Tk):
         kind = evt.get("type", "")
         # Visible event trace so it's clear what the bot is doing
         # without needing to dig through the bot's debug log.
-        if kind == "candidate":
+        if kind == "ready":
+            self._log("  ✓ event pipeline ok — bot is ready", "good")
+        elif kind == "candidate":
             sp = evt.get("species", "?")
             star = " ★" if evt.get("shiny") else ""
             ivs = evt.get("ivs") or {}
