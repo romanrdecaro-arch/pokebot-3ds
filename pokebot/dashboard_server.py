@@ -98,19 +98,35 @@ class DashboardServer:
         natively without needing a websocket client.
         """
         body = {"type": msg_type, "ts": time.time(), **fields}
-        payload = json.dumps(body, default=str).encode()
+        try:
+            payload = json.dumps(body, default=str)
+        except Exception as e:
+            log.error(f"broadcast({msg_type!r}) JSON-encode failed: {e}; "
+                      f"keys={list(fields.keys())}")
+            return
+        # Diagnostic: the regular log goes to stderr (line-buffered) and
+        # always flows to the launcher's drain thread, even if the EVENT
+        # pipeline is somehow broken. So if the user sees BROADCAST in
+        # the log but no '→ candidate' trace, the issue is the EVENT
+        # pipeline specifically.
+        log.info(f"BROADCAST {msg_type} keys={sorted(fields.keys())}")
         if self.also_stdout:
             try:
                 # One JSON line, prefix-tagged so the launcher can split it
-                # cleanly from human-readable log lines.
-                print("EVENT: " + payload.decode("utf-8"), flush=True)
-            except Exception:
-                pass
+                # cleanly from human-readable log lines. Use sys.stdout
+                # directly + explicit flush to dodge any odd buffering
+                # state that print() might be stuck in.
+                import sys as _sys
+                _sys.stdout.write("EVENT: " + payload + "\n")
+                _sys.stdout.flush()
+            except Exception as e:
+                log.error(f"EVENT print failed for {msg_type}: {e}")
+        payload_bytes = payload.encode("utf-8")
         dead = []
         with self._clients_lock:
             for c in self._clients:
                 try:
-                    _ws_send(c, payload)
+                    _ws_send(c, payload_bytes)
                 except Exception:
                     dead.append(c)
             for c in dead:
