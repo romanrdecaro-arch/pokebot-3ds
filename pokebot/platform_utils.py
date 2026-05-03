@@ -60,7 +60,7 @@ def find_azahar_hwnd(title_substrings=("Azahar", "Citra")) -> int:
 
 
 def click_window(hwnd: int) -> bool:
-    """Send a synthetic mouse click into the window's client area.
+    """Send a synthetic mouse click into the centre of the window's client area.
 
     Some Qt builds (Citra/Azahar included) ignore PostMessage'd
     keystrokes until the window has been "activated" by an actual
@@ -68,22 +68,35 @@ def click_window(hwnd: int) -> bool:
     fixes the "I had to click in to make it work" issue without
     moving the user's real cursor.
 
+    The click lands in the geometric centre of the client rect, so
+    it's on the emulator's video surface (not on a menu/toolbar) and
+    has no UI side-effects.
+
     Returns True on Windows + valid hwnd, False otherwise.
     """
     if not hwnd or not sys.platform.startswith("win"):
         return False
     try:
         import ctypes
+        from ctypes import wintypes
     except Exception:
         return False
     user32 = ctypes.windll.user32
     WM_LBUTTONDOWN = 0x0201
     WM_LBUTTONUP   = 0x0202
     MK_LBUTTON     = 0x0001
-    # Click in client coords (10, 10) — top-left of the rendering
-    # surface, which is just the emulator viewport. lParam packs the
-    # signed (x, y) into low/high 16-bit words.
-    lparam = (10) | (10 << 16)
+    user32.GetClientRect.argtypes = [wintypes.HWND,
+                                     ctypes.POINTER(wintypes.RECT)]
+    user32.GetClientRect.restype  = wintypes.BOOL
+
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        # Couldn't get the rect; bail rather than guess.
+        return False
+    cx = max(1, (rect.right - rect.left) // 2)
+    cy = max(1, (rect.bottom - rect.top) // 2)
+    # lParam packs the signed (x, y) into low/high 16-bit words.
+    lparam = (cx & 0xFFFF) | ((cy & 0xFFFF) << 16)
     user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
     import time as _t
     _t.sleep(0.02)
