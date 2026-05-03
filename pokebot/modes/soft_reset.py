@@ -86,72 +86,78 @@ def _discover_offsets_inline(ctx) -> bool:
 # ---------------------------------------------------------------------------
 
 def _xy_starter_sequence(ctx, starter: str, gap: float,
-                         pre_taps: int, post_taps: int) -> bool:
+                         pre_taps: int, post_taps: int,
+                         receive_gap: float | None = None) -> bool:
     """Pokémon X / Y starter sequence — manually counted, fixed timing.
 
-    Counted by hand on the user's setup. All key presses are spaced by
-    ``gap`` seconds (default 1.0s). The full sequence per attempt is:
+    The pre-menu and navigation phases use ``gap`` seconds between
+    presses (default 2.5s in config). The receive phase uses
+    ``receive_gap`` (default 1.0s) since the post-confirm dialogue
+    advances faster with B.
 
-        1× DpadLeft
-        25× A      (clears Tierno's setup dialogue)
-        cursor:
+    Sequence per attempt:
+
+        1× DpadLeft                          (gap)
+        25× A — clears Tierno's setup        (gap)
+        cursor + confirm:                    (gap)
             Chespin   → 2× DpadLeft, 2× A
             Fennekin  → 2× A   (default cursor)
             Froakie   → 2× DpadRight, 2× A
-        30× B      (receives starter; B avoids opening nickname entry)
-
-    The species-mismatch reset in the main loop catches a wrong-starter
-    pick on the next iteration.
+        60× B — receives starter             (receive_gap)
+                (B avoids opening nickname entry)
 
     Returns True when complete; False if a stop was requested mid-run.
     """
     starter = (starter or "").lower()
+    if receive_gap is None:
+        receive_gap = gap
 
-    def _tap(button: str) -> bool:
+    def _tap(button: str, sleep_for: float) -> bool:
         if ctx.should_stop():
             return False
         ctx.input.tap(button, hold_s=0.05)
-        time.sleep(gap)
+        time.sleep(sleep_for)
         return True
 
     # Step 1 — face the table.
-    if not _tap("DpadLeft"):
+    if not _tap("DpadLeft", gap):
         return False
 
     # Step 2 — clear Tierno's setup dialogue.
-    log.info(f"X/Y: 25× A to clear Tierno's dialogue (gap {gap}s)")
+    log.info(f"X/Y: {pre_taps}× A to clear Tierno's dialogue (gap {gap}s)")
     for _ in range(pre_taps):
-        if not _tap("A"):
+        if not _tap("A", gap):
             return False
 
     # Step 3 — cursor navigation + confirm.
     if starter == "chespin":
         log.info("X/Y: cursor → Chespin (2× DpadLeft, 2× A)")
         for _ in range(2):
-            if not _tap("DpadLeft"):
+            if not _tap("DpadLeft", gap):
                 return False
         for _ in range(2):
-            if not _tap("A"):
+            if not _tap("A", gap):
                 return False
     elif starter == "froakie":
         log.info("X/Y: cursor → Froakie (2× DpadRight, 2× A)")
         for _ in range(2):
-            if not _tap("DpadRight"):
+            if not _tap("DpadRight", gap):
                 return False
         for _ in range(2):
-            if not _tap("A"):
+            if not _tap("A", gap):
                 return False
     else:  # fennekin (default cursor)
         log.info("X/Y: cursor on Fennekin (2× A)")
         for _ in range(2):
-            if not _tap("A"):
+            if not _tap("A", gap):
                 return False
 
     # Step 4 — receive starter. B (not A) so the 'Want to nickname?'
     # prompt is auto-answered No instead of opening name entry.
-    log.info(f"X/Y: 30× B to receive starter (gap {gap}s)")
+    log.info(f"X/Y: {post_taps}× B to receive starter "
+             f"(gap {receive_gap}s)")
     for _ in range(post_taps):
-        if not _tap("B"):
+        if not _tap("B", receive_gap):
             return False
     return True
 
@@ -186,8 +192,9 @@ def run(ctx):
     post_reset_gap  = float(cfg.get("post_reset_gap", 1.0))
     starter_name = cfg.get("starter")
     # X/Y tunables — manually counted on real hardware.
-    xy_pre_taps  = int(cfg.get("xy_pre_taps", 25))
-    xy_post_taps = int(cfg.get("xy_post_taps", 30))
+    xy_pre_taps    = int(cfg.get("xy_pre_taps", 25))
+    xy_post_taps   = int(cfg.get("xy_post_taps", 60))
+    xy_receive_gap = float(cfg.get("xy_receive_gap", 1.0))
 
     # No early-exit on missing offsets — starter hunts begin with an empty
     # party, so we discover party_base AFTER the first pickup. Set a flag
@@ -233,7 +240,8 @@ def run(ctx):
         # ------------------------------------------------------------------
         if seq_fn and starter_name:
             if not seq_fn(ctx, starter_name, advance_gap,
-                          xy_pre_taps, xy_post_taps):
+                          xy_pre_taps, xy_post_taps,
+                          xy_receive_gap):
                 return
         else:
             # Fallback: just mash A until the slot probably exists.
