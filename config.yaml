@@ -42,12 +42,12 @@ input:
 soft_reset:
   read_slot: 0           # which party slot the gift Pokemon lands in
   advance_taps: 60       # generic-mode mashes (non-X/Y games)
-  advance_gap: 1.5       # seconds between every key press in the X/Y sequence
+  advance_gap: 2.0       # seconds between every key press in the X/Y sequence
   post_reset_wait: 12.0  # seconds after L+R+Start to wait for boot logos
                          # (Nintendo 3DS + Game Freak) before mashing
   post_reset_taps: 6     # A presses through Title -> Continue -> save flash
                          # back to the saved tile
-  post_reset_gap: 1.5    # seconds between each post-reset A press
+  post_reset_gap: 2.0    # seconds between each post-reset A press
 
   # X/Y starter sequence — manually counted on real hardware.
   xy_pre_taps:  25       # A presses to clear Tierno's dialogue
