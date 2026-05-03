@@ -1204,6 +1204,35 @@ class _App(tk.Tk):
 
     def _dispatch_event(self, evt: dict):
         kind = evt.get("type", "")
+        # Visible event trace so it's clear what the bot is doing
+        # without needing to dig through the bot's debug log.
+        if kind == "candidate":
+            sp = evt.get("species", "?")
+            star = " ★" if evt.get("shiny") else ""
+            ivs = evt.get("ivs") or {}
+            iv_sum = sum(int(v) for v in ivs.values()) if ivs else 0
+            self._log(f"  → candidate: species #{sp}{star} (IV sum {iv_sum})",
+                      "muted")
+        elif kind == "encounter":
+            sp = evt.get("species", "?")
+            self._log(f"  → encounter: species #{sp}", "muted")
+        elif kind == "target_hit":
+            self._log(f"  ★ TARGET HIT — {evt.get('reason', '?')}", "good")
+        elif kind == "read_failure":
+            self._log(f"  ! read failure: {evt.get('reason', '?')}", "warn")
+        elif kind == "offset_scan":
+            st = evt.get("state", "?")
+            if st == "started":
+                self._log("  ⌕ scanning memory for party_base…", "muted")
+            elif st == "ok":
+                self._log(f"  ✓ found party_base = "
+                          f"{evt.get('party_base', 0):#010x}", "good")
+            elif st == "fail":
+                self._log("  ✗ party_base scan failed (slot 0 likely empty)",
+                          "warn")
+        elif kind == "soft_reset_attempt":
+            self._log(f"  ↻ attempt #{evt.get('count', '?')}", "muted")
+
         # Encounters and starter candidates both populate the table.
         if kind in ("encounter", "candidate", "target_hit"):
             try:

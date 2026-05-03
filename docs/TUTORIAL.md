@@ -141,6 +141,27 @@ game was on when slot 0 finished writing — usually the "What will
 you nickname [STARTER]?" prompt. From here it's all manual:
 nickname, walk to your house, save.
 
+## Tips for reliable hunts
+
+- **Set in-game text speed to FAST.** *Options → Text Speed → Fast.*
+  Every press timing in the bot assumes Fast text. On Medium or Slow,
+  dialogue will still be scrolling when the bot moves to the next
+  step and presses can be eaten or land in the wrong context.
+- **Keep Azahar visible** (not minimised). The bot uses
+  `PostMessage` so focus isn't strictly required, but Qt occasionally
+  drops messages to fully hidden windows. A small visible window is
+  fine — you can keep doing other things on top of it.
+- **Disable in-game animations you don't need.** *Options → Battle
+  Effects → Off* shaves a few seconds off battles in encounter mode.
+  Doesn't affect starter sequence.
+- **Plug in your laptop / disable sleep.** A multi-hour shiny hunt
+  shouldn't be interrupted by power management.
+- **Watch the Log tab on the first iteration.** It'll show the
+  per-event trace (`candidate`, `offset_scan`, `read_failure`, etc.)
+  so you can see exactly when the bot is reading slot 0 and what's
+  in it. If `candidate` events never appear, the bot's reads are
+  failing — check the offset state.
+
 ## Troubleshooting
 
 ### "No party seen yet" after several resets
