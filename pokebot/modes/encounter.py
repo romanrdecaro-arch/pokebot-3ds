@@ -68,9 +68,11 @@ def run(ctx):
 
         if not in_battle:
             if walking:
-                d = next(walk_dir_iter)
-                ctx.input.tap(d, hold_s=0.30)
-            time.sleep(0.05)
+                button, hold_s = next(walk_dir_iter)
+                ctx.input.tap(button, hold_s=hold_s)
+                time.sleep(0.15)            # brief gap before next hold
+            else:
+                time.sleep(0.05)
             continue
 
         # In battle: stop walking, read the foe.
@@ -155,13 +157,21 @@ def _check_in_battle(ctx) -> bool:
 
 
 def _alternating_dirs(axis: str):
+    """Yield (button, hold_seconds) tuples for the walking loop.
+
+    Pattern: 2.0 s in direction A to kick things off, then alternate
+    3.0 s holds in B, A, B, A, … forever. Long holds mean the bot
+    walks several tiles per direction-change instead of just turning
+    in place, which is what triggers wild-grass encounters.
+    """
     if axis == "vertical":
         a, b = "DpadUp", "DpadDown"
     else:
         a, b = "DpadLeft", "DpadRight"
+    yield (a, 2.0)
     while True:
-        yield a
-        yield b
+        yield (b, 3.0)
+        yield (a, 3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -276,20 +286,21 @@ def _autodiscover_foe_base(ctx, movement: str) -> bool:
         log.warning(f"  focus_azahar failed: {e}")
 
     walk_iter = _alternating_dirs(movement)
-    taps = 0
+    holds = 0
     paths_seen: dict[str, int] = {}
     while not ctx.should_stop() and not discovered.is_set():
-        button = next(walk_iter)
-        path = ctx.input.tap(button, hold_s=0.30)
+        button, hold_s = next(walk_iter)
+        path = ctx.input.tap(button, hold_s=hold_s)
         paths_seen[path] = paths_seen.get(path, 0) + 1
-        time.sleep(0.4)
-        taps += 1
-        if taps == 1:
-            log.info(f"  walker: tap #1 sent → {button} via {path}")
-        elif taps == 4:
-            log.info(f"  walker: 4 taps sent. path counts: {paths_seen}")
-        elif taps % 30 == 0:               # every ~20 s
-            log.info(f"  walker: {taps} taps total. paths: {paths_seen}; "
+        time.sleep(0.15)                   # brief gap before next hold
+        holds += 1
+        if holds == 1:
+            log.info(f"  walker: hold #1 → {button} for {hold_s:.1f}s "
+                     f"via {path}")
+        elif holds == 4:
+            log.info(f"  walker: 4 holds done. paths: {paths_seen}")
+        elif holds % 10 == 0:               # roughly every ~30 s of walking
+            log.info(f"  walker: {holds} holds total. paths: {paths_seen}; "
                      f"scanner still sniffing.")
             # Re-focus periodically in case the user clicked away. Cheap
             # no-op when Azahar is already foreground.
