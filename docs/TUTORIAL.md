@@ -27,6 +27,14 @@ Boot your game once to the title screen so Azahar registers it.
 
 ## Step 2 — Find your offsets (one-time per ROM)
 
+> **Recommended on first setup:** use **PKHeX-Plugins LiveHeX** instead
+> of the bot's auto-discovery scan. See
+> [LIVEHEX_SETUP.md](LIVEHEX_SETUP.md) for full step-by-step. Once you
+> have the address from LiveHeX, paste it into `config.yaml` and skip
+> the rest of this section.
+
+### Auto-discovery (alternative, can be heavy on Azahar)
+
 The bot needs to know where in the game's RAM to find the party.
 Those addresses change per game / region / patch, so we discover them
 once with the offset finder:

@@ -34,6 +34,11 @@ but adapted to Azahar's UDP RPC instead of an in-emulator Lua console.
 
 > **Step-by-step walkthrough:** see [docs/TUTORIAL.md](docs/TUTORIAL.md)
 > for a full first-time setup + soft-reset starter hunt.
+>
+> **Trouble finding party_base?** See
+> [docs/LIVEHEX_SETUP.md](docs/LIVEHEX_SETUP.md) for the most
+> reliable workflow — install PKHeX-Plugins LiveHeX, connect to
+> Azahar, copy the address it uses into the bot's config.
 
 ## Download
 
