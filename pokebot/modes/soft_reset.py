@@ -97,15 +97,71 @@ def _discover_offsets_inline(ctx) -> bool:
     from .. import find_offsets as fo
     from ..games import heap_range_for, starter_species
 
-    # Single tight scan — no auto-fallback to wider ranges. Earlier
-    # versions cascaded primary → secondary → full-heap which works
-    # in theory but generated enough RPC traffic to crash Azahar's
-    # log subsystem on real X/Y sessions. If the primary range
-    # misses, surface that clearly and let the user decide whether
-    # to widen via a manual `python -m pokebot.find_offsets` run.
     gen = getattr(ctx.game, "generation", 7) or 7
     primary_start, primary_end = heap_range_for(gen)
     span_mb = (primary_end - primary_start) // (1024 * 1024)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Trainer-name anchored fast path
+    # ──────────────────────────────────────────────────────────────────
+    # If the user has set their in-game OT name in config and the
+    # game has been booted at least once before with a known offset,
+    # we can find party_base in seconds — search RAM for the unique
+    # UTF-16LE trainer name string, add the cached offset, done.
+    # Survives ASLR between Azahar sessions because we re-anchor on
+    # the trainer name every run.
+    cfg_section = ctx.config.get("soft_reset", {}) or {}
+    trainer_name = (cfg_section.get("trainer_name")
+                    or ctx.config.get("trainer_name") or "").strip()
+    cached_offset = cfg_section.get("trainer_to_party_offset")
+
+    if trainer_name and cached_offset is not None:
+        try:
+            cached_offset_int = (int(cached_offset, 0)
+                                 if isinstance(cached_offset, str)
+                                 else int(cached_offset))
+        except Exception:
+            cached_offset_int = None
+        if cached_offset_int is not None:
+            log.info(f"Trainer-name anchor: searching RAM for "
+                     f"{trainer_name!r} (UTF-16LE)…")
+            try:
+                pat = fo.trainer_name_pattern(trainer_name)
+                anchors = fo.find_pattern(
+                    ctx.rpc, pat, primary_start, primary_end)
+            except Exception as e:
+                log.warning(f"Trainer-name anchor scan failed: {e}")
+                anchors = []
+            log.info(f"Found {len(anchors)} occurrence(s) of trainer name.")
+            for a in anchors:
+                candidate = a + cached_offset_int
+                # Sanity-check by reading a PK6 there. If it's a valid
+                # record (or even a plausibly empty slot), accept it.
+                try:
+                    raw = ctx.rpc.read(candidate, 260)
+                except Exception:
+                    continue
+                # Empty slot 0 (encryption_key=0) is fine — game just
+                # hasn't received a starter yet, but the address is
+                # correct. If the slot is non-zero it must validate.
+                key = int.from_bytes(raw[:4], "little")
+                if key == 0:
+                    log.info(f"Anchor at {a:#010x} → party_base "
+                             f"{candidate:#010x} (slot 0 currently empty).")
+                else:
+                    ok, _info = fo.is_likely_pk7(raw)
+                    if not ok:
+                        continue
+                    log.info(f"Anchor at {a:#010x} → party_base "
+                             f"{candidate:#010x} (slot 0 valid PK6).")
+                ctx.game.offsets.party_base = candidate
+                ctx.game.offsets.party_stride = 484
+                return True
+
+    # ──────────────────────────────────────────────────────────────────
+    # Fallback: brute-force PK7 scan (also caches the trainer-name
+    # offset for next run if we have a name + a populated slot 0).
+    # ──────────────────────────────────────────────────────────────────
     log.info(f"Auto-discovering party_base for Gen {gen}. "
              f"Scanning {primary_start:#010x}-{primary_end:#010x} "
              f"({span_mb} MB). First-run only.")
@@ -210,7 +266,79 @@ def _discover_offsets_inline(ctx) -> bool:
                 log.info(f"Saved offsets to {cfg_path.name}: {written}")
         except Exception as e:
             log.warning(f"Could not write to {cfg_path}: {e}")
+
+    # Bonus: if the user has set their trainer name, also locate it in
+    # RAM and cache the (trainer_name → party_base) offset. Future bot
+    # runs can skip the slow PK6 scan entirely and just search for the
+    # name as an anchor.
+    if trainer_name and "party_base" in discovered:
+        try:
+            anchors = fo.find_pattern(
+                ctx.rpc, fo.trainer_name_pattern(trainer_name),
+                primary_start, primary_end)
+        except Exception as e:
+            log.debug(f"Trainer-name anchor scan failed: {e}")
+            anchors = []
+        if anchors:
+            offset = discovered["party_base"] - anchors[0]
+            log.info(f"Trainer-name anchor found at {anchors[0]:#010x}; "
+                     f"party_base offset = {offset:#x}. "
+                     f"Caching to config.yaml so future runs skip the "
+                     f"PK6 scan.")
+            try:
+                _write_soft_reset_setting(cfg_path,
+                                          "trainer_to_party_offset",
+                                          offset)
+            except Exception as e:
+                log.warning(f"Couldn't cache offset: {e}")
     return True
+
+
+def _write_soft_reset_setting(cfg_path, key: str, value: int) -> None:
+    """Append/replace a single key under the soft_reset: block in
+    config.yaml. Hex-encoded for readability, signed for safety."""
+    text = cfg_path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    # Find the soft_reset: block start and any existing key in it.
+    in_block = False
+    block_indent = "  "
+    out: list[str] = []
+    replaced = False
+    last_block_idx = -1
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "soft_reset:":
+            in_block = True
+            out.append(line)
+            continue
+        if in_block:
+            indent = line[: len(line) - len(line.lstrip())]
+            if stripped == "" or stripped.startswith("#"):
+                out.append(line)
+                last_block_idx = len(out) - 1
+                continue
+            if not indent.startswith(block_indent) \
+                    or len(indent) < len(block_indent):
+                # Block ended.
+                if not replaced:
+                    out.append(f"{block_indent}{key}: {value:#x}\n")
+                    replaced = True
+                in_block = False
+                out.append(line)
+                continue
+            block_indent = indent
+            k = stripped.split(":", 1)[0].strip()
+            if k == key:
+                out.append(f"{block_indent}{key}: {value:#x}\n")
+                replaced = True
+            else:
+                out.append(line)
+            last_block_idx = len(out) - 1
+        else:
+            out.append(line)
+    if in_block and not replaced:
+        out.append(f"{block_indent}{key}: {value:#x}\n")
+    cfg_path.write_text("".join(out), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

@@ -260,6 +260,78 @@ def scan(rpc: CitraRPC,
             last_progress = time.monotonic()
 
 
+def trainer_name_pattern(name: str) -> bytes:
+    """Encode an X/Y trainer name as the byte pattern that lives in
+    RAM: UTF-16LE characters followed by a u16 null terminator.
+
+    The X/Y trainer card stores the OT name as up to 12 UTF-16
+    characters plus a 0x0000 terminator (24 + 2 = 26 bytes max).
+    Searching for ``name + '\\x00\\x00'`` matches that exact form.
+    """
+    return name.encode("utf-16-le") + b"\x00\x00"
+
+
+def find_pattern(rpc: CitraRPC,
+                 pattern: bytes,
+                 start: int,
+                 end: int,
+                 chunk: int = 0x4000,
+                 probe_size: int = 256,
+                 skip_unit: int = 0x100000,
+                 throttle_s: float = 0.005) -> list[int]:
+    """Search [start, end) in emulator RAM for ``pattern``.
+
+    Same probe-and-skip + throttle pattern as ``scan`` so we don't
+    crash Azahar with read floods. Returns a list of absolute addresses
+    where the pattern was found.
+
+    Allows boundary-spanning matches by overlapping chunks by
+    ``len(pattern) - 1`` bytes.
+    """
+    if not pattern:
+        return []
+    overlap = len(pattern) - 1
+    hits: list[int] = []
+    cur = start
+    last_progress = time.monotonic()
+    while cur < end:
+        try:
+            probe = rpc.read(cur, probe_size)
+        except Exception:
+            cur += skip_unit
+            continue
+        if not probe or probe == b"\x00" * len(probe) \
+                     or probe == b"\xFF" * len(probe):
+            cur += skip_unit
+            continue
+        region_end = min(cur + skip_unit, end)
+        while cur < region_end:
+            try:
+                block = rpc.read(cur, chunk)
+            except Exception:
+                cur += chunk
+                continue
+            if len(block) < len(pattern):
+                cur += chunk
+                continue
+            search_from = 0
+            while True:
+                idx = block.find(pattern, search_from)
+                if idx < 0:
+                    break
+                hits.append(cur + idx)
+                search_from = idx + 1
+            cur += chunk - overlap
+            if throttle_s:
+                time.sleep(throttle_s)
+        if time.monotonic() - last_progress > 2.0:
+            pct = 100 * (cur - start) / (end - start)
+            log.info(f"pattern scan: {cur:#010x} ({pct:.1f}%, "
+                     f"{len(hits)} hit(s))")
+            last_progress = time.monotonic()
+    return hits
+
+
 def cluster_hits(hits: list[tuple[int, dict]]) -> list[dict]:
     """Group consecutive hits with the same address stride."""
     if not hits:

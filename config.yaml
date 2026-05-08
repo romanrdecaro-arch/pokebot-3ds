@@ -60,6 +60,15 @@ soft_reset:
   xy_receive_gap: 1.0    # seconds between each B press in the receive
                          # phase. Faster than advance_gap because the
                          # receive dialogue advances quickly with B.
+
+  # Trainer name (in-game OT name, exactly as you set it). Used as
+  # a fast RAM anchor: the bot searches for this string as UTF-16LE
+  # to locate party_base in seconds, even when slot 0 is empty.
+  # Once a successful brute-force scan finds party_base AND this
+  # string is set, the bot caches `trainer_to_party_offset` below
+  # automatically. Subsequent runs skip the PK6 scan entirely.
+  trainer_name: Roman
+  # trainer_to_party_offset: 0x...  # written automatically
   # Optional: lock the bot to a specific starter for the current game.
   # Wrong-species results soft-reset without evaluating the target.
   # Names per game:
