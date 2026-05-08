@@ -134,13 +134,13 @@ def run(ctx):
         time.sleep(2.0)
 
         # Not a hit: flee. Left → Right → A reaches RUN from the
-        # FIGHT cursor in X/Y's battle menu; 0.25 s between presses
+        # FIGHT cursor in X/Y's battle menu; 0.5 s between presses
         # gives the menu time to redraw.
         log.info(f"  enc#{encounters}: not a target — fleeing "
                  f"(Left, Right, A).")
         for button in ("DpadLeft", "DpadRight", "A"):
             ctx.input.tap(button, hold_s=0.05)
-            time.sleep(0.25)
+            time.sleep(0.5)
         # Dismiss "Got away safely!" / "Couldn't escape!" dialogue.
         for _ in range(6):
             ctx.input.tap("B", 0.05)
