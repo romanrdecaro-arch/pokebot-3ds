@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 from .. import find_offsets as fo
+from .. import livehex_compat as lhx
 from ..games import (heap_range_for, EXT_HEAP_RANGE_N3DS,
                       LINEAR_HEAP_RANGE_3DS, HEAP_RANGE_3DS,
                       party_base_candidates, LIVEHEX_REFERENCES)
@@ -36,8 +37,32 @@ log = logging.getLogger(__name__)
 
 
 def run(ctx):
-    log.info("Mode: debug — brute-force party_base discovery + offset bootstrap")
-    log.info("This mode sends NO inputs. It just scans memory.")
+    log.info("Mode: debug — party_base discovery + LiveHeX compatibility check")
+    log.info("This mode sends NO inputs. It just reads memory.")
+
+    # ──────────────────────────────────────────────────────────────────
+    # Step 0: LiveHeX compatibility verification.
+    # Reads the trainer-block + box1-slot1 addresses that PKHeX-Plugins
+    # uses for this game. Confirms our RPC connection is healthy AND
+    # the published offsets work on the current Azahar build BEFORE
+    # we touch anything heavier. Two reads total.
+    # ──────────────────────────────────────────────────────────────────
+    lv = lhx.livehex_version_for(ctx.game.key)
+    log.info(f"LiveHeX compat: game={ctx.game.key} → version={lv}")
+    if lv != lhx.LiveHeXVersion.UNKNOWN:
+        result = lhx.verify_compatibility(ctx.rpc, ctx.game.key)
+        for note in result.notes:
+            log.info(f"  {note}")
+        if not result.trainer_block_ok:
+            log.warning(
+                "Trainer block verification failed. Either Azahar's "
+                "scripting RPC isn't responding or the LiveHeX offset "
+                "for this game version doesn't match. Subsequent steps "
+                "will probably also fail — try re-launching Azahar with "
+                "the game loaded.")
+        else:
+            log.info(f"  ✓ LiveHeX-compatible: {ctx.game.key} is reading "
+                     f"the same data PKHeX-Plugins reads.")
 
     gen = getattr(ctx.game, "generation", 7) or 7
     primary = heap_range_for(gen)
