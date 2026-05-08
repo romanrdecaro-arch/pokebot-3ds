@@ -263,6 +263,18 @@ def _autodiscover_foe_base(ctx, movement: str) -> bool:
                     "PostMessage path won't work; bot will fall back "
                     "to pynput which requires Azahar to be FOCUSED.")
 
+    # Focus + activate Azahar right before the first key. The launcher
+    # focuses ~750 ms after Start, but in encounter mode the user
+    # reported the player not moving despite PostMessage taps reaching
+    # the queue — classic Qt symptom of the window not being "active".
+    # focus_azahar() ends with a synthetic click into the client area
+    # which forces Qt to route key events to the GL widget.
+    try:
+        from ..platform_utils import focus_azahar
+        focus_azahar()
+    except Exception as e:
+        log.warning(f"  focus_azahar failed: {e}")
+
     walk_iter = _alternating_dirs(movement)
     taps = 0
     paths_seen: dict[str, int] = {}
@@ -279,6 +291,13 @@ def _autodiscover_foe_base(ctx, movement: str) -> bool:
         elif taps % 30 == 0:               # every ~20 s
             log.info(f"  walker: {taps} taps total. paths: {paths_seen}; "
                      f"scanner still sniffing.")
+            # Re-focus periodically in case the user clicked away. Cheap
+            # no-op when Azahar is already foreground.
+            try:
+                from ..platform_utils import focus_azahar as _focus
+                _focus()
+            except Exception:
+                pass
 
     if not discovered.is_set():
         return False                           # ctx requested stop
