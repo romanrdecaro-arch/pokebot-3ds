@@ -140,7 +140,31 @@ class Bot:
 
     def _start_input(self) -> None:
         input_cfg = self.config.get("input", {})
-        binds = KeyBinds(**input_cfg.get("binds", {}))
+        # Layered binds, lowest → highest priority:
+        #   1. InputDriver hard-coded defaults
+        #   2. config.yaml input.binds
+        #   3. Azahar's qt-config.ini active profile
+        # That way the bot tracks whatever profile the user has selected
+        # in Azahar, even if config.yaml is stale.
+        bind_kwargs: dict = dict(input_cfg.get("binds", {}))
+        try:
+            from .azahar_config import load_active_profile_binds
+            azahar_binds = load_active_profile_binds()
+        except Exception as e:
+            log.warning(f"Couldn't read Azahar config: {e}")
+            azahar_binds = None
+        if azahar_binds:
+            src = azahar_binds.pop("_source", "?")
+            prof = azahar_binds.pop("_profile", "?")
+            log.info(f"Using Azahar profile {prof!r} keybinds from {src}.")
+            bind_kwargs.update(azahar_binds)
+        else:
+            log.info("Azahar qt-config.ini not found / not parseable — "
+                     "using config.yaml binds (or hard-coded defaults).")
+        binds = KeyBinds(**bind_kwargs)
+        log.info(f"Active binds: A={binds.A!r} B={binds.B!r} "
+                 f"DpadL={binds.DpadLeft!r} DpadR={binds.DpadRight!r} "
+                 f"DpadU={binds.DpadUp!r} DpadD={binds.DpadDown!r}")
         dry = bool(input_cfg.get("dry_run", False))
         self.input = InputDriver(binds=binds, dry_run=dry)
 

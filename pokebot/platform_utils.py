@@ -130,18 +130,38 @@ def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:
     return True
 
 
-def char_to_vk(ch: str):
-    """Return the Win32 virtual-key code for a single ASCII character.
+_SPECIAL_VK = {
+    "left":      0x25,    "up":         0x26,
+    "right":     0x27,    "down":       0x28,
+    "space":     0x20,    "enter":      0x0D,
+    "tab":       0x09,    "esc":        0x1B,
+    "backspace": 0x08,    "home":       0x24,
+    "end":       0x23,    "page_up":    0x21,
+    "page_down": 0x22,
+    "shift":     0x10,    "ctrl":       0x11,
+    "alt":       0x12,
+    **{f"f{i}": 0x6F + i for i in range(1, 13)},  # F1..F12 = 0x70..0x7B
+}
 
-    Handles A-Z (case insensitive) and 0-9. Returns None for other
-    characters (the input driver falls back to pynput in that case).
+
+def char_to_vk(ch: str):
+    """Return the Win32 virtual-key code for a bind name.
+
+    Accepts:
+      - single ASCII letter / digit ("a", "F", "5") → 0x30..0x5A
+      - special-key names ("left", "space", "f1") → matching VK_* code
+
+    Returns None when nothing matches (input driver falls back to
+    pynput, which knows about the same special-key names natively).
     """
-    if not ch or len(ch) != 1:
+    if not ch:
         return None
-    c = ch.upper()
-    if 'A' <= c <= 'Z' or '0' <= c <= '9':
-        return ord(c)
-    return None
+    if len(ch) == 1:
+        c = ch.upper()
+        if 'A' <= c <= 'Z' or '0' <= c <= '9':
+            return ord(c)
+        return None
+    return _SPECIAL_VK.get(ch.lower())
 
 
 def focus_azahar(title_substrings=("Azahar", "Citra")) -> bool:
