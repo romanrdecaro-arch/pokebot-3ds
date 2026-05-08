@@ -251,14 +251,33 @@ def _autodiscover_foe_base(ctx, movement: str) -> bool:
     t = threading.Thread(target=_scanner, name="FoeScanner", daemon=True)
     t.start()
 
+    diag = ctx.input.diagnose()
+    log.info(f"  input driver: {diag}")
+    if diag.get("dry_run"):
+        log.warning("  input driver is in DRY-RUN — no keystrokes will "
+                    "actually reach Azahar. Check pynput install / "
+                    "config.yaml input.dry_run.")
+    if (diag.get("platform", "").startswith("win")
+            and not diag.get("azahar_hwnd")):
+        log.warning("  no Azahar window detected on Windows. "
+                    "PostMessage path won't work; bot will fall back "
+                    "to pynput which requires Azahar to be FOCUSED.")
+
     walk_iter = _alternating_dirs(movement)
     taps = 0
+    paths_seen: dict[str, int] = {}
     while not ctx.should_stop() and not discovered.is_set():
-        ctx.input.tap(next(walk_iter), hold_s=0.30)
+        button = next(walk_iter)
+        path = ctx.input.tap(button, hold_s=0.30)
+        paths_seen[path] = paths_seen.get(path, 0) + 1
         time.sleep(0.4)
         taps += 1
-        if taps % 60 == 0:                     # every ~40 s of walking
-            log.info(f"  walker: {taps} taps so far; "
+        if taps == 1:
+            log.info(f"  walker: tap #1 sent → {button} via {path}")
+        elif taps == 4:
+            log.info(f"  walker: 4 taps sent. path counts: {paths_seen}")
+        elif taps % 30 == 0:               # every ~20 s
+            log.info(f"  walker: {taps} taps total. paths: {paths_seen}; "
                      f"scanner still sniffing.")
 
     if not discovered.is_set():

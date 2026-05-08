@@ -96,8 +96,10 @@ class InputDriver:
         return _resolve_key(getattr(self.binds, button))
 
     # -- core operations --------------------------------------------------
-    def tap(self, button: str, hold_s: float = 0.05):
-        """Press and release a button.
+    def tap(self, button: str, hold_s: float = 0.05) -> str:
+        """Press and release a button. Returns the path taken:
+        ``"dry"``, ``"postmessage"``, ``"pynput"``, or ``"none"``
+        (no path was usable — keystroke definitely did not land).
 
         On Windows, posts WM_KEYDOWN/WM_KEYUP directly to Azahar's
         window so the keypress lands regardless of which app the user
@@ -107,22 +109,42 @@ class InputDriver:
         if self.dry_run:
             log.info(f"[DRY] tap {button} ({hold_s}s)")
             time.sleep(hold_s)
-            return
+            return "dry"
 
         # Path A: Windows PostMessage to the Azahar window (no focus
         # required). Most reliable for emulator automation because
         # the user can keep doing other things on their PC.
         if sys.platform.startswith("win"):
             if self._send_via_postmessage(button, hold_s):
-                return
+                return "postmessage"
 
         # Path B: pynput global keyboard. Requires Azahar to be focused.
         if self._kb is None:
-            return
+            return "none"
         key = self._key_for(button)
         self._kb.press(key)
         time.sleep(hold_s)
         self._kb.release(key)
+        return "pynput"
+
+    def diagnose(self) -> dict:
+        """One-shot snapshot of where keystrokes will be sent. Useful for
+        logging at mode startup so the user can tell why their keys
+        aren't landing.
+        """
+        info = {
+            "dry_run": self.dry_run,
+            "platform": sys.platform,
+            "pynput_ok": PYNPUT_OK,
+            "azahar_hwnd": 0,
+        }
+        if sys.platform.startswith("win"):
+            try:
+                from .platform_utils import find_azahar_hwnd
+                info["azahar_hwnd"] = find_azahar_hwnd() or 0
+            except Exception as e:
+                info["hwnd_lookup_error"] = repr(e)
+        return info
 
     def _send_via_postmessage(self, button: str, hold_s: float) -> bool:
         try:
