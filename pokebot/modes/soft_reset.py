@@ -28,6 +28,25 @@ from ..platform_utils import focus_azahar
 log = logging.getLogger(__name__)
 
 
+def _slot_summary(pkm, slot: int) -> dict:
+    """Compact dict suitable for the 'party' broadcast.
+
+    Mirrors the shape produced by observe.py's _summary so the
+    launcher's _PartyStrip can consume both event sources.
+    """
+    return {
+        "slot":      slot,
+        "species":   pkm.species,
+        "nickname":  pkm.nickname,
+        "level":     pkm.party["level"] if pkm.party else None,
+        "shiny":     pkm.shiny,
+        "nature":    pkm.nature,
+        "gender":    pkm.gender,
+        "pid":       pkm.pid,
+        "ivs":       pkm.ivs,
+    }
+
+
 # ---------------------------------------------------------------------------
 # First-run offset auto-discovery
 # ---------------------------------------------------------------------------
@@ -443,6 +462,28 @@ def run(ctx):
             level=pkm.party["level"] if pkm.party else None,
             moves=pkm.moves,
         )
+
+        # Read slots 1-5 too so the launcher's Party strip can show
+        # the full party. Mostly empty during a starter hunt, but
+        # populated for legendary / gift hunts on a played-through
+        # save.
+        party_data = [_slot_summary(pkm, 0)]
+        stride = ctx.game.offsets.party_stride
+        for i in range(1, 6):
+            saddr = ctx.game.offsets.party_base + i * stride
+            try:
+                sraw = ctx.rpc.read(saddr, 260)
+            except Exception:
+                continue
+            if int.from_bytes(sraw[:4], "little") == 0:
+                continue
+            try:
+                spkm = parse_pkm(decrypt_pkm(sraw))
+            except Exception:
+                continue
+            if spkm.checksum_valid:
+                party_data.append(_slot_summary(spkm, i))
+        ctx.dashboard.broadcast("party", slots=party_data)
 
         # ------------------------------------------------------------------
         # Phase 3 — evaluate. Hard gate on starter species, then target rules.

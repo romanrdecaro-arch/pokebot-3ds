@@ -213,6 +213,136 @@ def _hidden_power(ivs: dict):
         return ("Normal", 30)
 
 
+class _PartyStrip(tk.Frame):
+    """A horizontal row of six slot tiles showing the player's party.
+
+    Updates when the bot broadcasts a 'party' event (full slot list) or
+    a 'candidate' event (single Pokémon — treated as slot 0).
+    """
+
+    SLOTS = 6
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=_PANEL)
+        self.pack(side="top", fill="x", padx=8, pady=(8, 0))
+
+        title_bar = tk.Frame(self, bg=_PANEL)
+        title_bar.pack(fill="x", padx=6, pady=(0, 6))
+        tk.Label(title_bar, text="Party", bg=_PANEL, fg=_TEXT,
+                 font=("Segoe UI", 11, "bold")).pack(side="left")
+
+        row = tk.Frame(self, bg=_PANEL2,
+                       highlightthickness=1, highlightbackground=_BORDER)
+        row.pack(fill="x", padx=4, pady=(0, 6), ipady=4)
+        # Six equal-width slot cells.
+        for i in range(self.SLOTS):
+            row.grid_columnconfigure(i, weight=1, uniform="party")
+        self._slot_frames: list[tk.Frame] = []
+        self._slot_sprites: dict[int, tk.PhotoImage] = {}
+        for i in range(self.SLOTS):
+            cell = tk.Frame(row, bg=_PANEL2, padx=6, pady=6)
+            cell.grid(row=0, column=i, sticky="nsew")
+            self._slot_frames.append(cell)
+            self._render_empty(cell, i)
+
+    # ---- public API --------------------------------------------------------
+
+    def update_from_party(self, slots_data: list):
+        """Update from a 'party' broadcast — list of slot dicts."""
+        # Sort by slot index (party broadcasts are usually sorted, but
+        # observe.py only includes non-empty entries, so a slot may be
+        # missing from the list).
+        by_index = {int(s.get("slot", -1)): s for s in slots_data
+                    if isinstance(s, dict)}
+        for i in range(self.SLOTS):
+            cell = self._slot_frames[i]
+            for child in cell.winfo_children():
+                child.destroy()
+            slot = by_index.get(i)
+            if slot is None:
+                self._render_empty(cell, i)
+            else:
+                self._render_slot(cell, i, slot)
+
+    def update_from_candidate(self, evt: dict):
+        """Update slot 0 from a 'candidate' broadcast."""
+        cell = self._slot_frames[0]
+        for child in cell.winfo_children():
+            child.destroy()
+        self._render_slot(cell, 0, evt)
+
+    # ---- rendering ---------------------------------------------------------
+
+    def _render_empty(self, cell: tk.Frame, idx: int):
+        tk.Label(cell, text=f"Slot {idx + 1}", bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 8, "italic")).pack()
+        tk.Label(cell, text="—", bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 14)).pack(pady=4)
+
+    def _render_slot(self, cell: tk.Frame, idx: int, evt: dict):
+        species_id = int(evt.get("species") or 0)
+        shiny = bool(evt.get("shiny"))
+        level = evt.get("level")
+        nick = evt.get("nickname") or ""
+        # Border colour for shiny / non-shiny.
+        if shiny:
+            cell.configure(bg="#2a230a", highlightthickness=1,
+                           highlightbackground="#ffd86b")
+        else:
+            cell.configure(bg=_PANEL2, highlightthickness=0)
+        bg = cell.cget("bg")
+        # Sprite.
+        sprite_lbl = tk.Label(cell, bg=bg)
+        sprite_lbl.pack()
+        self._load_sprite_async(species_id, shiny, sprite_lbl)
+        # Level
+        lvl_text = f"Lv {level}" if level is not None else "Lv —"
+        if shiny:
+            lvl_text += "  ★"
+        tk.Label(cell, text=lvl_text, bg=bg,
+                 fg="#ffd86b" if shiny else _TEXT,
+                 font=("Segoe UI", 9, "bold")).pack()
+        # Nickname (or species number fallback).
+        sub = nick if nick else f"#{species_id}"
+        tk.Label(cell, text=sub, bg=bg, fg=_MUTED,
+                 font=("Segoe UI", 8)).pack()
+
+    def _load_sprite_async(self, species_id: int, shiny: bool,
+                           target: tk.Label):
+        if not species_id:
+            target.config(text="—", fg=_MUTED, width=4, height=2,
+                          font=("Segoe UI", 12))
+            return
+        cache_key = species_id * 2 + (1 if shiny else 0)
+        if cache_key in self._slot_sprites:
+            target.config(image=self._slot_sprites[cache_key])
+            return
+        target.config(text="…", fg=_MUTED, width=4, height=2,
+                      font=("Segoe UI", 11))
+
+        def _worker():
+            try:
+                from pokebot.sprites import get_sprite_path
+                p = get_sprite_path(species_id, shiny=shiny)
+            except Exception:
+                p = None
+            if p:
+                try:
+                    img = tk.PhotoImage(file=str(p))
+                    self._slot_sprites[cache_key] = img
+                    target.after(
+                        0, lambda: target.config(image=img, text=""))
+                    return
+                except Exception:
+                    pass
+            target.after(
+                0, lambda: target.config(
+                    text=f"#{species_id}", fg=_MUTED,
+                    font=("Consolas", 8)))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+
 class _RecentlySeen(tk.Frame):
     """Sprite-rich encounter table that mirrors the pokebot-gen3 dashboard.
 
@@ -608,6 +738,8 @@ class _App(tk.Tk):
 
         right = tk.Frame(body, bg=_PANEL)
         right.pack(side="left", fill="both", expand=True)
+        # Party strip on top, then the Recently Seen / Log notebook.
+        self._party = _PartyStrip(right)
         self._build_log(right)
 
     def _lbl(self, parent, text):
@@ -724,33 +856,12 @@ class _App(tk.Tk):
         self._target_cb.pack(fill="x")
         self._refresh_method_options()
 
-        # ── Card: Options ───────────────────────────────────────────────────
-        opt_card = self._card(p, "Options")
+        # Options card removed (was clutter in the common hunt flow).
+        # Dry-run and verbose-logging are still wired for run.py CLI
+        # users; the launcher just always sends both off. We keep the
+        # BooleanVars so _start_bot doesn't need conditionals.
         self._dry_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(opt_card, text="Dry run",
-                       variable=self._dry_var,
-                       bg=_PANEL2, fg=_TEXT, selectcolor=_PANEL2,
-                       activebackground=_PANEL2,
-                       font=("Segoe UI", 10)).pack(anchor="w")
-        tk.Label(opt_card, bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 8, "italic"),
-                 anchor="w", wraplength=235, justify="left",
-                 text="Logs keys without sending them. Useful for "
-                      "checking memory reads without controlling Azahar."
-                 ).pack(anchor="w", padx=20, pady=(0, 8))
-
         self._verb_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(opt_card, text="Verbose logging",
-                       variable=self._verb_var,
-                       bg=_PANEL2, fg=_TEXT, selectcolor=_PANEL2,
-                       activebackground=_PANEL2,
-                       font=("Segoe UI", 10)).pack(anchor="w")
-        tk.Label(opt_card, bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 8, "italic"),
-                 anchor="w", wraplength=235, justify="left",
-                 text="DEBUG-level output: every RPC call and decision. "
-                      "Noisy but useful for diagnosing issues."
-                 ).pack(anchor="w", padx=20)
 
         # ── Card: Tools (Open Dashboard / Edit config) ─────────────────────
         # The Start / Stop buttons used to live in this card too, but
@@ -1251,6 +1362,17 @@ class _App(tk.Tk):
                 self._seen.add_pokemon(evt)
             except Exception as e:
                 self._log(f"[seen] failed to render: {e}", "warn")
+            # Also reflect slot 0 in the party strip up top.
+            if kind == "candidate":
+                try:
+                    self._party.update_from_candidate(evt)
+                except Exception as e:
+                    self._log(f"[party] update failed: {e}", "warn")
+        elif kind == "party":
+            try:
+                self._party.update_from_party(evt.get("slots", []))
+            except Exception as e:
+                self._log(f"[party] update failed: {e}", "warn")
 
     def _on_bot_exit(self, code: int):
         self._log_thread(
