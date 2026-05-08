@@ -156,6 +156,7 @@ _BORDER = "#262626"
 _TEXT   = "#ffffff"
 _MUTED  = "#8e8e93"   # iOS secondary label
 _ACCENT = "#ee1515"   # Pokéball red — primary CTA
+_ACCENT_DEEP = "#b80f0f"  # darker red for hairline accents on dark bg
 _ACCENT2 = "#0a84ff"  # iOS systemBlue
 _GOOD   = "#30d158"   # iOS systemGreen
 _WARN   = "#ffd60a"   # iOS systemYellow
@@ -226,6 +227,8 @@ class _PartyStrip(tk.Frame):
 
         title_bar = tk.Frame(self, bg=_PANEL)
         title_bar.pack(fill="x", padx=6, pady=(0, 6))
+        tk.Frame(title_bar, bg=_ACCENT, width=3, height=14).pack(
+            side="left", padx=(0, 8))
         tk.Label(title_bar, text="Party", bg=_PANEL, fg=_TEXT,
                  font=("Segoe UI", 11, "bold")).pack(side="left")
 
@@ -371,6 +374,8 @@ class _RecentlySeen(tk.Frame):
         # Title bar
         title_bar = tk.Frame(self, bg=_PANEL)
         title_bar.pack(fill="x", padx=14, pady=(10, 4))
+        tk.Frame(title_bar, bg=_ACCENT, width=4, height=18).pack(
+            side="left", padx=(0, 10))
         tk.Label(title_bar, text="Recently Seen",
                  bg=_PANEL, fg=_TEXT,
                  font=("Segoe UI", 13, "bold")).pack(side="left")
@@ -436,7 +441,9 @@ class _RecentlySeen(tk.Frame):
             self._empty.destroy()
             self._empty = None
         self._count += 1
-        self._counter_lbl.config(text=f"{self._count} encounters")
+        self._counter_lbl.config(
+            text=f"{self._count} encounters",
+            fg=_ACCENT, font=("Segoe UI", 9, "bold"))
 
         row = self._build_row(evt)
         row.pack(fill="x", padx=4, pady=2)
@@ -698,8 +705,9 @@ class _App(tk.Tk):
                  bg=_PANEL, fg=_MUTED, font=("Segoe UI", 9)).pack(side="right",
                                                                   padx=(0, 12))
 
-        # Thin divider under the header
-        tk.Frame(self, bg=_BORDER, height=1).pack(fill="x")
+        # Thin red accent stripe under the header — ties the brand colour
+        # into the chrome instead of leaving it only on the Start button.
+        tk.Frame(self, bg=_ACCENT, height=2).pack(fill="x")
 
         # ── Body: sidebar + log ─────────────────────────────────────────────
         body = tk.Frame(self, bg=_BG)
@@ -753,9 +761,15 @@ class _App(tk.Tk):
         wrap = tk.Frame(parent, bg=_PANEL)
         wrap.pack(fill="x", padx=12, pady=(0, 14))
         if title:
-            tk.Label(wrap, text=title.upper(), bg=_PANEL, fg=_MUTED,
+            title_row = tk.Frame(wrap, bg=_PANEL)
+            title_row.pack(fill="x", padx=4, pady=(0, 6))
+            # 8px red square, then the title in red — gives every section
+            # a brand-coloured anchor on the left edge.
+            tk.Frame(title_row, bg=_ACCENT, width=3, height=12).pack(
+                side="left", padx=(0, 8))
+            tk.Label(title_row, text=title.upper(), bg=_PANEL, fg=_ACCENT,
                      font=("Segoe UI", 9, "bold"),
-                     anchor="w").pack(fill="x", padx=4, pady=(0, 6))
+                     anchor="w").pack(side="left")
         card = tk.Frame(wrap, bg=_PANEL2, padx=14, pady=12,
                         highlightthickness=1,
                         highlightbackground=_BORDER)
@@ -912,7 +926,7 @@ class _App(tk.Tk):
                         font=("Segoe UI", 10, "bold"))
             s.map("Dark.TNotebook.Tab",
                   background=[("selected", _PANEL2)],
-                  foreground=[("selected", _TEXT)])
+                  foreground=[("selected", _ACCENT)])
             nb.configure(style="Dark.TNotebook")
         except Exception:
             pass

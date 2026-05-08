@@ -1,8 +1,11 @@
-"""Generate the Pokéball logo at assets/pokeball.png.
+"""Generate the Pikachu-face logo at assets/pokeball.png.
 
 Renders at 4x then downsamples for clean anti-aliased edges. The
 launcher subsamples 3x at runtime, so a 128x128 source becomes a
 crisp ~43px header glyph. Run once, then commit the PNG.
+
+(File is still named pokeball.png so launcher.py doesn't need to
+update its asset path.)
 """
 from __future__ import annotations
 
@@ -15,68 +18,127 @@ SIZE = 128
 SUPERSAMPLE = 4
 S = SIZE * SUPERSAMPLE
 
-WHITE = (248, 248, 250, 255)
-RED   = (220, 30, 35, 255)
-INK   = (22, 22, 24, 255)
+YELLOW    = (255, 203, 5, 255)     # canonical Pikachu yellow
+YELLOW_HI = (255, 224, 80, 255)    # cheekbone highlight
+INK       = (24, 22, 22, 255)      # near-black outline / eyes
+CHEEK     = (235, 50, 60, 255)     # red cheek
+NOSE      = (40, 35, 35, 255)
+MOUTH     = (40, 35, 35, 255)
+WHITE     = (255, 255, 255, 255)
 
 
 def main() -> None:
     canvas = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(canvas)
 
-    pad = int(S * 0.06)
-    a, b = pad, S - pad
     cx, cy = S // 2, S // 2
-    r = (b - a) // 2
+    face_r = int(S * 0.34)         # face radius
+    ear_w  = int(face_r * 0.55)
+    ear_h  = int(face_r * 1.05)
 
-    band_h    = max(2, int(S * 0.085))
-    btn_outer = int(r * 0.30)
-    btn_mid   = int(r * 0.225)
-    btn_inner = int(r * 0.115)
-    outline_w = max(2, int(S * 0.014))
+    outline_w = max(2, int(S * 0.012))
 
-    # White full ball.
-    d.ellipse([a, a, b, b], fill=WHITE)
-    # Red top half. PIL pieslice angles measure clockwise from 3 o'clock,
-    # so 180→360 sweeps left → top → right = the upper hemisphere.
-    d.pieslice([a, a, b, b], start=180, end=360, fill=RED)
+    # ── Ears ────────────────────────────────────────────────────────────────
+    # Two long, slightly curved triangles. Yellow body with a black tip.
+    # Drawn before the face so the face overlaps the ear bases cleanly.
+    ear_offset_x = int(face_r * 0.55)
+    ear_base_y   = cy - int(face_r * 0.55)
 
-    # Equator band — paste solid INK using a mask of (ball ∩ horizontal stripe)
-    # so only the band pixels are replaced.
-    band_mask = Image.new("L", (S, S), 0)
-    md = ImageDraw.Draw(band_mask)
-    md.ellipse([a, a, b, b], fill=255)
-    md.rectangle([0, 0, S, cy - band_h // 2 - 1], fill=0)
-    md.rectangle([0, cy + band_h // 2 + 1, S, S], fill=0)
-    black_layer = Image.new("RGBA", (S, S), INK)
-    canvas.paste(black_layer, (0, 0), band_mask)
+    def _draw_ear(side: int):
+        # side: -1 = left ear, +1 = right ear
+        # Triangle points (a soft trapezoid for a less-pointy base)
+        base_cx  = cx + side * ear_offset_x
+        tilt     = side * int(ear_w * 0.55)        # ear tilts outward
+        base_left  = (base_cx - ear_w // 2, ear_base_y)
+        base_right = (base_cx + ear_w // 2, ear_base_y - int(ear_w * 0.15))
+        tip        = (base_cx + tilt, ear_base_y - ear_h)
+        ear_poly = [base_left, base_right, tip]
+        # Yellow ear body (with outline)
+        d = ImageDraw.Draw(canvas)
+        d.polygon(ear_poly, fill=YELLOW, outline=INK)
+        # Re-draw outline a bit thicker by stroking the edges with line()
+        for i in range(3):
+            p1 = ear_poly[i]
+            p2 = ear_poly[(i + 1) % 3]
+            d.line([p1, p2], fill=INK, width=outline_w)
+        # Black tip — fill the upper third of the ear with INK.
+        # Compute the two points one-third down each edge (from tip).
+        def lerp(p0, p1, t):
+            return (int(p0[0] + (p1[0] - p0[0]) * t),
+                    int(p0[1] + (p1[1] - p0[1]) * t))
+        t_tip = 0.42                                # how much of the ear is black
+        tip_left  = lerp(tip, base_left,  t_tip)
+        tip_right = lerp(tip, base_right, t_tip)
+        d.polygon([tip, tip_left, tip_right],
+                  fill=INK, outline=INK)
 
+    _draw_ear(-1)
+    _draw_ear(+1)
+
+    # ── Face ────────────────────────────────────────────────────────────────
     d = ImageDraw.Draw(canvas)
-    # Outer outline.
-    d.ellipse([a, a, b, b], outline=INK, width=outline_w)
+    d.ellipse([cx - face_r, cy - face_r, cx + face_r, cy + face_r],
+              fill=YELLOW, outline=INK, width=outline_w)
+    # Re-stroke the face outline thicker for a chunky, sticker-like edge.
+    d.ellipse([cx - face_r, cy - face_r, cx + face_r, cy + face_r],
+              outline=INK, width=outline_w)
 
-    # Center button — three concentric circles.
-    d.ellipse([cx - btn_outer, cy - btn_outer,
-               cx + btn_outer, cy + btn_outer], fill=INK)
-    d.ellipse([cx - btn_mid, cy - btn_mid,
-               cx + btn_mid, cy + btn_mid], fill=WHITE)
-    d.ellipse([cx - btn_inner, cy - btn_inner,
-               cx + btn_inner, cy + btn_inner],
-              fill=(220, 220, 224, 255))
+    # ── Cheeks (red circles) ───────────────────────────────────────────────
+    cheek_r = int(face_r * 0.20)
+    cheek_y = cy + int(face_r * 0.12)
+    cheek_dx = int(face_r * 0.62)
+    for sign in (-1, +1):
+        x = cx + sign * cheek_dx
+        d.ellipse([x - cheek_r, cheek_y - cheek_r,
+                   x + cheek_r, cheek_y + cheek_r],
+                  fill=CHEEK, outline=INK, width=max(1, outline_w // 2))
 
-    # Subtle highlight on the upper-left of the red half. Compose via
-    # alpha_composite so the existing pixels are preserved (paste-with-mask
-    # would replace them with the highlight layer's transparent zones).
-    hl_w = int(r * 0.55)
-    hl_h = int(r * 0.22)
-    hl_x = cx - int(r * 0.42)
-    hl_y = cy - int(r * 0.62)
-    highlight = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(highlight).ellipse(
-        [hl_x, hl_y, hl_x + hl_w, hl_y + hl_h],
-        fill=(255, 255, 255, 110))
-    highlight = highlight.filter(ImageFilter.GaussianBlur(radius=S * 0.012))
-    canvas = Image.alpha_composite(canvas, highlight)
+    # ── Eyes ──────────────────────────────────────────────────────────────
+    eye_r = int(face_r * 0.105)
+    eye_y = cy - int(face_r * 0.20)
+    eye_dx = int(face_r * 0.36)
+    for sign in (-1, +1):
+        x = cx + sign * eye_dx
+        d.ellipse([x - eye_r, eye_y - eye_r, x + eye_r, eye_y + eye_r],
+                  fill=INK)
+        # White catchlight, top-right of each eye
+        hl_r = max(2, int(eye_r * 0.40))
+        hx = x + int(eye_r * 0.30)
+        hy = eye_y - int(eye_r * 0.30)
+        d.ellipse([hx - hl_r, hy - hl_r, hx + hl_r, hy + hl_r],
+                  fill=WHITE)
+
+    # ── Nose ──────────────────────────────────────────────────────────────
+    nose_w = int(face_r * 0.06)
+    nose_h = int(face_r * 0.05)
+    nose_y = cy - int(face_r * 0.04)
+    d.ellipse([cx - nose_w, nose_y - nose_h,
+               cx + nose_w, nose_y + nose_h],
+              fill=NOSE)
+
+    # ── Mouth (open smile) ────────────────────────────────────────────────
+    # Use two arcs that meet at a point under the nose.
+    mouth_w = int(face_r * 0.32)
+    mouth_y = cy + int(face_r * 0.05)
+    mouth_h = int(face_r * 0.18)
+    stroke = max(2, int(S * 0.010))
+    # Left half of "w" smile.
+    d.arc([cx - mouth_w, mouth_y - mouth_h // 2,
+           cx,           mouth_y + mouth_h],
+          start=20, end=160, fill=MOUTH, width=stroke)
+    # Right half of the smile.
+    d.arc([cx,           mouth_y - mouth_h // 2,
+           cx + mouth_w, mouth_y + mouth_h],
+          start=20, end=160, fill=MOUTH, width=stroke)
+
+    # ── Soft drop shadow under the head, behind the canvas ────────────────
+    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    sh_off = int(S * 0.015)
+    sd.ellipse([cx - face_r + sh_off, cy - face_r + sh_off * 2,
+                cx + face_r + sh_off, cy + face_r + sh_off * 2],
+               fill=(0, 0, 0, 80))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=S * 0.014))
+    canvas = Image.alpha_composite(shadow, canvas)
 
     final = canvas.resize((SIZE, SIZE), Image.LANCZOS)
     OUT.parent.mkdir(parents=True, exist_ok=True)
