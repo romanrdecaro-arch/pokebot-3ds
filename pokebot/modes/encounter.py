@@ -128,13 +128,12 @@ def run(ctx):
             ctx.request_stop("target hit")
             return
 
-        # Not a hit: flee. From the FIGHT cursor (default position
-        # when the battle menu opens) the X/Y 2×2 grid navigation is
-        # Down → POKEMON, Right → RUN, A to confirm. 0.25 s between
-        # presses gives the menu time to redraw.
+        # Not a hit: flee. Left → Right → A reaches RUN from the
+        # FIGHT cursor in X/Y's battle menu; 0.25 s between presses
+        # gives the menu time to redraw.
         log.info(f"  enc#{encounters}: not a target — fleeing "
-                 f"(Down, Right, A).")
-        for button in ("DpadDown", "DpadRight", "A"):
+                 f"(Left, Right, A).")
+        for button in ("DpadLeft", "DpadRight", "A"):
             ctx.input.tap(button, hold_s=0.05)
             time.sleep(0.25)
         # Dismiss "Got away safely!" / "Couldn't escape!" dialogue.
