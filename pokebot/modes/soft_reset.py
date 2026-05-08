@@ -43,9 +43,19 @@ def _discover_offsets_inline(ctx) -> bool:
 
     Returns True if party_base was found, applied, and saved. Logs and
     returns False on failure (caller should reset and try again).
+
+    Two strategies:
+      1. Standard: 5-7 PK7 records spaced ~484 bytes = full party.
+      2. Starter-hunt fallback: a single PK7 record matching the
+         expected starter species. Starter hunts begin with one
+         Pokémon in the party, so the "5+ cluster" requirement of
+         ``derive_offsets_from_clusters`` never matches — that's why
+         the user kept seeing "scan failed" even after a successful
+         pickup.
     """
     # Imported lazily so importing soft_reset doesn't drag in find_offsets.
     from .. import find_offsets as fo
+    from ..games import starter_species
 
     log.info("Auto-discovering party_base — first-run scan, ~30-90s. "
              "This only happens once per Azahar session.")
@@ -54,14 +64,73 @@ def _discover_offsets_inline(ctx) -> bool:
     except Exception as e:
         log.warning(f"Memory scan failed: {e}")
         return False
+
     clusters = fo.cluster_hits(hits)
+    log.info(f"Scan hits: {len(hits)} record(s), grouped into "
+             f"{len(clusters)} cluster(s).")
+    # Top-level cluster summary so the user can see what we're dealing with.
+    for c in clusters[:8]:
+        n = len(c["members"])
+        if n >= 2:
+            log.info(f"  cluster: start={c['start']:#010x} "
+                     f"stride={c['stride']} members={n}")
+        else:
+            addr, info = c["members"][0]
+            log.info(f"  loner:   {addr:#010x}  species=#{info['species']}")
+    if len(clusters) > 8:
+        log.info(f"  ... + {len(clusters) - 8} more clusters")
+
     discovered = fo.derive_offsets_from_clusters(clusters)
+
+    # Fallback: starter hunt — look for a single PK7 record matching
+    # the chosen starter's species.
     if "party_base" not in discovered:
-        log.warning("Scan finished but couldn't isolate the party block. "
-                    "Make sure the bot's input sequence actually placed a "
-                    "Pokémon in slot 0 — try saving in front of the table "
-                    "and re-running.")
-        return False
+        starter_name = (ctx.config.get("soft_reset", {}) or {}).get("starter")
+        expected_id = (starter_species(ctx.game.key, str(starter_name))
+                       if starter_name else None)
+        registered = set()
+        try:
+            from ..games import starters_for
+            registered = set(starters_for(ctx.game.key).values())
+        except Exception:
+            pass
+
+        chosen_addr = None
+        chosen_species = None
+        # First pass: exact starter match.
+        if expected_id:
+            for addr, info in hits:
+                if info.get("species") == expected_id:
+                    chosen_addr, chosen_species = addr, expected_id
+                    log.info(f"Fallback: found expected starter "
+                             f"#{expected_id} at {addr:#010x}.")
+                    break
+        # Second pass: any registered starter species.
+        if chosen_addr is None and registered:
+            for addr, info in hits:
+                sp = info.get("species")
+                if sp in registered:
+                    chosen_addr, chosen_species = addr, sp
+                    log.info(f"Fallback: found starter species #{sp} at "
+                             f"{addr:#010x} (not the one targeted, but a "
+                             f"valid party slot 0).")
+                    break
+        # Third pass: a single loner anywhere — best guess for slot 0.
+        if chosen_addr is None and len(hits) == 1:
+            addr, info = hits[0]
+            chosen_addr, chosen_species = addr, info.get("species")
+            log.info(f"Fallback: only one PK7 record in memory "
+                     f"({chosen_addr:#010x}, species #{chosen_species}); "
+                     "treating it as party_base.")
+        if chosen_addr is not None:
+            discovered["party_base"] = chosen_addr
+            discovered["party_stride"] = 484
+        else:
+            log.warning(
+                f"Scan completed with {len(hits)} hit(s) but none looked "
+                f"like a party slot. Make sure the bot's input sequence "
+                f"actually placed a Pokémon in slot 0.")
+            return False
 
     for k, v in discovered.items():
         if hasattr(ctx.game.offsets, k):
