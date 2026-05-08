@@ -144,6 +144,10 @@ def _discover_offsets_inline(ctx) -> bool:
         if chosen_addr is not None:
             discovered["party_base"] = chosen_addr
             discovered["party_stride"] = 484
+            # If derive_offsets_from_clusters auto-classified the same
+            # loner as foe_base, drop it — it's slot 0, not a foe slot.
+            if discovered.get("foe_base") == chosen_addr:
+                del discovered["foe_base"]
         else:
             log.warning(
                 f"Scan completed with {len(hits)} hit(s) but none looked "
