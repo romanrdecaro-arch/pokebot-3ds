@@ -245,12 +245,20 @@ def methods_for(game_key: str) -> list[Method]:
 # Scanning the right range matters: targeting 0x30M+ for an X/Y session
 # returns zero hits because the data simply isn't there.
 HEAP_RANGE_3DS         = (0x08000000, 0x40000000)
-LINEAR_HEAP_RANGE_3DS  = (0x14000000, 0x20000000)   # Gen 6 (O3DS)
+LINEAR_HEAP_RANGE_3DS  = (0x14000000, 0x20000000)   # Gen 6 (O3DS) full
+LINEAR_HEAP_HOT_3DS    = (0x14000000, 0x18000000)   # Gen 6 active region
 EXT_HEAP_RANGE_N3DS    = (0x30000000, 0x40000000)   # Gen 7
 
 
 def heap_range_for(gen: int) -> tuple[int, int]:
-    """Return the heap range most likely to contain party data."""
+    """Return the heap range most likely to contain party data.
+
+    For Gen 6 we return only the first 64 MB of the linear heap —
+    where every published X/Y party_base address lives. The full
+    128 MB linear range is the *fallback* if the hot region misses,
+    avoiding ~half the unmapped-read log spam that Azahar emits
+    during a wider scan.
+    """
     if gen == 6:
-        return LINEAR_HEAP_RANGE_3DS
+        return LINEAR_HEAP_HOT_3DS
     return EXT_HEAP_RANGE_N3DS

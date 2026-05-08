@@ -99,11 +99,16 @@ def _discover_offsets_inline(ctx) -> bool:
                           EXT_HEAP_RANGE_N3DS, LINEAR_HEAP_RANGE_3DS,
                           HEAP_RANGE_3DS)
 
-    # Try the gen-appropriate range first, then the OTHER gen's range,
-    # then a full-heap sweep as a last resort.
+    # Try a tight gen-appropriate range first to minimise unmapped-read
+    # log spam in Azahar; widen progressively if nothing turns up.
     gen = getattr(ctx.game, "generation", 7) or 7
     primary = heap_range_for(gen)
-    secondary = (LINEAR_HEAP_RANGE_3DS if gen != 6 else EXT_HEAP_RANGE_N3DS)
+    if gen == 6:
+        # Gen 6 fallback: widen to the full linear heap (0x14M-0x20M)
+        # before bouncing to the EXT heap.
+        secondary = LINEAR_HEAP_RANGE_3DS
+    else:
+        secondary = EXT_HEAP_RANGE_N3DS
     full = HEAP_RANGE_3DS
 
     def _do_scan(label, start, end):

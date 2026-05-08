@@ -203,27 +203,52 @@ def scan(rpc: CitraRPC,
          start: int = EXT_HEAP_RANGE_N3DS[0],
          end:   int = EXT_HEAP_RANGE_N3DS[1],
          step:  int = 4,
-         chunk: int = 0x10000):
-    """Yield (address, info) for every candidate PK7 found."""
+         chunk: int = 0x10000,
+         probe_size: int = 256,
+         skip_unit:  int = 0x100000):
+    """Yield (address, info) for every candidate PK7 found.
+
+    Probe-and-skip: before chunked scanning a 1 MB block, read a tiny
+    probe at the start. If the probe is all zeros (almost always means
+    unmapped 3DS memory in the X/Y heap), skip the whole 1 MB block.
+    This cuts the request count to Azahar by ~99% for sparse heaps —
+    important because Azahar logs an Error for every unmapped read,
+    which can flood its log to the point of crashing the emulator.
+    """
     cur = start
     last_progress = time.monotonic()
     while cur < end:
+        # Step 1: probe this 1 MB region. If it looks unmapped, skip it.
         try:
-            block = rpc.read(cur, chunk)
-        except Exception as e:
-            log.debug(f"read failed at {cur:#x}: {e}")
-            cur += chunk
+            probe = rpc.read(cur, probe_size)
+        except Exception:
+            cur += skip_unit
             continue
-        # The read may return fewer bytes if the address range straddles
-        # an unmapped region; chunk down if too short.
-        if len(block) < 260:
-            cur += chunk
+        # All zeros or all 0xFF → almost certainly unmapped or a fresh
+        # uninitialised region with no Pokémon data. Either way, no
+        # value in scanning further.
+        if not probe or probe == b"\x00" * len(probe) \
+                     or probe == b"\xFF" * len(probe):
+            cur += skip_unit
             continue
-        for off in range(0, len(block) - 260 + 1, step):
-            ok, info = is_likely_pk7(block[off:off+260])
-            if ok:
-                yield (cur + off, info)
-        cur += chunk - 256  # slight overlap so we don't miss boundary cases
+
+        # Step 2: scan this 1 MB region in `chunk` increments.
+        region_end = min(cur + skip_unit, end)
+        while cur < region_end:
+            try:
+                block = rpc.read(cur, chunk)
+            except Exception:
+                cur += chunk
+                continue
+            if len(block) < 260:
+                cur += chunk
+                continue
+            for off in range(0, len(block) - 260 + 1, step):
+                ok, info = is_likely_pk7(block[off:off+260])
+                if ok:
+                    yield (cur + off, info)
+            cur += chunk - 256  # slight overlap on boundaries
+
         if time.monotonic() - last_progress > 2.0:
             pct = 100 * (cur - start) / (end - start)
             log.info(f"scan progress: {cur:#010x} ({pct:.1f}%)")
