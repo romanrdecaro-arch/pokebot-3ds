@@ -664,25 +664,25 @@ class _App(tk.Tk):
         # ── Header ──────────────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=_PANEL, padx=18, pady=12)
         hdr.pack(fill="x")
-        # Pokéball logo: prefer the high-quality bundled PNG. Fall back
-        # to the Tk Canvas drawing if the asset is missing.
+        # Logo: PNG is pre-rendered at the exact display size by
+        # scripts/generate_logo.py — Tk's PhotoImage.subsample is
+        # nearest-neighbour, so any runtime scaling looks crunchy. We
+        # fall back to the Tk-canvas Pokéball if the PNG is missing.
         logo_path = ROOT / "assets" / "pokeball.png"
         self._logo_img: tk.PhotoImage | None = None
         if logo_path.exists():
             try:
-                full = tk.PhotoImage(file=str(logo_path))
-                # Source is 128px; subsample 3x → 42px, then keep ref.
-                self._logo_img = full.subsample(3, 3)
+                self._logo_img = tk.PhotoImage(file=str(logo_path))
             except Exception:
                 self._logo_img = None
         if self._logo_img is not None:
             tk.Label(hdr, image=self._logo_img, bg=_PANEL,
-                     bd=0).pack(side="left", padx=(0, 12))
+                     bd=0).pack(side="left", padx=(0, 14))
         else:
-            logo = tk.Canvas(hdr, width=34, height=34,
+            logo = tk.Canvas(hdr, width=64, height=64,
                              bg=_PANEL, highlightthickness=0)
-            logo.pack(side="left", padx=(0, 12))
-            _draw_pokeball(logo, 34)
+            logo.pack(side="left", padx=(0, 14))
+            _draw_pokeball(logo, 64)
         # Wordmark
         tk.Label(hdr, text="pokebot-3ds", bg=_PANEL, fg=_TEXT,
                  font=("Segoe UI", 16, "bold")).pack(side="left")
