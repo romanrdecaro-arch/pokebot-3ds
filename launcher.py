@@ -14,12 +14,10 @@ It will:
 from __future__ import annotations
 
 import os
-import platform
 import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).parent
@@ -841,14 +839,13 @@ class _App(tk.Tk):
                  font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(fill="x", pady=(0, 4))
         self._target_choices = [
-            "From config.yaml",
-            "Any (first match)",
             "Shiny only",
+            "Any (first match)",
             "Perfect IVs (6×31)",
             "5+ perfect IVs",
             "Shiny + 4+ perfect IVs",
         ]
-        self._target_var = tk.StringVar(value="From config.yaml")
+        self._target_var = tk.StringVar(value="Shiny only")
         self._target_cb = ttk.Combobox(hunt_card, textvariable=self._target_var,
                                        values=self._target_choices,
                                        state="readonly",
@@ -863,27 +860,9 @@ class _App(tk.Tk):
         self._dry_var = tk.BooleanVar(value=False)
         self._verb_var = tk.BooleanVar(value=False)
 
-        # ── Card: Tools (Open Dashboard / Edit config) ─────────────────────
-        # The Start / Stop buttons used to live in this card too, but
-        # they were getting pushed off-screen on smaller window heights.
-        # They're now in a sticky bar at the top of the sidebar
-        # (see _build_sticky_actions). Secondary tools stay here.
-        tools = self._card(p, "Tools")
-        tk.Button(tools, text="Open Dashboard",
-                  command=self._open_dashboard,
-                  bg=_PANEL3, fg=_ACCENT2, relief="flat", bd=0,
-                  font=("Segoe UI", 10), cursor="hand2",
-                  activebackground=_PANEL3, activeforeground=_ACCENT2,
-                  padx=10, pady=8, highlightthickness=0
-                  ).pack(fill="x", pady=(0, 6))
-        tk.Button(tools, text="Edit config.yaml",
-                  command=self._open_config,
-                  bg=_PANEL3, fg=_TEXT, relief="flat", bd=0,
-                  font=("Segoe UI", 10), cursor="hand2",
-                  activebackground=_PANEL3, activeforeground=_TEXT,
-                  padx=10, pady=8, highlightthickness=0
-                  ).pack(fill="x")
-        # Hidden manual-override scan button (CLI fallback only).
+        # Hidden manual-override scan button (CLI fallback only — not
+        # surfaced in the UI; kept so the existing _run_find_offsets
+        # plumbing still has a target widget.)
         self._scan_btn = tk.Button(p, command=self._run_find_offsets)
         self._offset_lbl = tk.Label(p)
 
@@ -1131,9 +1110,8 @@ class _App(tk.Tk):
     # ---- Actions -----------------------------------------------------------
 
     _TARGET_FILTER_FLAG = {
-        "From config.yaml":         None,
-        "Any (first match)":        "any",
         "Shiny only":               "shiny",
+        "Any (first match)":        "any",
         "Perfect IVs (6×31)":       "perfect6",
         "5+ perfect IVs":           "perfect5",
         "Shiny + 4+ perfect IVs":   "shiny+perfect4",
@@ -1217,32 +1195,6 @@ class _App(tk.Tk):
     def _stop_bot(self):
         self._log("Stopping bot...", "warn")
         self._bot.stop()
-
-    def _open_dashboard(self):
-        html = ROOT / "dashboard" / "dashboard.html"
-        if html.exists():
-            webbrowser.open("file:///" + str(html).replace("\\", "/"))
-            self._log("Opened dashboard in browser.", "good")
-        else:
-            messagebox.showerror("Not found",
-                                 f"dashboard.html not found at:\n{html}")
-
-    def _open_config(self):
-        cfg = ROOT / "config.yaml"
-        if not cfg.exists():
-            messagebox.showinfo("Not found", f"config.yaml not found at:\n{cfg}")
-            return
-        try:
-            system = platform.system()
-            if system == "Windows":
-                os.startfile(str(cfg))  # type: ignore[attr-defined]
-            elif system == "Darwin":
-                subprocess.Popen(["open", str(cfg)])
-            else:
-                subprocess.Popen(["xdg-open", str(cfg)])
-        except Exception as exc:
-            messagebox.showerror("Could not open",
-                                 f"Failed to open config.yaml: {exc}")
 
     def _run_find_offsets(self):
         if self._bot.running:
