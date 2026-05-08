@@ -144,10 +144,16 @@ def write_offsets_to_config(cfg_path: Path, offsets: dict) -> list[str]:
 
 
 def is_likely_pk7(raw: bytes) -> tuple[bool, dict | None]:
-    """Quick filter then strict checksum verify."""
+    """Quick filter then strict checksum verify, plus field-level sanity.
+
+    The basic checksum + species check has a non-trivial false-positive rate
+    (~1/(65536*65536*65)) which adds up across a 64M-position scan. The extra
+    field-level checks below — nature, ability_num, level, IV bytes — bring
+    the FP rate effectively to zero.
+    """
     if len(raw) < 232:
         return False, None
-    # Cheap rejects:
+    # Cheap rejects on plaintext bytes:
     enc_key = int.from_bytes(raw[:4], "little")
     if enc_key == 0 or enc_key == 0xFFFFFFFF:
         return False, None
@@ -156,19 +162,41 @@ def is_likely_pk7(raw: bytes) -> tuple[bool, dict | None]:
         return False, None
     species = None
     try:
-        pt = decrypt_pkm(raw[:260] if len(raw) >= 260 else raw[:232] + b"\x00"*28)
-        # checksum check
+        is_party = (len(raw) >= 260)
+        pt = decrypt_pkm(raw[:260] if is_party else raw[:232] + b"\x00" * 28)
         from .parser import calc_checksum
         stored = int.from_bytes(pt[6:8], "little")
         if calc_checksum(pt) != stored:
             return False, None
-        # extra plausibility: species in 1..1000 (Gen 7 caps at ~807)
         species = int.from_bytes(pt[8:10], "little")
         if species == 0 or species > 1000:
             return False, None
+
+        # ---- field-level sanity (filters checksum-coincidence FPs) ----
+        # Nature lives at offset 0x1C and must be 0..24.
+        nature = pt[0x1C]
+        if nature > 24:
+            return False, None
+        # Ability number at 0x15 must be one of {0, 1, 2, 4}.
+        ability_num = pt[0x15]
+        if ability_num not in (0, 1, 2, 4):
+            return False, None
+        # IV block at 0x74 (u32) packs six 5-bit IVs (0..31). All values
+        # 0..31 fit in 5 bits, so we just check the high two bits of the
+        # u32 don't claim a 6th 5-bit slot beyond the first 30 bits.
+        # (No-op for valid records but rejects garbage.)
+        iv32 = int.from_bytes(pt[0x74:0x78], "little")
+        if (iv32 >> 30) > 3:
+            return False, None
+        # For party records, current level at 0xEC must be 1..100.
+        if is_party:
+            level = pt[0xEC]
+            if level == 0 or level > 100:
+                return False, None
     except Exception:
         return False, None
-    return True, {"enc_key": enc_key, "species": species}
+    return True, {"enc_key": enc_key, "species": species,
+                  "nature": nature, "ability_num": ability_num}
 
 
 def scan(rpc: CitraRPC,

@@ -28,6 +28,27 @@ from ..platform_utils import focus_azahar
 log = logging.getLogger(__name__)
 
 
+def _read_looks_garbage(pkm) -> bool:
+    """True if the parsed slot 0 has obviously-invalid field values
+    that imply the underlying buffer isn't actually a Pokémon record
+    (e.g. cached party_base is a checksum false-positive).
+    """
+    if not pkm.species or pkm.species > 1000:
+        return True
+    if isinstance(pkm.nature, str) and pkm.nature.startswith("?("):
+        return True
+    if pkm.party:
+        lvl = pkm.party.get("level")
+        if lvl is None or lvl < 1 or lvl > 100:
+            return True
+    if pkm.ability_num not in (0, 1, 2, 4):
+        return True
+    for stat, v in (pkm.ivs or {}).items():
+        if v < 0 or v > 31:
+            return True
+    return False
+
+
 def _slot_summary(pkm, slot: int) -> dict:
     """Compact dict suitable for the 'party' broadcast.
 
@@ -75,33 +96,36 @@ def _discover_offsets_inline(ctx) -> bool:
     # Imported lazily so importing soft_reset doesn't drag in find_offsets.
     from .. import find_offsets as fo
     from ..games import (starter_species, heap_range_for,
-                          EXT_HEAP_RANGE_N3DS, LINEAR_HEAP_RANGE_3DS)
+                          EXT_HEAP_RANGE_N3DS, LINEAR_HEAP_RANGE_3DS,
+                          HEAP_RANGE_3DS)
 
-    # Gen 6 (X/Y/OR/AS) keeps the party in LINEAR_HEAP (0x14000000+),
-    # Gen 7 (S/M/USUM) keeps it in EXT_HEAP (0x30000000+). Scan the
-    # right one first; fall back to the other if zero hits.
+    # Try the gen-appropriate range first, then the OTHER gen's range,
+    # then a full-heap sweep as a last resort.
     gen = getattr(ctx.game, "generation", 7) or 7
-    primary_start, primary_end = heap_range_for(gen)
-    fallback = (LINEAR_HEAP_RANGE_3DS if gen != 6
-                else EXT_HEAP_RANGE_N3DS)
+    primary = heap_range_for(gen)
+    secondary = (LINEAR_HEAP_RANGE_3DS if gen != 6 else EXT_HEAP_RANGE_N3DS)
+    full = HEAP_RANGE_3DS
 
-    log.info(f"Auto-discovering party_base for Gen {gen} — scanning "
-             f"{primary_start:#010x}-{primary_end:#010x} (~30-90s). "
-             "First-run only.")
-    hits: list = []
-    try:
-        hits = list(fo.scan(ctx.rpc, start=primary_start, end=primary_end))
-    except Exception as e:
-        log.warning(f"Primary scan failed: {e}")
-
-    if not hits:
-        log.info(f"No hits in primary range; falling back to "
-                 f"{fallback[0]:#010x}-{fallback[1]:#010x}.")
+    def _do_scan(label, start, end):
+        log.info(f"Scanning {label}: {start:#010x}-{end:#010x} "
+                 f"({(end-start) // (1024*1024)} MB)")
         try:
-            hits = list(fo.scan(ctx.rpc, start=fallback[0], end=fallback[1]))
+            return list(fo.scan(ctx.rpc, start=start, end=end))
         except Exception as e:
-            log.warning(f"Fallback scan failed: {e}")
-            return False
+            log.warning(f"Scan failed for {label}: {e}")
+            return []
+
+    log.info(f"Auto-discovering party_base for Gen {gen}. "
+             "First-run only — subsequent attempts reuse the saved address.")
+    hits = _do_scan(f"Gen {gen} primary heap", *primary)
+    if not hits:
+        log.info("No hits in primary range; trying the other gen's heap…")
+        hits = _do_scan("secondary heap", *secondary)
+    if not hits:
+        log.info("Still no hits; full 3DS heap sweep (~2-3 min).")
+        hits = _do_scan("full 3DS heap", *full)
+    if not hits:
+        return False
 
     clusters = fo.cluster_hits(hits)
     log.info(f"Scan hits: {len(hits)} record(s), grouped into "
@@ -434,6 +458,26 @@ def run(ctx):
                 "read_failure",
                 attempt=attempt,
                 reason=f"RPC read at {addr:#010x} failed: {e}")
+            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+            continue
+
+        # Runtime sanity check: a cached party_base from a previous
+        # session might point at a buffer whose decrypted bytes pass
+        # the checksum but contain garbage values (level > 100 etc.).
+        # If the read looks bogus, drop the offset and re-discover.
+        if _read_looks_garbage(pkm):
+            log.warning(
+                f"Attempt {attempt}: slot 0 read at {addr:#010x} returned "
+                f"obviously invalid data (species={pkm.species}, "
+                f"level={pkm.party.get('level') if pkm.party else 'N/A'}, "
+                f"nature={pkm.nature}). Cached party_base is a false "
+                f"positive — clearing and rediscovering on next attempt.")
+            ctx.game.offsets.party_base = 0
+            needs_discovery = True
+            ctx.dashboard.broadcast(
+                "read_failure", attempt=attempt,
+                reason=f"Cached party_base {addr:#010x} is bogus; "
+                       "rediscovering.")
             _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
 

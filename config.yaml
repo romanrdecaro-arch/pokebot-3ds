@@ -80,10 +80,10 @@ soft_reset:
 #
 # Without these the dashboard will show no party or encounter data.
 offsets:
-  party_base:     0x0
-  foe_base:       0x0
+  party_base: 0x0
+  foe_base: 0x0
   in_battle_flag: 0x0
-  # party_stride: 484   # usually correct; only change if offsets look right but data is garbled
+  party_stride: 484   # 0x1E4; only change if offsets look right but data is garbled
 
 # Target / filter (a Pokemon counts as a "hit" when this matches).
 # Examples below; comment/uncomment to use one.
