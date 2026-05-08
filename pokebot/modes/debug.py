@@ -45,6 +45,77 @@ def run(ctx):
     trainer_name = (cfg_section.get("trainer_name")
                     or ctx.config.get("trainer_name") or "").strip()
 
+    # ──────────────────────────────────────────────────────────────────
+    # Fast path 1: anchor + known save-layout offset
+    # ──────────────────────────────────────────────────────────────────
+    # Empirically (and confirmed against the X/Y save block doc): the
+    # OT name and party slot 0 sit 0x1B8 (440) bytes apart in the save
+    # block layout. RAM tends to mirror this for the trainer-card
+    # region. Try the anchor + this fixed offset first; if the read
+    # validates as PK6, we're done in seconds without any scan.
+    SAVE_LAYOUT_NAME_TO_PARTY = 0x1B8
+    if trainer_name:
+        log.info(f"Fast path: searching RAM for trainer name "
+                 f"{trainer_name!r}…")
+        try:
+            anchors = fo.find_pattern(
+                ctx.rpc, fo.trainer_name_pattern(trainer_name),
+                primary[0], primary[1])
+        except Exception as e:
+            log.warning(f"Pattern search failed: {e}")
+            anchors = []
+        log.info(f"  Trainer name found at {len(anchors)} address(es).")
+        for anchor_addr in anchors:
+            for try_offset in (SAVE_LAYOUT_NAME_TO_PARTY,):
+                cand = anchor_addr + try_offset
+                try:
+                    raw = ctx.rpc.read(cand, 260)
+                except Exception:
+                    continue
+                ok, info = fo.is_likely_pk7(raw)
+                if not ok:
+                    continue
+                log.info(f"  ✓ Anchor at {anchor_addr:#010x} + "
+                         f"{try_offset:#x} = {cand:#010x} validates as "
+                         f"PK6 species #{info.get('species')}.")
+                # Apply + persist + verify, then return early.
+                ctx.game.offsets.party_base = cand
+                ctx.game.offsets.party_stride = 484
+                cfg_path = (Path(__file__).resolve().parent.parent.parent
+                            / "config.yaml")
+                if cfg_path.exists():
+                    try:
+                        fo.write_offsets_to_config(
+                            cfg_path,
+                            {"party_base": cand, "party_stride": 484})
+                        from .soft_reset import _write_soft_reset_setting
+                        _write_soft_reset_setting(
+                            cfg_path, "trainer_to_party_offset", try_offset)
+                        log.info(f"  Cached party_base + "
+                                 f"trainer_to_party_offset to config.yaml.")
+                    except Exception as e:
+                        log.warning(f"  Couldn't persist: {e}")
+                pkm = parse_pkm(decrypt_pkm(raw))
+                ctx.dashboard.broadcast(
+                    "candidate", attempt=0,
+                    species=pkm.species, nickname=pkm.nickname,
+                    shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
+                    ivs=pkm.ivs, pid=pkm.pid,
+                    tsv=pkm.tsv, psv=pkm.psv,
+                    ability_id=pkm.ability_id, ability_num=pkm.ability_num,
+                    level=pkm.party["level"] if pkm.party else None,
+                    moves=pkm.moves,
+                )
+                ctx.dashboard.broadcast("offset_scan", state="ok",
+                                        party_base=cand)
+                log.info(f"Slot 0: species=#{pkm.species} "
+                         f"Lv{pkm.party['level'] if pkm.party else '?'} "
+                         f"shiny={pkm.shiny} nature={pkm.nature}.")
+                log.info("Debug mode complete (fast anchor path).")
+                return
+        log.info("Anchor + save-layout offset didn't validate. "
+                 "Falling through to full PK6 scan.")
+
     # Progressive scan: hot range first, escalate if nothing found.
     # Probe-and-skip + throttle keep Azahar alive even on the widest
     # range, but each step is opt-in so the user can stop early.
