@@ -1,10 +1,16 @@
 """
-Encounter mode.
+Encounter mode (random encounters).
 
-Walks back-and-forth in tall grass, watches for the in-battle flag to
-flip, reads the foe Pokémon, evaluates against the target. On a target
-hit: stops inputs and broadcasts. On a non-hit: flees and resumes
-walking.
+Walks back-and-forth on a chosen axis (horizontal or vertical), watches
+for the in-battle flag to flip, reads the foe Pokémon, broadcasts the
+full encounter record, then flees (unless it's a target hit) and
+resumes walking.
+
+The movement axis comes from config["random_encounters"]["movement"]
+(or the --movement CLI flag) and defaults to "horizontal":
+
+  horizontal  → DpadLeft / DpadRight
+  vertical    → DpadUp   / DpadDown
 
 Active inputs require the input_driver (pynput); without it the mode
 will run in dry-run and only ever observe (won't actually walk).
@@ -25,7 +31,12 @@ log = logging.getLogger(__name__)
 
 
 def run(ctx):
-    log.info("Mode: encounter")
+    movement = (ctx.config.get("random_encounters") or {}).get(
+        "movement", "horizontal").lower()
+    if movement not in ("horizontal", "vertical"):
+        log.warning(f"Unknown movement {movement!r}; defaulting to horizontal.")
+        movement = "horizontal"
+    log.info(f"Mode: encounter ({movement})")
     if not ctx.game.offsets.foe_base:
         log.error("foe_base offset is 0 -- cannot run encounter mode. "
                   "Use the offset finder to populate it.")
@@ -38,8 +49,9 @@ def run(ctx):
     walking = True
     last_foe_key = None
 
-    # primitive walking loop — alternates left/right while not in battle
-    walk_dir_iter = _alternating_dirs()
+    # primitive walking loop — alternates the two dpad keys for the
+    # chosen axis while not in battle.
+    walk_dir_iter = _alternating_dirs(movement)
 
     while not ctx.should_stop():
         in_battle = _check_in_battle(ctx)
@@ -132,7 +144,11 @@ def _check_in_battle(ctx) -> bool:
         return False
 
 
-def _alternating_dirs():
+def _alternating_dirs(axis: str):
+    if axis == "vertical":
+        a, b = "DpadUp", "DpadDown"
+    else:
+        a, b = "DpadLeft", "DpadRight"
     while True:
-        yield "DpadLeft"
-        yield "DpadRight"
+        yield a
+        yield b

@@ -91,6 +91,10 @@ def main(argv=None):
     ap.add_argument("--starter", default=None,
                     help="starter to hunt in soft_reset mode "
                          "(e.g. chespin, fennekin, froakie)")
+    ap.add_argument("--movement", default=None,
+                    choices=["horizontal", "vertical"],
+                    help="walking axis for encounter mode "
+                         "(horizontal = Left/Right, vertical = Up/Down)")
     ap.add_argument("--verify-address", default=None,
                     help="for debug mode: read 260 bytes at this hex "
                          "address and report whether it's a valid PK6 "
@@ -120,6 +124,8 @@ def main(argv=None):
     if args.game:     config["game"] = args.game
     if args.dry_run:  config.setdefault("input", {})["dry_run"] = True
     if args.starter:  config.setdefault("soft_reset", {})["starter"] = args.starter
+    if args.movement:
+        config.setdefault("random_encounters", {})["movement"] = args.movement
     if args.target:   config["target"] = _target_preset(args.target)
     if args.verify_address:
         config["verify_address"] = int(args.verify_address, 0)

@@ -209,6 +209,7 @@ class Method:
     label: str                       # what the dropdown shows
     mode: str                        # "observe" | "encounter" | "soft_reset"
     starter: Optional[str] = None    # name from STARTERS for the game
+    movement: Optional[str] = None   # "horizontal" | "vertical" (encounter only)
     shiny_locked: bool = False       # flagged in the UI before starting
     notes: str = ""
 
@@ -233,6 +234,13 @@ def methods_for(game_key: str) -> list[Method]:
     """
     return [
         Method("Starters", "soft_reset"),
+        Method("Random encounters", "encounter",
+               notes="Walks back-and-forth in tall grass on the chosen "
+                     "axis. Every wild Pokémon is recorded to the "
+                     "Recently Seen tab; non-targets are fled and the "
+                     "bot resumes walking. Requires foe_base + "
+                     "in_battle_flag offsets — run Debug first if "
+                     "those aren't set."),
         Method("Manual control", "observe",
                notes="Bot sends NO inputs — you play normally. The "
                      "Recently Seen tab still logs wild encounters and "

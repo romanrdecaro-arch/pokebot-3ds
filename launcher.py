@@ -842,6 +842,30 @@ class _App(tk.Tk):
                                       wraplength=235, justify="left")
         self._starter_hint.pack(fill="x", pady=(2, 0))
 
+        # MOVEMENT (sub-dropdown, only visible when method=Random encounters)
+        self._movement_frame = tk.Frame(hunt_card, bg=_PANEL2)
+        tk.Frame(self._movement_frame, bg=_BORDER, height=1).pack(
+            fill="x", pady=(10, 8))
+        tk.Label(self._movement_frame, text="Movement",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", pady=(0, 4))
+        self._movement_choices = ["Horizontal (← →)", "Vertical (↑ ↓)"]
+        self._movement_var = tk.StringVar(value=self._movement_choices[0])
+        self._movement_cb = ttk.Combobox(self._movement_frame,
+                                         textvariable=self._movement_var,
+                                         values=self._movement_choices,
+                                         state="readonly",
+                                         style="Dark.TCombobox")
+        self._movement_cb.pack(fill="x")
+        tk.Label(self._movement_frame,
+                 text="Stand on a tile where you can step both directions "
+                      "in tall grass; the bot mashes the dpad pair.",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "italic"),
+                 anchor="w", wraplength=235, justify="left"
+                 ).pack(fill="x", pady=(2, 0))
+
         # TARGET FILTER (always visible)
         # Keep a reference to the divider so _on_method_change can pack
         # the starter frame BEFORE it (between method and target rather
@@ -1041,17 +1065,20 @@ class _App(tk.Tk):
             warn_parts.append(m.notes)
         self._method_warn.config(text="\n".join(warn_parts))
 
-        # Show / hide the starter sub-dropdown based on method. Pack
-        # it BEFORE the target divider so the order inside Hunt card
-        # is Method → Starter → Target.
+        # Show / hide the method-specific sub-dropdowns. Pack them
+        # BEFORE the target divider so the layout inside Hunt card is
+        # Method → (Starter or Movement) → Target.
+        self._starter_frame.pack_forget()
+        self._movement_frame.pack_forget()
         if m and m.label == "Starters":
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
             self._starter_hint.config(
                 text="Save in front of the starter table — see "
                      "TUTORIAL.md for the exact position per game.")
-        else:
-            self._starter_frame.pack_forget()
+        elif m and m.mode == "encounter":
+            self._movement_frame.pack(fill="x", pady=(4, 0),
+                                      before=self._target_divider)
 
     # ---- Live Azahar status polling ----------------------------------------
 
@@ -1166,12 +1193,22 @@ class _App(tk.Tk):
             chosen_starter = picked.lower()
         else:
             chosen_starter = method.starter
+        # Resolve the movement axis for encounter mode.
+        chosen_movement = None
+        if method.mode == "encounter":
+            chosen_movement = (
+                "vertical"
+                if "Vertical" in self._movement_var.get()
+                else "horizontal"
+            )
         args = ["--mode", method.mode]
         game = self._game_var.get()
         if game:
             args += ["--game", game]
         if chosen_starter:
             args += ["--starter", chosen_starter]
+        if chosen_movement:
+            args += ["--movement", chosen_movement]
         flag = self._TARGET_FILTER_FLAG.get(self._target_var.get())
         if flag:
             args += ["--target", flag]
