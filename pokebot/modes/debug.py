@@ -41,6 +41,62 @@ def run(ctx):
     gen = getattr(ctx.game, "generation", 7) or 7
     primary = heap_range_for(gen)
 
+    # ──────────────────────────────────────────────────────────────────
+    # Fastest path of all: --verify-address. ZERO scanning. Just one
+    # read at the user-supplied address to check it's a valid PK6.
+    # ──────────────────────────────────────────────────────────────────
+    verify_addr = ctx.config.get("verify_address")
+    if verify_addr:
+        log.info(f"Verify-only mode: reading 260 bytes at "
+                 f"{verify_addr:#010x}…")
+        try:
+            raw = ctx.rpc.read(verify_addr, 260)
+        except Exception as e:
+            log.error(f"RPC read failed: {e}")
+            ctx.dashboard.broadcast("offset_scan", state="fail", party_base=0)
+            return
+        ok, info = fo.is_likely_pk7(raw)
+        if not ok:
+            log.error(f"  {verify_addr:#010x} does NOT contain a valid "
+                      f"PK6 record. (enc_key="
+                      f"{int.from_bytes(raw[:4], 'little'):#010x}, "
+                      f"sanity={int.from_bytes(raw[4:6], 'little')}).")
+            log.error("  Verify the address in Azahar's Memory Viewer.")
+            ctx.dashboard.broadcast("offset_scan", state="fail",
+                                    party_base=0)
+            return
+        pkm = parse_pkm(decrypt_pkm(raw))
+        log.info(f"  ✓ Valid PK6: species=#{pkm.species} "
+                 f"Lv{pkm.party['level'] if pkm.party else '?'} "
+                 f"shiny={pkm.shiny} OT={pkm.ot_name!r}")
+        ctx.game.offsets.party_base = verify_addr
+        ctx.game.offsets.party_stride = 484
+        cfg_path = (Path(__file__).resolve().parent.parent.parent
+                    / "config.yaml")
+        if cfg_path.exists():
+            try:
+                fo.write_offsets_to_config(
+                    cfg_path, {"party_base": verify_addr,
+                               "party_stride": 484})
+                log.info(f"Saved party_base = {verify_addr:#010x} to "
+                         f"config.yaml.")
+            except Exception as e:
+                log.warning(f"Couldn't persist: {e}")
+        ctx.dashboard.broadcast(
+            "candidate", attempt=0,
+            species=pkm.species, nickname=pkm.nickname,
+            shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
+            ivs=pkm.ivs, pid=pkm.pid,
+            tsv=pkm.tsv, psv=pkm.psv,
+            ability_id=pkm.ability_id, ability_num=pkm.ability_num,
+            level=pkm.party["level"] if pkm.party else None,
+            moves=pkm.moves,
+        )
+        ctx.dashboard.broadcast("offset_scan", state="ok",
+                                party_base=verify_addr)
+        log.info("Verify-only mode complete.")
+        return
+
     cfg_section = ctx.config.get("soft_reset", {}) or {}
     trainer_name = (cfg_section.get("trainer_name")
                     or ctx.config.get("trainer_name") or "").strip()
@@ -113,8 +169,23 @@ def run(ctx):
                          f"shiny={pkm.shiny} nature={pkm.nature}.")
                 log.info("Debug mode complete (fast anchor path).")
                 return
-        log.info("Anchor + save-layout offset didn't validate. "
-                 "Falling through to full PK6 scan.")
+        log.warning("Anchor + save-layout offset didn't validate.")
+        log.warning("Skipping the brute-force scan — it's been crashing "
+                    "Azahar on this setup. Use Azahar's Memory Viewer "
+                    "instead (Tools → Memory Viewer):")
+        log.warning(f"  1. In Azahar, Tools → Memory Viewer (or "
+                    f"View → Memory Viewer).")
+        log.warning(f"  2. In the Hex search box, paste this UTF-16LE "
+                    f"pattern (with spaces): "
+                    f"52 00 6F 00 6D 00 61 00 6E 00")
+        log.warning(f"  3. Note the resulting address (e.g. 0x14ABCD00).")
+        log.warning(f"  4. party_base = that address + 0x1B8")
+        log.warning(f"  5. Paste it into config.yaml's offsets.party_base, "
+                    f"then run again — bot will skip discovery entirely.")
+        log.warning("Or pass --verify-address 0x... when running the "
+                    "bot to test a specific address without scanning.")
+        ctx.dashboard.broadcast("offset_scan", state="fail", party_base=0)
+        return
 
     # Progressive scan: hot range first, escalate if nothing found.
     # Probe-and-skip + throttle keep Azahar alive even on the widest
