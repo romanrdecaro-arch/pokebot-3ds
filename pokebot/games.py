@@ -224,6 +224,12 @@ def methods_for(game_key: str) -> list[Method]:
     play while still letting the launcher's "Recently Seen" panel pick
     up wild encounters and any Pokémon added to the party (gifts,
     starters, hatched eggs).
+
+    "Debug — find offsets" runs a one-shot brute-force scan to
+    discover party_base and cache the trainer-name anchor offset.
+    Run this once after a fresh save (with at least one Pokémon in
+    slot 0) so subsequent Starters / Manual runs can use the fast
+    anchor path.
     """
     return [
         Method("Starters", "soft_reset"),
@@ -231,6 +237,12 @@ def methods_for(game_key: str) -> list[Method]:
                notes="Bot sends NO inputs — you play normally. The "
                      "Recently Seen tab still logs wild encounters and "
                      "party additions as they happen."),
+        Method("Debug — find offsets", "debug",
+               notes="One-shot offset bootstrap. Sends NO inputs. "
+                     "Brute-force scans memory for party_base, then "
+                     "caches the trainer-name anchor offset to "
+                     "config.yaml. Run once with a Pokémon in slot 0; "
+                     "after that the bot uses the fast anchor path."),
     ]
 
 

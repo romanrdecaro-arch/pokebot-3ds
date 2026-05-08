@@ -158,140 +158,19 @@ def _discover_offsets_inline(ctx) -> bool:
                 ctx.game.offsets.party_stride = 484
                 return True
 
-    # ──────────────────────────────────────────────────────────────────
-    # Fallback: brute-force PK7 scan (also caches the trainer-name
-    # offset for next run if we have a name + a populated slot 0).
-    # ──────────────────────────────────────────────────────────────────
-    log.info(f"Auto-discovering party_base for Gen {gen}. "
-             f"Scanning {primary_start:#010x}-{primary_end:#010x} "
-             f"({span_mb} MB). First-run only.")
-    try:
-        hits = list(fo.scan(ctx.rpc, start=primary_start, end=primary_end))
-    except Exception as e:
-        log.warning(f"Scan failed: {e}")
-        return False
-    if not hits:
-        log.warning("No PK7 records in the gen-primary heap range. "
-                    "Either slot 0 is empty (input sequence didn't "
-                    "actually receive a starter) or party data lives "
-                    "outside the default range. To rule out the latter, "
-                    "run a manual full-heap scan: "
-                    "python -m pokebot.find_offsets --full-heap "
-                    "--save-config config.yaml")
-        return False
-
-    clusters = fo.cluster_hits(hits)
-    log.info(f"Scan hits: {len(hits)} record(s), grouped into "
-             f"{len(clusters)} cluster(s).")
-    # Top-level cluster summary so the user can see what we're dealing with.
-    for c in clusters[:8]:
-        n = len(c["members"])
-        if n >= 2:
-            log.info(f"  cluster: start={c['start']:#010x} "
-                     f"stride={c['stride']} members={n}")
-        else:
-            addr, info = c["members"][0]
-            log.info(f"  loner:   {addr:#010x}  species=#{info['species']}")
-    if len(clusters) > 8:
-        log.info(f"  ... + {len(clusters) - 8} more clusters")
-
-    discovered = fo.derive_offsets_from_clusters(clusters)
-
-    # Fallback: starter hunt — look for a single PK7 record matching
-    # the chosen starter's species.
-    if "party_base" not in discovered:
-        starter_name = (ctx.config.get("soft_reset", {}) or {}).get("starter")
-        expected_id = (starter_species(ctx.game.key, str(starter_name))
-                       if starter_name else None)
-        registered = set()
-        try:
-            from ..games import starters_for
-            registered = set(starters_for(ctx.game.key).values())
-        except Exception:
-            pass
-
-        chosen_addr = None
-        chosen_species = None
-        # First pass: exact starter match.
-        if expected_id:
-            for addr, info in hits:
-                if info.get("species") == expected_id:
-                    chosen_addr, chosen_species = addr, expected_id
-                    log.info(f"Fallback: found expected starter "
-                             f"#{expected_id} at {addr:#010x}.")
-                    break
-        # Second pass: any registered starter species.
-        if chosen_addr is None and registered:
-            for addr, info in hits:
-                sp = info.get("species")
-                if sp in registered:
-                    chosen_addr, chosen_species = addr, sp
-                    log.info(f"Fallback: found starter species #{sp} at "
-                             f"{addr:#010x} (not the one targeted, but a "
-                             f"valid party slot 0).")
-                    break
-        # Third pass: a single loner anywhere — best guess for slot 0.
-        if chosen_addr is None and len(hits) == 1:
-            addr, info = hits[0]
-            chosen_addr, chosen_species = addr, info.get("species")
-            log.info(f"Fallback: only one PK7 record in memory "
-                     f"({chosen_addr:#010x}, species #{chosen_species}); "
-                     "treating it as party_base.")
-        if chosen_addr is not None:
-            discovered["party_base"] = chosen_addr
-            discovered["party_stride"] = 484
-            # If derive_offsets_from_clusters auto-classified the same
-            # loner as foe_base, drop it — it's slot 0, not a foe slot.
-            if discovered.get("foe_base") == chosen_addr:
-                del discovered["foe_base"]
-        else:
-            log.warning(
-                f"Scan completed with {len(hits)} hit(s) but none looked "
-                f"like a party slot. Make sure the bot's input sequence "
-                f"actually placed a Pokémon in slot 0.")
-            return False
-
-    for k, v in discovered.items():
-        if hasattr(ctx.game.offsets, k):
-            setattr(ctx.game.offsets, k, v)
-    log.info("Discovered: " + ", ".join(
-        f"{k}={v:#010x}" for k, v in discovered.items()))
-
-    # Persist so the offset survives across launcher restarts.
-    cfg_path = Path(__file__).resolve().parent.parent.parent / "config.yaml"
-    if cfg_path.exists():
-        try:
-            written = fo.write_offsets_to_config(cfg_path, discovered)
-            if written:
-                log.info(f"Saved offsets to {cfg_path.name}: {written}")
-        except Exception as e:
-            log.warning(f"Could not write to {cfg_path}: {e}")
-
-    # Bonus: if the user has set their trainer name, also locate it in
-    # RAM and cache the (trainer_name → party_base) offset. Future bot
-    # runs can skip the slow PK6 scan entirely and just search for the
-    # name as an anchor.
-    if trainer_name and "party_base" in discovered:
-        try:
-            anchors = fo.find_pattern(
-                ctx.rpc, fo.trainer_name_pattern(trainer_name),
-                primary_start, primary_end)
-        except Exception as e:
-            log.debug(f"Trainer-name anchor scan failed: {e}")
-            anchors = []
-        if anchors:
-            offset = discovered["party_base"] - anchors[0]
-            log.info(f"Trainer-name anchor found at {anchors[0]:#010x}; "
-                     f"party_base offset = {offset:#x}. "
-                     f"Caching to config.yaml so future runs skip the "
-                     f"PK6 scan.")
-            try:
-                _write_soft_reset_setting(cfg_path,
-                                          "trainer_to_party_offset",
-                                          offset)
-            except Exception as e:
-                log.warning(f"Couldn't cache offset: {e}")
-    return True
+    # No brute-force fallback here — that path is now its own mode
+    # (`pokebot.modes.debug`) the user runs deliberately once. Keeps
+    # the soft-reset hunt loop tight: trainer-name anchor or fail.
+    log.error(
+        "Couldn't find party_base via the trainer-name anchor. "
+        "Either trainer_name isn't set in config.yaml or "
+        "trainer_to_party_offset hasn't been cached yet.")
+    log.error(
+        "Run debug mode once first (Method dropdown → 'Debug — find "
+        "offsets' or `python run.py --mode debug`) with a Pokémon in "
+        "slot 0. That writes the anchor offset to config.yaml and "
+        "future runs will discover party_base in seconds.")
+    return False
 
 
 def _write_soft_reset_setting(cfg_path, key: str, value: int) -> None:
