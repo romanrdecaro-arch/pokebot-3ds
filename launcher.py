@@ -1348,14 +1348,14 @@ class _App(tk.Tk):
             self._log(f"  ! read failure: {evt.get('reason', '?')}", "warn")
         elif kind == "offset_scan":
             st = evt.get("state", "?")
+            target = evt.get("target", "party_base")
             if st == "started":
-                self._log("  ⌕ scanning memory for party_base…", "muted")
+                self._log(f"  ⌕ scanning memory for {target}…", "muted")
             elif st == "ok":
-                self._log(f"  ✓ found party_base = "
-                          f"{evt.get('party_base', 0):#010x}", "good")
+                addr = evt.get(target, evt.get("party_base", 0))
+                self._log(f"  ✓ found {target} = {addr:#010x}", "good")
             elif st == "fail":
-                self._log("  ✗ party_base scan failed (slot 0 likely empty)",
-                          "warn")
+                self._log(f"  ✗ {target} scan failed", "warn")
         elif kind == "soft_reset_attempt":
             self._log(f"  ↻ attempt #{evt.get('count', '?')}", "muted")
 

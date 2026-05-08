@@ -23,11 +23,15 @@ Required offsets:
 from __future__ import annotations
 
 import logging
+import re
 import time
+from pathlib import Path
 
 from ..parser import decrypt_pkm, parse_pkm
 
 log = logging.getLogger(__name__)
+
+ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def run(ctx):
@@ -37,10 +41,16 @@ def run(ctx):
         log.warning(f"Unknown movement {movement!r}; defaulting to horizontal.")
         movement = "horizontal"
     log.info(f"Mode: encounter ({movement})")
+
+    # Auto-discover foe_base on first run (X/Y / OR/AS / SM/USUM all need
+    # a per-version address that PKHeX-Plugins doesn't ship). Caches to
+    # config.yaml so subsequent runs skip this entirely.
     if not ctx.game.offsets.foe_base:
-        log.error("foe_base offset is 0 -- cannot run encounter mode. "
-                  "Use the offset finder to populate it.")
-        return
+        if not _autodiscover_foe_base(ctx, movement):
+            log.error("foe_base auto-discovery did not complete. "
+                      "Stop, walk somewhere with tall grass, and try again.")
+            return
+
     if not ctx.game.offsets.in_battle_flag:
         log.warning("in_battle_flag is 0 -- falling back to "
                     "polling foe block for changes (less reliable).")
@@ -152,3 +162,116 @@ def _alternating_dirs(axis: str):
     while True:
         yield a
         yield b
+
+
+# ---------------------------------------------------------------------------
+# foe_base auto-discovery
+# ---------------------------------------------------------------------------
+
+def _autodiscover_foe_base(ctx, movement: str) -> bool:
+    """Walk + scan loop that resolves foe_base from a live battle.
+
+    Step 1: full heap scan to catalogue every valid PK6 record currently
+            in RAM (party + boxes). This is the baseline.
+    Step 2: walk on the chosen axis, periodically re-scan. The first
+            address that wasn't in the baseline is the foe slot.
+    Step 3: persist to config.yaml so the next run skips all this.
+
+    The first run is slow (typically 30-90 s on a 64 MB Gen 6 heap),
+    but the result is cached.
+    """
+    from ..find_offsets import scan
+    from ..games import heap_range_for
+
+    range_ = heap_range_for(ctx.game.generation)
+    log.info(f"foe_base = 0 — auto-discovering. Heap range "
+             f"{range_[0]:#x}–{range_[1]:#x}.")
+    ctx.dashboard.broadcast("offset_scan", state="started",
+                            target="foe_base")
+
+    # ── Baseline ──────────────────────────────────────────────────────
+    log.info("Step 1/2: cataloguing baseline PK6 records "
+             "(walk somewhere with grass nearby first if you haven't)…")
+    t0 = time.monotonic()
+    baseline: set[int] = set()
+    try:
+        for addr, _info in scan(ctx.rpc, range_[0], range_[1],
+                                chunk=0x4000, throttle_s=0.005):
+            baseline.add(addr)
+            if ctx.should_stop():
+                return False
+    except Exception as e:
+        log.error(f"baseline scan failed: {e}")
+        return False
+    log.info(f"  baseline: {len(baseline)} PK6 records "
+             f"({time.monotonic() - t0:.1f}s)")
+
+    # ── Walk + re-scan ───────────────────────────────────────────────
+    log.info("Step 2/2: walking until a wild battle starts. The first "
+             "new PK6 in RAM is the foe slot.")
+    walk_iter = _alternating_dirs(movement)
+    taps_per_check = 8        # ~5 s of walking between scans
+    tap_count = 0
+    rescan_n = 0
+    while not ctx.should_stop():
+        ctx.input.tap(next(walk_iter), hold_s=0.30)
+        time.sleep(0.4)
+        tap_count += 1
+        if tap_count < taps_per_check:
+            continue
+        tap_count = 0
+        rescan_n += 1
+        log.info(f"  rescan #{rescan_n}…")
+        new_addrs: set[int] = set()
+        try:
+            for addr, _info in scan(ctx.rpc, range_[0], range_[1],
+                                    chunk=0x4000, throttle_s=0.005):
+                if addr not in baseline:
+                    new_addrs.add(addr)
+                if ctx.should_stop():
+                    return False
+        except Exception as e:
+            log.warning(f"  rescan failed: {e}")
+            continue
+        if not new_addrs:
+            log.info("  no new PK6 yet; keep walking.")
+            continue
+        # The lowest fresh address is most likely the foe slot itself —
+        # higher addresses tend to be battle-engine work copies that get
+        # populated downstream.
+        foe_addr = min(new_addrs)
+        log.info(f"  foe_base = {foe_addr:#010x} "
+                 f"(picked from {len(new_addrs)} new PK6 record(s))")
+        ctx.game.offsets.foe_base = foe_addr
+        ctx.dashboard.broadcast("offset_scan", state="ok",
+                                foe_base=foe_addr)
+        _persist_foe_base(foe_addr)
+        return True
+    return False
+
+
+def _persist_foe_base(addr: int) -> None:
+    """Write foe_base into config.yaml's offsets: block (line-aware).
+
+    Preserves comments / formatting; only rewrites the foe_base line.
+    """
+    cfg = ROOT / "config.yaml"
+    if not cfg.exists():
+        return
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except Exception as e:
+        log.warning(f"could not read {cfg}: {e}")
+        return
+    new_line = f"  foe_base: {addr:#010x}"
+    out, n = re.subn(r"^( *)foe_base:\s*[^\n]+", new_line, text,
+                     count=1, flags=re.MULTILINE)
+    if n == 0:
+        log.warning(f"foe_base line not found in {cfg.name}; "
+                    f"address {addr:#010x} kept in memory only.")
+        return
+    try:
+        cfg.write_text(out, encoding="utf-8")
+        log.info(f"  saved foe_base = {addr:#010x} to {cfg.name}")
+    except Exception as e:
+        log.warning(f"could not write {cfg}: {e}")
