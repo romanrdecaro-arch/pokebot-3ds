@@ -128,6 +128,11 @@ def run(ctx):
             ctx.request_stop("target hit")
             return
 
+        # Pause briefly after the encounter is recorded so the battle
+        # animation finishes and the FIGHT/BAG/RUN/POKEMON menu is
+        # actually rendered before we start mashing direction keys.
+        time.sleep(2.0)
+
         # Not a hit: flee. Left → Right → A reaches RUN from the
         # FIGHT cursor in X/Y's battle menu; 0.25 s between presses
         # gives the menu time to redraw.
