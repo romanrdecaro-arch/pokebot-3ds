@@ -28,7 +28,8 @@ from pathlib import Path
 
 from .. import find_offsets as fo
 from ..games import (heap_range_for, EXT_HEAP_RANGE_N3DS,
-                      LINEAR_HEAP_RANGE_3DS, HEAP_RANGE_3DS)
+                      LINEAR_HEAP_RANGE_3DS, HEAP_RANGE_3DS,
+                      party_base_candidates, LIVEHEX_REFERENCES)
 from ..parser import decrypt_pkm, parse_pkm
 
 log = logging.getLogger(__name__)
@@ -96,6 +97,61 @@ def run(ctx):
                                 party_base=verify_addr)
         log.info("Verify-only mode complete.")
         return
+
+    # ──────────────────────────────────────────────────────────────────
+    # Fast path 0: try a curated list of known-likely addresses derived
+    # from PKHeX-Plugins LiveHeX reference data (trainer block + box
+    # offsets) plus the save-layout deltas.  Single read per candidate,
+    # ~5 reads total — completes in under a second.
+    # ──────────────────────────────────────────────────────────────────
+    candidates = party_base_candidates(ctx.game.key)
+    if candidates:
+        ref = LIVEHEX_REFERENCES.get(ctx.game.key, {})
+        log.info(f"Trying PKHeX-Plugins-derived candidates for "
+                 f"{ctx.game.key} (LiveHeX version {ref.get('version', '?')}).")
+        for cand in candidates:
+            try:
+                raw = ctx.rpc.read(cand, 260)
+            except Exception as e:
+                log.debug(f"  {cand:#010x}: read failed ({e})")
+                continue
+            ok, info = fo.is_likely_pk7(raw)
+            if not ok:
+                log.info(f"  {cand:#010x}: not a valid PK6 "
+                         f"(enc_key={int.from_bytes(raw[:4], 'little'):#010x})")
+                continue
+            pkm = parse_pkm(decrypt_pkm(raw))
+            log.info(f"  ✓ {cand:#010x} validates as species #{pkm.species} "
+                     f"({pkm.nickname!r}, Lv{pkm.party['level'] if pkm.party else '?'}).")
+            ctx.game.offsets.party_base = cand
+            ctx.game.offsets.party_stride = 484
+            cfg_path = (Path(__file__).resolve().parent.parent.parent
+                        / "config.yaml")
+            if cfg_path.exists():
+                try:
+                    fo.write_offsets_to_config(
+                        cfg_path, {"party_base": cand,
+                                   "party_stride": 484})
+                    log.info(f"Saved party_base = {cand:#010x} → "
+                             f"{cfg_path.name}.")
+                except Exception as e:
+                    log.warning(f"Couldn't persist: {e}")
+            ctx.dashboard.broadcast(
+                "candidate", attempt=0,
+                species=pkm.species, nickname=pkm.nickname,
+                shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
+                ivs=pkm.ivs, pid=pkm.pid,
+                tsv=pkm.tsv, psv=pkm.psv,
+                ability_id=pkm.ability_id, ability_num=pkm.ability_num,
+                level=pkm.party["level"] if pkm.party else None,
+                moves=pkm.moves,
+            )
+            ctx.dashboard.broadcast("offset_scan", state="ok",
+                                    party_base=cand)
+            log.info("Debug mode complete (PKHeX-Plugins reference path).")
+            return
+        log.info("None of the PKHeX-Plugins-derived candidates validated; "
+                 "falling through to slower paths.")
 
     cfg_section = ctx.config.get("soft_reset", {}) or {}
     trainer_name = (cfg_section.get("trainer_name")

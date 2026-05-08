@@ -274,3 +274,77 @@ def heap_range_for(gen: int) -> tuple[int, int]:
     if gen == 6:
         return LINEAR_HEAP_HOT_3DS
     return EXT_HEAP_RANGE_N3DS
+
+
+# --------------------------------------------------------------------
+# Known RAM reference points from PKHeX-Plugins LiveHeX
+# (BotController/PokeSysBotMini.cs, LiveHeXOffsets/RamOffsets.cs)
+# Pulled from PKHeX-Plugins-23.09.25.
+#
+# These are the RAM addresses LiveHeX uses for box / trainer data.
+# The party block is adjacent to the trainer card in the save layout,
+# so we generate candidate party_base addresses by adding the
+# observed save-layout offsets to the trainer block address.
+# --------------------------------------------------------------------
+
+LIVEHEX_REFERENCES: dict[str, dict] = {
+    # Pokémon X/Y v1.5 — final patch.
+    "X-USA": {
+        "trainer_block": 0x08C79C3C,    # size 0x170
+        "box1_slot1":    0x08C861C8,    # 232-byte slots, 30 per box
+        "version":       "XY_v150",
+    },
+    "Y-USA": {
+        "trainer_block": 0x08C79C3C,
+        "box1_slot1":    0x08C861C8,
+        "version":       "XY_v150",
+    },
+    # Pokémon Omega Ruby / Alpha Sapphire v1.4.
+    "OR-USA": {
+        "trainer_block": 0x08C81340,
+        "box1_slot1":    0x08C9E134,
+        "version":       "ORAS_v140",
+    },
+    "AS-USA": {
+        "trainer_block": 0x08C81340,
+        "box1_slot1":    0x08C9E134,
+        "version":       "ORAS_v140",
+    },
+    # Sun / Moon / USUM (USA) — extended heap, different layout.
+    "SM-USA-1.2": {
+        "trainer_block": 0x330D67D0,    # size 0xC0
+        "box1_slot1":    0x330D9838,
+        "version":       "SM_v120",
+    },
+    "USUM-USA-1.2": {
+        "trainer_block": 0x33012818,    # size 0xC0
+        "box1_slot1":    0x33015AB0,
+        "version":       "UM_v120",
+    },
+}
+
+
+def party_base_candidates(game_key: str) -> list[int]:
+    """Return likely RAM addresses for party slot 0, ordered most→least
+    likely. Derived from the trainer-block reference + observed
+    save-layout offsets. Each is a single-read verification away from
+    being confirmed.
+    """
+    ref = LIVEHEX_REFERENCES.get(game_key)
+    if not ref:
+        return []
+    tb = ref["trainer_block"]
+    b1 = ref["box1_slot1"]
+    if game_key in ("X-USA", "Y-USA", "OR-USA", "AS-USA"):
+        # Gen 6 save layout: trainer card 0x19400, party 0x19600,
+        # box 0x27A00. Distances: trainer→party = 0x200,
+        # party→box = 0xE400.
+        return [
+            tb + 0x200,         # mirror save spacing (most likely)
+            tb + 0x170,         # right after trainer block
+            b1 - 0xE400,        # mirror save party→box spacing
+            b1 - 0xC58C,        # alternative: RAM trainer→box delta
+        ]
+    # Gen 7 save layout differs significantly; provide a few reasonable
+    # guesses around the trainer block.
+    return [tb + 0xC0, tb + 0x140, b1 - 0x3000]
