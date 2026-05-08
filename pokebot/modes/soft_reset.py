@@ -55,15 +55,34 @@ def _discover_offsets_inline(ctx) -> bool:
     """
     # Imported lazily so importing soft_reset doesn't drag in find_offsets.
     from .. import find_offsets as fo
-    from ..games import starter_species
+    from ..games import (starter_species, heap_range_for,
+                          EXT_HEAP_RANGE_N3DS, LINEAR_HEAP_RANGE_3DS)
 
-    log.info("Auto-discovering party_base — first-run scan, ~30-90s. "
-             "This only happens once per Azahar session.")
+    # Gen 6 (X/Y/OR/AS) keeps the party in LINEAR_HEAP (0x14000000+),
+    # Gen 7 (S/M/USUM) keeps it in EXT_HEAP (0x30000000+). Scan the
+    # right one first; fall back to the other if zero hits.
+    gen = getattr(ctx.game, "generation", 7) or 7
+    primary_start, primary_end = heap_range_for(gen)
+    fallback = (LINEAR_HEAP_RANGE_3DS if gen != 6
+                else EXT_HEAP_RANGE_N3DS)
+
+    log.info(f"Auto-discovering party_base for Gen {gen} — scanning "
+             f"{primary_start:#010x}-{primary_end:#010x} (~30-90s). "
+             "First-run only.")
+    hits: list = []
     try:
-        hits = list(fo.scan(ctx.rpc))
+        hits = list(fo.scan(ctx.rpc, start=primary_start, end=primary_end))
     except Exception as e:
-        log.warning(f"Memory scan failed: {e}")
-        return False
+        log.warning(f"Primary scan failed: {e}")
+
+    if not hits:
+        log.info(f"No hits in primary range; falling back to "
+                 f"{fallback[0]:#010x}-{fallback[1]:#010x}.")
+        try:
+            hits = list(fo.scan(ctx.rpc, start=fallback[0], end=fallback[1]))
+        except Exception as e:
+            log.warning(f"Fallback scan failed: {e}")
+            return False
 
     clusters = fo.cluster_hits(hits)
     log.info(f"Scan hits: {len(hits)} record(s), grouped into "

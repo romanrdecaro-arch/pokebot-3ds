@@ -234,10 +234,23 @@ def methods_for(game_key: str) -> list[Method]:
     ]
 
 
-# 3DS virtual address ranges. The application heap (FCRAM mapped) spans
-# roughly 0x08000000 - 0x40000000 from the game's perspective. The bulk
-# of game-managed objects (including the player's party) live in the
-# 0x30000000 - 0x40000000 range on N3DS-specific extended-memory titles
-# (which is all of Gen 6/7).
-HEAP_RANGE_3DS = (0x08000000, 0x40000000)
-EXT_HEAP_RANGE_N3DS = (0x30000000, 0x40000000)
+# 3DS virtual address ranges. Where the player's party block lives
+# depends on the game:
+#
+#   - Gen 7 (S/M, US/UM) — N3DS-only titles. Party data lives in the
+#     extended linear heap at 0x30000000 - 0x40000000.
+#   - Gen 6 (X/Y, OR/AS) — originally O3DS titles. Party data lives in
+#     the standard linear heap at 0x14000000 - 0x20000000.
+#
+# Scanning the right range matters: targeting 0x30M+ for an X/Y session
+# returns zero hits because the data simply isn't there.
+HEAP_RANGE_3DS         = (0x08000000, 0x40000000)
+LINEAR_HEAP_RANGE_3DS  = (0x14000000, 0x20000000)   # Gen 6 (O3DS)
+EXT_HEAP_RANGE_N3DS    = (0x30000000, 0x40000000)   # Gen 7
+
+
+def heap_range_for(gen: int) -> tuple[int, int]:
+    """Return the heap range most likely to contain party data."""
+    if gen == 6:
+        return LINEAR_HEAP_RANGE_3DS
+    return EXT_HEAP_RANGE_N3DS
