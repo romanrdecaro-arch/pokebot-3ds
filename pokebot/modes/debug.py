@@ -27,7 +27,8 @@ import time
 from pathlib import Path
 
 from .. import find_offsets as fo
-from ..games import heap_range_for
+from ..games import (heap_range_for, EXT_HEAP_RANGE_N3DS,
+                      LINEAR_HEAP_RANGE_3DS, HEAP_RANGE_3DS)
 from ..parser import decrypt_pkm, parse_pkm
 
 log = logging.getLogger(__name__)
@@ -38,32 +39,64 @@ def run(ctx):
     log.info("This mode sends NO inputs. It just scans memory.")
 
     gen = getattr(ctx.game, "generation", 7) or 7
-    primary_start, primary_end = heap_range_for(gen)
-    span_mb = (primary_end - primary_start) // (1024 * 1024)
+    primary = heap_range_for(gen)
 
     cfg_section = ctx.config.get("soft_reset", {}) or {}
     trainer_name = (cfg_section.get("trainer_name")
                     or ctx.config.get("trainer_name") or "").strip()
 
-    log.info(f"Scanning {primary_start:#010x}-{primary_end:#010x} "
-             f"({span_mb} MB) for valid PK6 records…")
-    ctx.dashboard.broadcast("offset_scan", state="started", attempt=0)
-    try:
-        hits = list(fo.scan(ctx.rpc, start=primary_start, end=primary_end))
-    except Exception as e:
-        log.error(f"Scan failed: {e}")
-        ctx.dashboard.broadcast("offset_scan", state="fail", party_base=0)
-        return
+    # Progressive scan: hot range first, escalate if nothing found.
+    # Probe-and-skip + throttle keep Azahar alive even on the widest
+    # range, but each step is opt-in so the user can stop early.
+    if gen == 6:
+        ranges = [
+            ("Gen 6 hot (linear heap, first 64 MB)", primary),
+            ("Gen 6 full linear heap (128 MB)", LINEAR_HEAP_RANGE_3DS),
+            ("Gen 7 EXT heap (some Gen 6 builds use this)",
+             EXT_HEAP_RANGE_N3DS),
+        ]
+    else:
+        ranges = [
+            ("Gen 7 EXT heap (256 MB)", primary),
+            ("Gen 6 linear heap (in case of misclassified game)",
+             LINEAR_HEAP_RANGE_3DS),
+        ]
 
-    log.info(f"Scan finished: {len(hits)} PK6 candidate(s) found.")
+    ctx.dashboard.broadcast("offset_scan", state="started", attempt=0)
+    hits: list = []
+    used_range = None
+    for label, (rng_start, rng_end) in ranges:
+        span_mb = (rng_end - rng_start) // (1024 * 1024)
+        log.info(f"Scanning {label}: {rng_start:#010x}-{rng_end:#010x} "
+                 f"({span_mb} MB)…")
+        try:
+            this_hits = list(fo.scan(ctx.rpc, start=rng_start, end=rng_end))
+        except Exception as e:
+            log.warning(f"Scan failed for {label}: {e}")
+            continue
+        log.info(f"  → {len(this_hits)} PK6 candidate(s) in this range")
+        if this_hits:
+            hits = this_hits
+            used_range = (rng_start, rng_end)
+            break
+        # Brief pause between escalations so Azahar's log buffer can
+        # flush before we hit it again.
+        time.sleep(0.5)
+
     if not hits:
-        log.error("No PK6 records anywhere in the scan range.")
-        log.error("  - Is there a Pokémon in slot 0 of your party?")
-        log.error("  - PKHeX → load the live save → check the party block.")
-        log.error("  - Try `python -m pokebot.find_offsets --full-heap "
-                  "--save-config config.yaml` for a wider scan.")
+        log.error("No PK6 records found in any standard heap range.")
+        log.error("  - Verify slot 0 has a Pokémon: open in-game party "
+                  "menu in Azahar.")
+        log.error("  - PKHeX → File → Open → load the live save and "
+                  "check the party block.")
+        log.error("  - Last-resort full-heap scan (slow, but covers "
+                  "every byte): python -m pokebot.find_offsets "
+                  "--full-heap --save-config config.yaml")
         ctx.dashboard.broadcast("offset_scan", state="fail", party_base=0)
         return
+    primary_start, primary_end = used_range
+    log.info(f"Working with {len(hits)} hit(s) in "
+             f"{primary_start:#010x}-{primary_end:#010x}.")
 
     clusters = fo.cluster_hits(hits)
     log.info(f"Hits grouped into {len(clusters)} cluster(s).")
