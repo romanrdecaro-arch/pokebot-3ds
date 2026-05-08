@@ -169,85 +169,107 @@ def _alternating_dirs(axis: str):
 # ---------------------------------------------------------------------------
 
 def _autodiscover_foe_base(ctx, movement: str) -> bool:
-    """Walk + scan loop that resolves foe_base from a live battle.
+    """Walk + scan in parallel until a battle exposes the foe slot.
 
-    Step 1: full heap scan to catalogue every valid PK6 record currently
-            in RAM (party + boxes). This is the baseline.
-    Step 2: walk on the chosen axis, periodically re-scan. The first
-            address that wasn't in the baseline is the foe slot.
-    Step 3: persist to config.yaml so the next run skips all this.
+    The walking loop runs in the main thread (so the player starts
+    moving immediately, with no scan-blocked dead time), and a scanner
+    runs alongside on a background thread:
 
-    The first run is slow (typically 30-90 s on a 64 MB Gen 6 heap),
-    but the result is cached.
+      - Baseline pass catalogues every valid PK6 currently in RAM
+        (party + boxes + any stale battle data).
+      - Subsequent passes diff against the baseline. The first new
+        address is treated as the foe slot, since the foe is the only
+        new PK6 the engine allocates when a wild battle starts.
+
+    Inputs go through the input driver (PostMessage on Windows, no
+    RPC), the scanner owns the RPC, so there's no contention on the
+    socket. Result is persisted to config.yaml.
     """
+    import threading
+
     from ..find_offsets import scan
     from ..games import heap_range_for
 
     range_ = heap_range_for(ctx.game.generation)
-    log.info(f"foe_base = 0 — auto-discovering. Heap range "
-             f"{range_[0]:#x}–{range_[1]:#x}.")
+    log.info("foe_base = 0 — auto-discovering. Bot is walking now; "
+             "scanner is sniffing memory in parallel.")
+    log.info(f"  heap range:    {range_[0]:#x}–{range_[1]:#x}")
+    log.info(f"  walk axis:     {movement}")
+    log.info(f"  expected time: 30-90 s once you bump into a wild encounter.")
     ctx.dashboard.broadcast("offset_scan", state="started",
                             target="foe_base")
 
-    # ── Baseline ──────────────────────────────────────────────────────
-    log.info("Step 1/2: cataloguing baseline PK6 records "
-             "(walk somewhere with grass nearby first if you haven't)…")
-    t0 = time.monotonic()
-    baseline: set[int] = set()
-    try:
-        for addr, _info in scan(ctx.rpc, range_[0], range_[1],
-                                chunk=0x4000, throttle_s=0.005):
-            baseline.add(addr)
-            if ctx.should_stop():
-                return False
-    except Exception as e:
-        log.error(f"baseline scan failed: {e}")
-        return False
-    log.info(f"  baseline: {len(baseline)} PK6 records "
-             f"({time.monotonic() - t0:.1f}s)")
+    found = [None]                   # type: list[int | None]
+    discovered = threading.Event()
 
-    # ── Walk + re-scan ───────────────────────────────────────────────
-    log.info("Step 2/2: walking until a wild battle starts. The first "
-             "new PK6 in RAM is the foe slot.")
-    walk_iter = _alternating_dirs(movement)
-    taps_per_check = 8        # ~5 s of walking between scans
-    tap_count = 0
-    rescan_n = 0
-    while not ctx.should_stop():
-        ctx.input.tap(next(walk_iter), hold_s=0.30)
-        time.sleep(0.4)
-        tap_count += 1
-        if tap_count < taps_per_check:
-            continue
-        tap_count = 0
-        rescan_n += 1
-        log.info(f"  rescan #{rescan_n}…")
-        new_addrs: set[int] = set()
+    def _scanner() -> None:
+        baseline: set[int] = set()
+        t0 = time.monotonic()
+        log.info("  scanner: building baseline (overworld) …")
         try:
             for addr, _info in scan(ctx.rpc, range_[0], range_[1],
                                     chunk=0x4000, throttle_s=0.005):
-                if addr not in baseline:
-                    new_addrs.add(addr)
-                if ctx.should_stop():
-                    return False
+                baseline.add(addr)
+                if ctx.should_stop() or discovered.is_set():
+                    return
         except Exception as e:
-            log.warning(f"  rescan failed: {e}")
-            continue
-        if not new_addrs:
-            log.info("  no new PK6 yet; keep walking.")
-            continue
-        # The lowest fresh address is most likely the foe slot itself —
-        # higher addresses tend to be battle-engine work copies that get
-        # populated downstream.
-        foe_addr = min(new_addrs)
-        log.info(f"  foe_base = {foe_addr:#010x} "
-                 f"(picked from {len(new_addrs)} new PK6 record(s))")
-        ctx.game.offsets.foe_base = foe_addr
-        ctx.dashboard.broadcast("offset_scan", state="ok",
-                                foe_base=foe_addr)
-        _persist_foe_base(foe_addr)
-        return True
-    return False
+            log.error(f"  scanner: baseline failed: {e}")
+            return
+        log.info(f"  scanner: baseline = {len(baseline)} PK6 records "
+                 f"({time.monotonic() - t0:.1f}s). Watching for new ones.")
+
+        pass_n = 0
+        while not ctx.should_stop() and not discovered.is_set():
+            pass_n += 1
+            t1 = time.monotonic()
+            new_here: list[int] = []
+            try:
+                for addr, _info in scan(ctx.rpc, range_[0], range_[1],
+                                        chunk=0x4000, throttle_s=0.005):
+                    if addr not in baseline:
+                        new_here.append(addr)
+                    if ctx.should_stop() or discovered.is_set():
+                        return
+            except Exception as e:
+                log.warning(f"  scanner: pass #{pass_n} failed: {e}")
+                time.sleep(1.0)
+                continue
+            elapsed = time.monotonic() - t1
+            if not new_here:
+                log.info(f"  scanner: pass #{pass_n} — no new PK6 "
+                         f"({elapsed:.1f}s). Keep walking.")
+                continue
+            # Lowest fresh address is the most likely foe slot;
+            # later addresses tend to be battle-engine work copies.
+            foe_addr = min(new_here)
+            log.info(f"  scanner: pass #{pass_n} found {len(new_here)} "
+                     f"new PK6(s); foe_base = {foe_addr:#010x}")
+            found[0] = foe_addr
+            discovered.set()
+            return
+
+    t = threading.Thread(target=_scanner, name="FoeScanner", daemon=True)
+    t.start()
+
+    walk_iter = _alternating_dirs(movement)
+    taps = 0
+    while not ctx.should_stop() and not discovered.is_set():
+        ctx.input.tap(next(walk_iter), hold_s=0.30)
+        time.sleep(0.4)
+        taps += 1
+        if taps % 60 == 0:                     # every ~40 s of walking
+            log.info(f"  walker: {taps} taps so far; "
+                     f"scanner still sniffing.")
+
+    if not discovered.is_set():
+        return False                           # ctx requested stop
+    foe_addr = found[0]
+    if foe_addr is None:
+        return False
+    ctx.game.offsets.foe_base = foe_addr
+    ctx.dashboard.broadcast("offset_scan", state="ok", foe_base=foe_addr)
+    _persist_foe_base(foe_addr)
+    return True
 
 
 def _persist_foe_base(addr: int) -> None:
