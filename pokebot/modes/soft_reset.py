@@ -95,41 +95,33 @@ def _discover_offsets_inline(ctx) -> bool:
     """
     # Imported lazily so importing soft_reset doesn't drag in find_offsets.
     from .. import find_offsets as fo
-    from ..games import (starter_species, heap_range_for,
-                          EXT_HEAP_RANGE_N3DS, LINEAR_HEAP_RANGE_3DS,
-                          HEAP_RANGE_3DS)
+    from ..games import heap_range_for, starter_species
 
-    # Try a tight gen-appropriate range first to minimise unmapped-read
-    # log spam in Azahar; widen progressively if nothing turns up.
+    # Single tight scan — no auto-fallback to wider ranges. Earlier
+    # versions cascaded primary → secondary → full-heap which works
+    # in theory but generated enough RPC traffic to crash Azahar's
+    # log subsystem on real X/Y sessions. If the primary range
+    # misses, surface that clearly and let the user decide whether
+    # to widen via a manual `python -m pokebot.find_offsets` run.
     gen = getattr(ctx.game, "generation", 7) or 7
-    primary = heap_range_for(gen)
-    if gen == 6:
-        # Gen 6 fallback: widen to the full linear heap (0x14M-0x20M)
-        # before bouncing to the EXT heap.
-        secondary = LINEAR_HEAP_RANGE_3DS
-    else:
-        secondary = EXT_HEAP_RANGE_N3DS
-    full = HEAP_RANGE_3DS
-
-    def _do_scan(label, start, end):
-        log.info(f"Scanning {label}: {start:#010x}-{end:#010x} "
-                 f"({(end-start) // (1024*1024)} MB)")
-        try:
-            return list(fo.scan(ctx.rpc, start=start, end=end))
-        except Exception as e:
-            log.warning(f"Scan failed for {label}: {e}")
-            return []
-
+    primary_start, primary_end = heap_range_for(gen)
+    span_mb = (primary_end - primary_start) // (1024 * 1024)
     log.info(f"Auto-discovering party_base for Gen {gen}. "
-             "First-run only — subsequent attempts reuse the saved address.")
-    hits = _do_scan(f"Gen {gen} primary heap", *primary)
+             f"Scanning {primary_start:#010x}-{primary_end:#010x} "
+             f"({span_mb} MB). First-run only.")
+    try:
+        hits = list(fo.scan(ctx.rpc, start=primary_start, end=primary_end))
+    except Exception as e:
+        log.warning(f"Scan failed: {e}")
+        return False
     if not hits:
-        log.info("No hits in primary range; trying the other gen's heap…")
-        hits = _do_scan("secondary heap", *secondary)
-    if not hits:
-        log.info("Still no hits; full 3DS heap sweep (~2-3 min).")
-        hits = _do_scan("full 3DS heap", *full)
-    if not hits:
+        log.warning("No PK7 records in the gen-primary heap range. "
+                    "Either slot 0 is empty (input sequence didn't "
+                    "actually receive a starter) or party data lives "
+                    "outside the default range. To rule out the latter, "
+                    "run a manual full-heap scan: "
+                    "python -m pokebot.find_offsets --full-heap "
+                    "--save-config config.yaml")
         return False
 
     clusters = fo.cluster_hits(hits)

@@ -203,17 +203,23 @@ def scan(rpc: CitraRPC,
          start: int = EXT_HEAP_RANGE_N3DS[0],
          end:   int = EXT_HEAP_RANGE_N3DS[1],
          step:  int = 4,
-         chunk: int = 0x10000,
+         chunk: int = 0x4000,         # 16 KB — smaller per-read pressure
          probe_size: int = 256,
-         skip_unit:  int = 0x100000):
+         skip_unit:  int = 0x100000,
+         throttle_s: float = 0.005):
     """Yield (address, info) for every candidate PK7 found.
 
-    Probe-and-skip: before chunked scanning a 1 MB block, read a tiny
-    probe at the start. If the probe is all zeros (almost always means
-    unmapped 3DS memory in the X/Y heap), skip the whole 1 MB block.
-    This cuts the request count to Azahar by ~99% for sparse heaps —
-    important because Azahar logs an Error for every unmapped read,
-    which can flood its log to the point of crashing the emulator.
+    Probe-and-skip + throttle: before chunked scanning a 1 MB block,
+    read a tiny probe at the start. If the probe is all 0x00 or all
+    0xFF (unmapped 3DS memory), skip the whole 1 MB block. Otherwise
+    chunk-scan it in 16 KB increments with a small sleep between each
+    chunk so Azahar's logging subsystem can flush.
+
+    The chunk size and throttle are deliberately conservative — we'd
+    rather take ~2x as long as crash the emulator. Earlier versions
+    used 64 KB chunks with no throttle and would flood Azahar's log
+    with thousands of unmapped-read Errors per second, eventually
+    crashing it.
     """
     cur = start
     last_progress = time.monotonic()
@@ -224,9 +230,6 @@ def scan(rpc: CitraRPC,
         except Exception:
             cur += skip_unit
             continue
-        # All zeros or all 0xFF → almost certainly unmapped or a fresh
-        # uninitialised region with no Pokémon data. Either way, no
-        # value in scanning further.
         if not probe or probe == b"\x00" * len(probe) \
                      or probe == b"\xFF" * len(probe):
             cur += skip_unit
@@ -248,6 +251,8 @@ def scan(rpc: CitraRPC,
                 if ok:
                     yield (cur + off, info)
             cur += chunk - 256  # slight overlap on boundaries
+            if throttle_s:
+                time.sleep(throttle_s)
 
         if time.monotonic() - last_progress > 2.0:
             pct = 100 * (cur - start) / (end - start)
