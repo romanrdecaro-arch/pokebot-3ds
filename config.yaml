@@ -13,13 +13,6 @@ rpc:
   port: 45987
   connect_timeout: 30
 
-# Dashboard websocket server (open dashboard/dashboard.html in a browser
-# to see live updates)
-dashboard:
-  enabled: true
-  host: 127.0.0.1
-  port: 8765
-
 # Input driver (pynput-based keyboard simulation).
 # Azahar must remain focused for keystrokes to register.
 input:

@@ -22,13 +22,13 @@ but adapted to Azahar's UDP RPC instead of an in-emulator Lua console.
 ## Features
 
 - **Three bot modes:**
-  - `observe` — passive read-only; mirrors party + foe to dashboard
-  - `encounter` — walks in grass, evaluates each foe vs. target, flees on miss
+  - `observe` — passive read-only; mirrors party + foe to the launcher's Recently Seen tab
+  - `encounter` — walks in grass, records each foe, flees on miss until target hit
   - `soft_reset` — for starters / legendaries / gifts (mash A, evaluate, L+R+Start, repeat)
 - **Starter hunting** — pick the specific Gen 6/7 starter (Chespin, Fennekin, Froakie, etc.) and the bot resets until you get the right species — combine with shiny/IV target rules to hunt a specific shiny starter
 - **Target system** — filter by shininess, IVs, nature, gender, species, or ability; combine rules with AND/OR
-- **GUI launcher** ([launcher.py](launcher.py)) — auto-installs deps, **live-detects Azahar and your loaded game**, picks game/mode/starter, runs offset finder, opens dashboard
-- **Live dashboard** ([dashboard/dashboard.html](dashboard/dashboard.html)) — streams encounters over WebSocket; species names, IV color-coding, runtime stats
+- **GUI launcher** ([launcher.py](launcher.py)) — auto-installs deps, **live-detects Azahar and your loaded game**, picks game/mode/starter
+- **Terminal output** — each encounter is printed as a readable line in the launcher's log tab (and stdout when running the bot directly)
 - **Offset finder** — scans FCRAM for valid PK7 records and reports party + foe addresses
 - **PK6/PK7 parser** — full block decryption + shuffle, checksum verification
 
@@ -71,8 +71,8 @@ git clone https://github.com/romanrdecaro-arch/pokebot-3ds.git
    click *Find Offsets* in the launcher. Paste the reported addresses
    into [config.yaml](config.yaml) under the `offsets:` section.
 
-4. **Pick a mode**, click *Start Bot*, and click *Open Dashboard* to
-   watch encounters live.
+4. **Pick a mode**, click *Start Bot*, watch the Recently Seen tab
+   fill up as the bot encounters wild Pokémon.
 
 ## Manual / CLI usage
 
@@ -83,7 +83,7 @@ pip install -r requirements.txt
 python -m pokebot.find_offsets         # one-time per game
 # edit config.yaml: paste offsets, set mode + target
 python run.py
-# open dashboard/dashboard.html in a browser
+# encounters print to stdout as they happen
 ```
 
 ## Architecture
@@ -106,11 +106,11 @@ python run.py
 │  ┌────┴────┐                     │       │
 │  │ input_  │◀────────────────────┘       │
 │  │ driver  │                             │
-│  └─────────┘    ┌──────────────────────┐ │
-│                 │   dashboard_server   │─┼──▶ ws://127.0.0.1:8765
-│                 └──────────────────────┘ │     ▲
-└──────────────────────────────────────────┘     │
-                                       dashboard.html in browser
+│  └─────────┘   ┌──────────────────────┐  │
+│                │  dashboard_server    │──┼──▶ stdout (terminal +
+│                │  (terminal sink)     │  │     launcher Recently Seen)
+│                └──────────────────────┘  │
+└──────────────────────────────────────────┘
 ```
 
 ## Modes
@@ -253,15 +253,13 @@ pokebot-3ds/
 │   ├── games.py              ← per-game offset registry
 │   ├── targets.py            ← filter logic
 │   ├── input_driver.py       ← pynput-based keyboard driver
-│   ├── dashboard_server.py   ← embedded WebSocket server
+│   ├── dashboard_server.py   ← terminal event sink (encounter lines + EVENT JSON)
 │   ├── find_offsets.py       ← memory scanner utility
 │   ├── bot.py                ← orchestrator
 │   └── modes/
 │       ├── observe.py
 │       ├── encounter.py
 │       └── soft_reset.py
-└── dashboard/
-    └── dashboard.html        ← single-file UI
 ```
 
 ## Credits & references

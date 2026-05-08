@@ -128,14 +128,10 @@ class Bot:
                         "addresses with `python -m pokebot.find_offsets`.")
 
     def _start_dashboard(self) -> None:
-        dash_cfg = self.config.get("dashboard", {})
-        if not dash_cfg.get("enabled", True):
-            self.dashboard = DashboardServer()  # not started
-            return
-        self.dashboard = DashboardServer(
-            host=dash_cfg.get("host", "127.0.0.1"),
-            port=int(dash_cfg.get("port", 8765)),
-        )
+        # No more websocket server — DashboardServer is now a terminal
+        # event sink (prints encounters as human-readable lines + the
+        # EVENT: JSON line the launcher's Recently Seen tab parses).
+        self.dashboard = DashboardServer()
         self.dashboard.start()
 
     def _start_input(self) -> None:

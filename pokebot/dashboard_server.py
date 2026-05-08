@@ -1,252 +1,139 @@
 """
-Embedded websocket server for the dashboard.
+Event sink that prints to the terminal instead of running a websocket
+server.
 
-Runs in a background thread inside the bot process. Broadcasts JSON
-messages to all connected dashboard clients whenever the bot has
-something to share (party update, encounter logged, mode change, etc.).
-
-Uses only Python stdlib (no `websockets` dependency) by implementing the
-small subset of RFC 6455 we need. This keeps the install footprint to
-just `pynput` (and even that's optional).
+Used to be a full websocket dashboard; the user only ever wanted live
+encounter data in the terminal, so the socket bits are gone. Same
+``DashboardServer`` class name + ``broadcast/start/stop/inbox`` API so
+the bot modes don't need to change — they still call
+``ctx.dashboard.broadcast(...)`` and we render it as a human-readable
+line plus the ``EVENT: <json>`` line the launcher's Recently Seen tab
+still parses.
 """
-
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import logging
-import os
-import socket
-import struct
-import sys as _sys_for_path
+import sys
 import threading
 import time
-from pathlib import Path as _Path
-from queue import Queue, Empty
-from typing import Iterable
+from queue import Queue
 
 log = logging.getLogger(__name__)
 
 
-# Brute-force diagnostic: every broadcast also appends to a local
-# file so the user can verify whether broadcast() is being called
-# at all, independent of stdout/stderr buffering or launcher pipe
-# state. Cleared on every bot start.
-def _events_log_path() -> _Path:
-    # Resolve to <project_root>/last_events.log so it sits next to
-    # config.yaml regardless of cwd.
-    here = _Path(__file__).resolve().parent.parent
-    return here / "last_events.log"
+_IV_ORDER = ("HP", "Atk", "Def", "SpA", "SpD", "Spe")
 
 
-def _reset_events_log() -> None:
-    try:
-        p = _events_log_path()
-        p.write_text(f"# pokebot-3ds events log — started {time.time()}\n",
-                     encoding="utf-8")
-    except Exception:
-        pass
+def _format_encounter(f: dict) -> str:
+    sp = f.get("species", "?")
+    lvl = f.get("level")
+    shiny = " ★ SHINY" if f.get("shiny") else ""
+    nature = f.get("nature", "?")
+    gender = f.get("gender", "G")
+    ivs = f.get("ivs") or {}
+    iv_str = "/".join(str(int(ivs.get(s, 0))) for s in _IV_ORDER)
+    iv_sum = sum(int(ivs.get(s, 0)) for s in _IV_ORDER)
+    pid = int(f.get("pid", 0))
+    nick = f.get("nickname") or f"#{sp}"
+    lvl_str = f"Lv{lvl}" if lvl is not None else "Lv?"
+    return (f"  [enc #{f.get('count', '?')}] {nick} {lvl_str} {gender}{shiny}\n"
+            f"             nature={nature}  IVs {iv_str} ({iv_sum})  "
+            f"PID={pid:08X}  ability#{f.get('ability_id', '?')}")
 
 
-_reset_events_log()
-
-WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-
-
-def _ws_handshake(req: bytes) -> bytes:
-    """Build a 101 Switching Protocols response from a client handshake."""
-    headers = req.decode("latin-1", "replace").split("\r\n")
-    key = ""
-    for h in headers:
-        if h.lower().startswith("sec-websocket-key:"):
-            key = h.split(":", 1)[1].strip()
-            break
-    accept = base64.b64encode(
-        hashlib.sha1((key + WS_GUID).encode()).digest()
-    ).decode()
-    return ("HTTP/1.1 101 Switching Protocols\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Accept: {accept}\r\n\r\n").encode()
+def _format_target_hit(f: dict) -> str:
+    return (f"  *** TARGET HIT *** enc#{f.get('count', '?')}: "
+            f"{f.get('reason', '?')}")
 
 
-def _ws_send(sock: socket.socket, payload: bytes) -> None:
-    """Send a single text frame (no fragmentation, server -> client unmasked)."""
-    header = bytearray([0x81])  # FIN + text
-    n = len(payload)
-    if n < 126:
-        header.append(n)
-    elif n < 65536:
-        header += bytes([126]) + struct.pack(">H", n)
-    else:
-        header += bytes([127]) + struct.pack(">Q", n)
-    sock.sendall(bytes(header) + payload)
+def _format_offset_scan(f: dict) -> str | None:
+    target = f.get("target", "party_base")
+    state = f.get("state", "?")
+    if state == "started":
+        return f"  [scan {target}] started"
+    if state == "ok":
+        addr = f.get(target, f.get("party_base", 0))
+        return f"  [scan {target}] OK -> {int(addr):#010x}"
+    if state == "fail":
+        return f"  [scan {target}] FAILED"
+    return None
+
+
+def _format_candidate(f: dict) -> str:
+    sp = f.get("species", "?")
+    star = " ★" if f.get("shiny") else ""
+    ivs = f.get("ivs") or {}
+    iv_sum = sum(int(ivs.get(s, 0)) for s in _IV_ORDER) if ivs else 0
+    return f"  [candidate] species #{sp}{star} IV-sum {iv_sum}"
+
+
+def _format_read_failure(f: dict) -> str:
+    return f"  [read-fail] {f.get('reason', '?')}"
+
+
+_FORMATTERS = {
+    "encounter":    _format_encounter,
+    "target_hit":   _format_target_hit,
+    "offset_scan":  _format_offset_scan,
+    "candidate":    _format_candidate,
+    "read_failure": _format_read_failure,
+}
 
 
 class DashboardServer:
-    """One-way push: the bot publishes messages, all clients receive them.
+    """Terminal event sink. Drop-in replacement for the old
+    websocket-backed DashboardServer.
 
-    Clients can also send messages back (e.g. UI commands), which are
-    enqueued in `inbox` for the bot to consume."""
+    Keeps the same surface area:
+      - ``start()`` / ``stop()`` (no-ops, kept for API compatibility)
+      - ``broadcast(msg_type, **fields)`` prints a human-readable line +
+        an ``EVENT: <json>`` line for the launcher to parse
+      - ``inbox`` Queue (unused now that there's no client connection,
+        but kept so ``Bot._dashboard_command_loop`` doesn't break)
+    """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765,
-                 also_stdout: bool = True):
-        self.host = host
-        self.port = port
-        self.also_stdout = also_stdout   # mirror events as 'EVENT: ...' lines
+    def __init__(self, **_unused: object):
         self._stop = threading.Event()
-        self._clients: list[socket.socket] = []
-        self._clients_lock = threading.Lock()
-        self.inbox: Queue = Queue()      # incoming messages from clients
-        self._thread: threading.Thread | None = None
+        self.inbox: Queue = Queue()
 
-    # ----- lifecycle ----------------------------------------------------
+    # --- lifecycle (no-ops) -----------------------------------------------
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._serve_forever,
-                                        name="DashboardServer", daemon=True)
-        self._thread.start()
+        log.info("Event sink: terminal-only (no websocket).")
 
     def stop(self) -> None:
         self._stop.set()
-        with self._clients_lock:
-            for c in self._clients:
-                try: c.close()
-                except Exception: pass
 
-    # ----- broadcasting -------------------------------------------------
-    def broadcast(self, msg_type: str, **fields) -> None:
-        """Send {"type": msg_type, "ts": ..., **fields} to all clients.
-
-        Also emits an ``EVENT: <json>`` line on stdout when ``also_stdout``
-        is enabled, so the launcher's subprocess pipe can render encounters
-        natively without needing a websocket client.
+    # --- broadcasting ------------------------------------------------------
+    def broadcast(self, msg_type: str, **fields: object) -> None:
+        """Print one readable line for humans + an EVENT: JSON line for
+        the launcher's encounter table.
         """
+        # Human-readable line first.
+        formatter = _FORMATTERS.get(msg_type)
+        if formatter is not None:
+            try:
+                line = formatter(fields)
+            except Exception as e:
+                line = f"  [{msg_type}] (format error: {e})"
+            if line:
+                try:
+                    sys.stdout.write(line + "\n")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+
+        # EVENT: JSON line — preserves the launcher's Recently Seen
+        # rendering. Skip status/ready/party to keep the JSON channel
+        # focused on encounter data only.
         body = {"type": msg_type, "ts": time.time(), **fields}
         try:
             payload = json.dumps(body, default=str)
         except Exception as e:
-            log.error(f"broadcast({msg_type!r}) JSON-encode failed: {e}; "
-                      f"keys={list(fields.keys())}")
+            log.error(f"broadcast({msg_type!r}) JSON-encode failed: {e}")
             return
-        # Diagnostic: the regular log goes to stderr (line-buffered) and
-        # always flows to the launcher's drain thread, even if the EVENT
-        # pipeline is somehow broken. So if the user sees BROADCAST in
-        # the log but no '→ candidate' trace, the issue is the EVENT
-        # pipeline specifically.
-        log.info(f"BROADCAST {msg_type} keys={sorted(fields.keys())}")
-        # Brute-force: also append to last_events.log on disk. Survives
-        # any pipe / launcher problem so we have ground truth.
         try:
-            with open(_events_log_path(), "a", encoding="utf-8") as f:
-                f.write(payload + "\n")
+            sys.stdout.write("EVENT: " + payload + "\n")
+            sys.stdout.flush()
         except Exception:
             pass
-        if self.also_stdout:
-            try:
-                # One JSON line, prefix-tagged so the launcher can split it
-                # cleanly from human-readable log lines. Use sys.stdout
-                # directly + explicit flush to dodge any odd buffering
-                # state that print() might be stuck in.
-                import sys as _sys
-                _sys.stdout.write("EVENT: " + payload + "\n")
-                _sys.stdout.flush()
-            except Exception as e:
-                log.error(f"EVENT print failed for {msg_type}: {e}")
-        payload_bytes = payload.encode("utf-8")
-        dead = []
-        with self._clients_lock:
-            for c in self._clients:
-                try:
-                    _ws_send(c, payload_bytes)
-                except Exception:
-                    dead.append(c)
-            for c in dead:
-                self._clients.remove(c)
-                try: c.close()
-                except Exception: pass
-
-    # ----- internals ----------------------------------------------------
-    def _serve_forever(self) -> None:
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.settimeout(0.5)
-        try:
-            srv.bind((self.host, self.port))
-        except OSError as e:
-            log.error(f"Dashboard server failed to bind {self.host}:{self.port}: {e}")
-            return
-        srv.listen(8)
-        log.info(f"Dashboard websocket server on ws://{self.host}:{self.port}")
-        while not self._stop.is_set():
-            try:
-                client, addr = srv.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            threading.Thread(target=self._handle_client,
-                             args=(client,), daemon=True).start()
-        srv.close()
-
-    def _handle_client(self, sock: socket.socket) -> None:
-        try:
-            sock.settimeout(5)
-            req = sock.recv(4096)
-            if b"Upgrade: websocket" not in req and b"upgrade: websocket" not in req:
-                # Allow plain GET / for sanity check
-                sock.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
-                             b"Connection: close\r\n\r\n"
-                             b"pokebot-3ds dashboard endpoint -- "
-                             b"connect with WebSocket.\n")
-                sock.close()
-                return
-            sock.sendall(_ws_handshake(req))
-            sock.settimeout(None)
-        except Exception as e:
-            log.debug(f"handshake failed: {e}")
-            sock.close()
-            return
-
-        with self._clients_lock:
-            self._clients.append(sock)
-        log.info(f"Dashboard client connected ({len(self._clients)} total)")
-        # consume frames from the client (control + text)
-        try:
-            while not self._stop.is_set():
-                hdr = sock.recv(2)
-                if len(hdr) < 2: break
-                opcode = hdr[0] & 0x0F
-                masked = hdr[1] & 0x80
-                length = hdr[1] & 0x7F
-                if length == 126:
-                    length = struct.unpack(">H", sock.recv(2))[0]
-                elif length == 127:
-                    length = struct.unpack(">Q", sock.recv(8))[0]
-                mask = sock.recv(4) if masked else b""
-                data = b""
-                while len(data) < length:
-                    data += sock.recv(length - len(data))
-                if masked:
-                    data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
-                if opcode == 0x8:           # close
-                    break
-                if opcode == 0x1:           # text frame
-                    try:
-                        self.inbox.put(json.loads(data.decode()))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        finally:
-            with self._clients_lock:
-                if sock in self._clients:
-                    self._clients.remove(sock)
-            try: sock.close()
-            except Exception: pass
-
-
-def open_dashboard_in_browser(html_path: str) -> None:
-    """Helper: open the dashboard.html in the user's default browser."""
-    import webbrowser
-    webbrowser.open("file://" + os.path.abspath(html_path))
