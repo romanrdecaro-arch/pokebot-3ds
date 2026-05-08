@@ -128,6 +128,100 @@ def _parse_value(raw: str) -> Optional[int]:
         return None
 
 
+def load_screen_layout() -> dict:
+    """Read Azahar's screen layout from qt-config.ini.
+
+    Returns a dict with:
+      ``layout_option`` int — 0 default (top above bottom), 1 single screen,
+                              2 large screen, 3 side-by-side, 4 hybrid.
+      ``swap_screen``   bool — top/bottom (or left/right) swapped.
+      ``upright``       bool — screens rotated 90°.
+
+    All defaults if the config can't be read (matches the bot's prior
+    assumption: default vertical layout, no swap).
+    """
+    out = {"layout_option": 0, "swap_screen": False, "upright": False}
+    cfg = find_config_path()
+    if not cfg:
+        return out
+    try:
+        text = cfg.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return out
+    in_layout = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_layout = (line == "[Layout]")
+            continue
+        if not in_layout or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if k == "layout_option":
+            try:
+                out["layout_option"] = int(v)
+            except ValueError:
+                pass
+        elif k == "swap_screen":
+            out["swap_screen"] = v.lower() == "true"
+        elif k == "upright_screen":
+            out["upright"] = v.lower() == "true"
+    return out
+
+
+def bottom_screen_button(button_native_xy: tuple[int, int],
+                         layout: Optional[dict] = None
+                         ) -> tuple[float, float]:
+    """Translate a native bottom-screen pixel coord (320×240) into the
+    fractional window coord that PostMessage'd clicks should target.
+
+    Handles Azahar's built-in layouts (0 default, 2 large, 3 side-by-side)
+    with or without swap_screen. Custom layouts and "single screen" fall
+    back to assuming the bottom screen fills the window. The window's
+    aspect is assumed to match the layout's native aspect — modest
+    user-resize letterboxing introduces small errors, but the in-game
+    touch buttons are big enough that ~5% slop still hits.
+    """
+    if layout is None:
+        layout = load_screen_layout()
+    bx, by = button_native_xy
+    bx_f = bx / 320.0
+    by_f = by / 240.0
+    opt = int(layout.get("layout_option", 0))
+    swap = bool(layout.get("swap_screen", False))
+
+    if opt == 3:
+        # Side-by-side. Native top 400×240 + bottom 320×240 → 720×240.
+        # Without swap: top on left, bottom on right.
+        if swap:
+            x_frac = (bx_f * 320) / 720.0
+        else:
+            x_frac = (400 + bx_f * 320) / 720.0
+        y_frac = by_f
+        return (x_frac, y_frac)
+
+    if opt == 2:
+        # Large screen: top fills ~80% of width, bottom is a small inset
+        # in the lower-right corner (or upper-right if swapped). Treat
+        # the bottom screen as occupying x: 0.80..1.0, y: 0.62..1.0
+        # (or y: 0..0.38 when swapped).
+        x_frac = 0.80 + bx_f * 0.20
+        y_frac = (0.0 + by_f * 0.38) if swap else (0.62 + by_f * 0.38)
+        return (x_frac, y_frac)
+
+    # opt == 0 (default vertical) or 1/4 (single/hybrid — best-effort).
+    # Native top 400×240 + bottom 320×240 stacked → 400×480, bottom
+    # screen centered horizontally with 40-px letterbox each side.
+    x_frac = (40 + bx_f * 320) / 400.0
+    if swap:
+        y_frac = by_f * 240 / 480.0           # bottom screen on top
+    else:
+        y_frac = (240 + by_f * 240) / 480.0   # bottom screen on bottom
+    return (x_frac, y_frac)
+
+
 def load_active_profile_binds() -> Optional[dict[str, str]]:
     """Read the active-profile keybindings out of Azahar's qt-config.ini.
 

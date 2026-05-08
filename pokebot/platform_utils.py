@@ -66,17 +66,18 @@ def click_window(hwnd: int) -> bool:
 
 def click_window_at(hwnd: int, x_frac: float, y_frac: float,
                     hold_s: float = 0.05) -> bool:
-    """PostMessage a synthetic left-click at fractional coords (0..1)
-    of the window's client rect.
+    """Synthetic left-click at fractional coords (0..1) of the window.
 
-    Used both to "wake up" Qt's input routing (a centre click is a
-    no-op on the emulator video surface) and to drive 3DS touch input
-    by clicking on the lower screen — Azahar translates a click in
-    its bottom-screen area into a touch event at the corresponding
-    3DS-native coordinate.
+    Used both to "wake up" Qt's input routing and to drive 3DS touch
+    input. Tries two paths:
 
-    Returns True when both messages were posted, False on non-Windows
-    or when the hwnd is invalid / has no client rect.
+      1. SendInput hardware mouse click: SetCursorPos to the target
+         then SendInput LBUTTONDOWN/UP. Cursor briefly moves but the
+         click is real-mouse-equivalent so Qt always processes it.
+      2. PostMessage WM_LBUTTONDOWN/UP fallback (no cursor move).
+
+    Returns True when at least one path posted, False on non-Windows
+    or when the hwnd is invalid.
     """
     if not hwnd or not sys.platform.startswith("win"):
         return False
@@ -86,12 +87,12 @@ def click_window_at(hwnd: int, x_frac: float, y_frac: float,
     except Exception:
         return False
     user32 = ctypes.windll.user32
-    WM_LBUTTONDOWN = 0x0201
-    WM_LBUTTONUP   = 0x0202
-    MK_LBUTTON     = 0x0001
     user32.GetClientRect.argtypes = [wintypes.HWND,
                                      ctypes.POINTER(wintypes.RECT)]
     user32.GetClientRect.restype  = wintypes.BOOL
+    user32.ClientToScreen.argtypes = [wintypes.HWND,
+                                      ctypes.POINTER(wintypes.POINT)]
+    user32.ClientToScreen.restype  = wintypes.BOOL
 
     rect = wintypes.RECT()
     if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
@@ -100,13 +101,75 @@ def click_window_at(hwnd: int, x_frac: float, y_frac: float,
     h = max(1, rect.bottom - rect.top)
     cx = max(1, min(w - 1, int(round(w * float(x_frac)))))
     cy = max(1, min(h - 1, int(round(h * float(y_frac)))))
-    # lParam packs the signed (x, y) into low/high 16-bit words.
+
+    # --- Path 1: SendInput hardware mouse click ----------------------------
+    # Convert client (cx, cy) → screen coords for SetCursorPos.
+    pt = wintypes.POINT(cx, cy)
+    if user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+        try:
+            _send_mouse_click(pt.x, pt.y, hold_s)
+            return True
+        except Exception:
+            pass  # fall through to PostMessage
+
+    # --- Path 2: PostMessage fallback --------------------------------------
+    WM_LBUTTONDOWN = 0x0201
+    WM_LBUTTONUP   = 0x0202
+    MK_LBUTTON     = 0x0001
     lparam = (cx & 0xFFFF) | ((cy & 0xFFFF) << 16)
     user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
     import time as _t
     _t.sleep(hold_s)
     user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
     return True
+
+
+def _send_mouse_click(screen_x: int, screen_y: int, hold_s: float) -> None:
+    """SetCursorPos + SendInput for a real left-click at screen coords."""
+    import ctypes
+    from ctypes import wintypes
+    import time as _t
+
+    user32 = ctypes.windll.user32
+
+    # MOUSEINPUT struct
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx",          wintypes.LONG),
+                    ("dy",          wintypes.LONG),
+                    ("mouseData",   wintypes.DWORD),
+                    ("dwFlags",     wintypes.DWORD),
+                    ("time",        wintypes.DWORD),
+                    ("dwExtraInfo", ctypes.c_void_p)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("mi", MOUSEINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    INPUT_MOUSE = 0
+    MOUSEEVENTF_LEFTDOWN = 0x0002
+    MOUSEEVENTF_LEFTUP   = 0x0004
+
+    user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    user32.SetCursorPos(int(screen_x), int(screen_y))
+    _t.sleep(0.02)
+
+    def _make_input(flags):
+        inp = INPUT()
+        inp.type = INPUT_MOUSE
+        inp.u.mi = MOUSEINPUT(0, 0, 0, flags, 0, None)
+        return inp
+
+    user32.SendInput.argtypes = [ctypes.c_uint,
+                                 ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype  = ctypes.c_uint
+
+    arr = (INPUT * 1)(_make_input(MOUSEEVENTF_LEFTDOWN))
+    user32.SendInput(1, arr, ctypes.sizeof(INPUT))
+    _t.sleep(hold_s)
+    arr = (INPUT * 1)(_make_input(MOUSEEVENTF_LEFTUP))
+    user32.SendInput(1, arr, ctypes.sizeof(INPUT))
 
 
 def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:

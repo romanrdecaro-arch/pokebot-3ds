@@ -128,13 +128,25 @@ def run(ctx):
             ctx.request_stop("target hit")
             return
 
-        # Not a hit: flee. Pokémon X/Y's wild-battle UI puts the RUN
-        # button on the lower screen at roughly 50%/92% of the window.
-        # Click that, then mash A to dismiss the "Got away safely!"
-        # dialogue. B-spam fallback in case the click missed (e.g.
-        # user has a non-default Azahar screen layout).
+        # Not a hit: flee. Pokémon X/Y wild battles expose RUN as a
+        # touch button on the lower screen — Azahar maps a click in
+        # the bottom-screen rect to a 3DS touch event. We compute the
+        # window-fraction for that click from the user's actual
+        # qt-config.ini layout (default vertical / large-screen /
+        # side-by-side / swap), so the click lands on RUN regardless
+        # of how the user has Azahar arranged.
         log.info(f"  enc#{encounters}: not a target — fleeing.")
-        ok = ctx.input.tap_touch(0.5, 0.92, hold_s=0.08)
+        try:
+            from ..azahar_config import bottom_screen_button, load_screen_layout
+            layout = load_screen_layout()
+            run_x, run_y = bottom_screen_button((160, 200), layout)
+            log.info(f"  flee: layout_option={layout['layout_option']} "
+                     f"swap={layout['swap_screen']} → "
+                     f"RUN at ({run_x:.3f}, {run_y:.3f})")
+        except Exception as e:
+            log.warning(f"  flee: layout read failed ({e}); using default.")
+            run_x, run_y = 0.5, 0.92
+        ok = ctx.input.tap_touch(run_x, run_y, hold_s=0.08)
         if not ok:
             log.warning("  touch click failed (no Azahar hwnd?); "
                         "falling back to B-mash.")
