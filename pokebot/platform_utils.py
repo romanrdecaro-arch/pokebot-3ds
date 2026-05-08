@@ -60,19 +60,23 @@ def find_azahar_hwnd(title_substrings=("Azahar", "Citra")) -> int:
 
 
 def click_window(hwnd: int) -> bool:
-    """Send a synthetic mouse click into the centre of the window's client area.
+    """Click the centre of the window. See click_window_at for details."""
+    return click_window_at(hwnd, 0.5, 0.5)
 
-    Some Qt builds (Citra/Azahar included) ignore PostMessage'd
-    keystrokes until the window has been "activated" by an actual
-    user click. Calling this once after focus_azahar() typically
-    fixes the "I had to click in to make it work" issue without
-    moving the user's real cursor.
 
-    The click lands in the geometric centre of the client rect, so
-    it's on the emulator's video surface (not on a menu/toolbar) and
-    has no UI side-effects.
+def click_window_at(hwnd: int, x_frac: float, y_frac: float,
+                    hold_s: float = 0.05) -> bool:
+    """PostMessage a synthetic left-click at fractional coords (0..1)
+    of the window's client rect.
 
-    Returns True on Windows + valid hwnd, False otherwise.
+    Used both to "wake up" Qt's input routing (a centre click is a
+    no-op on the emulator video surface) and to drive 3DS touch input
+    by clicking on the lower screen — Azahar translates a click in
+    its bottom-screen area into a touch event at the corresponding
+    3DS-native coordinate.
+
+    Returns True when both messages were posted, False on non-Windows
+    or when the hwnd is invalid / has no client rect.
     """
     if not hwnd or not sys.platform.startswith("win"):
         return False
@@ -91,15 +95,16 @@ def click_window(hwnd: int) -> bool:
 
     rect = wintypes.RECT()
     if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
-        # Couldn't get the rect; bail rather than guess.
         return False
-    cx = max(1, (rect.right - rect.left) // 2)
-    cy = max(1, (rect.bottom - rect.top) // 2)
+    w = max(1, rect.right - rect.left)
+    h = max(1, rect.bottom - rect.top)
+    cx = max(1, min(w - 1, int(round(w * float(x_frac)))))
+    cy = max(1, min(h - 1, int(round(h * float(y_frac)))))
     # lParam packs the signed (x, y) into low/high 16-bit words.
     lparam = (cx & 0xFFFF) | ((cy & 0xFFFF) << 16)
     user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
     import time as _t
-    _t.sleep(0.02)
+    _t.sleep(hold_s)
     user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
     return True
 

@@ -128,13 +128,24 @@ def run(ctx):
             ctx.request_stop("target hit")
             return
 
-        # Not a hit: flee. Press B+Down repeatedly to navigate the run menu.
-        # Real menu navigation will need refinement per game; this is a
-        # generic best-effort.
-        for _ in range(5):
+        # Not a hit: flee. Pokémon X/Y's wild-battle UI puts the RUN
+        # button on the lower screen at roughly 50%/92% of the window.
+        # Click that, then mash A to dismiss the "Got away safely!"
+        # dialogue. B-spam fallback in case the click missed (e.g.
+        # user has a non-default Azahar screen layout).
+        log.info(f"  enc#{encounters}: not a target — fleeing.")
+        ok = ctx.input.tap_touch(0.5, 0.92, hold_s=0.08)
+        if not ok:
+            log.warning("  touch click failed (no Azahar hwnd?); "
+                        "falling back to B-mash.")
+            for _ in range(5):
+                ctx.input.tap("B", 0.05)
+                time.sleep(0.1)
+        # Dismiss "Got away safely!" / "Couldn't escape!" dialogue.
+        for _ in range(6):
             ctx.input.tap("B", 0.05)
-            time.sleep(0.1)
-        # wait for battle flag to clear
+            time.sleep(0.25)
+        # Wait for battle flag to clear (max ~10 s).
         for _ in range(100):
             if not _check_in_battle(ctx):
                 break

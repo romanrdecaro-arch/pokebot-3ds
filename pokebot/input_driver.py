@@ -127,6 +127,34 @@ class InputDriver:
         self._kb.release(key)
         return "pynput"
 
+    def tap_touch(self, x_frac: float, y_frac: float,
+                  hold_s: float = 0.06) -> bool:
+        """Click on Azahar's bottom screen at fractional window coords.
+
+        ``x_frac=0.5, y_frac=0.92`` lands on the RUN button in Pokémon
+        X/Y's wild-battle UI when Azahar is in its default vertical
+        layout (top screen above bottom). Returns True on success,
+        False when the bot can't find the Azahar window or PostMessage
+        is unavailable. No pynput fallback — touch input has no
+        global keyboard equivalent.
+        """
+        if self.dry_run or not sys.platform.startswith("win"):
+            log.info(f"[DRY] touch ({x_frac:.2f}, {y_frac:.2f}) "
+                     f"({hold_s}s)")
+            return False
+        try:
+            from .platform_utils import find_azahar_hwnd, click_window_at
+        except Exception:
+            return False
+        if not self._azahar_hwnd:
+            self._azahar_hwnd = find_azahar_hwnd() or 0
+        if not self._azahar_hwnd:
+            return False
+        ok = click_window_at(self._azahar_hwnd, x_frac, y_frac, hold_s)
+        if not ok:
+            self._azahar_hwnd = 0
+        return ok
+
     def diagnose(self) -> dict:
         """One-shot snapshot of where keystrokes will be sent. Useful for
         logging at mode startup so the user can tell why their keys
