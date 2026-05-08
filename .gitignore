@@ -60,6 +60,9 @@ config.local.yaml
 offsets_*.txt
 ram_dump_*.bin
 
+# Diagnostic event log (created by pokebot.dashboard_server every run)
+last_events.log
+
 # pytest / coverage
 .pytest_cache/
 .coverage

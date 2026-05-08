@@ -19,12 +19,37 @@ import logging
 import os
 import socket
 import struct
+import sys as _sys_for_path
 import threading
 import time
+from pathlib import Path as _Path
 from queue import Queue, Empty
 from typing import Iterable
 
 log = logging.getLogger(__name__)
+
+
+# Brute-force diagnostic: every broadcast also appends to a local
+# file so the user can verify whether broadcast() is being called
+# at all, independent of stdout/stderr buffering or launcher pipe
+# state. Cleared on every bot start.
+def _events_log_path() -> _Path:
+    # Resolve to <project_root>/last_events.log so it sits next to
+    # config.yaml regardless of cwd.
+    here = _Path(__file__).resolve().parent.parent
+    return here / "last_events.log"
+
+
+def _reset_events_log() -> None:
+    try:
+        p = _events_log_path()
+        p.write_text(f"# pokebot-3ds events log — started {time.time()}\n",
+                     encoding="utf-8")
+    except Exception:
+        pass
+
+
+_reset_events_log()
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -110,6 +135,13 @@ class DashboardServer:
         # the log but no '→ candidate' trace, the issue is the EVENT
         # pipeline specifically.
         log.info(f"BROADCAST {msg_type} keys={sorted(fields.keys())}")
+        # Brute-force: also append to last_events.log on disk. Survives
+        # any pipe / launcher problem so we have ground truth.
+        try:
+            with open(_events_log_path(), "a", encoding="utf-8") as f:
+                f.write(payload + "\n")
+        except Exception:
+            pass
         if self.also_stdout:
             try:
                 # One JSON line, prefix-tagged so the launcher can split it
