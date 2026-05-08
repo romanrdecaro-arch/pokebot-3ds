@@ -235,9 +235,9 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
     ``receive_gap`` (default 1.0s) since the post-confirm dialogue
     advances faster with B.
 
-    Sequence per attempt (no initial direction press — Tierno
-    auto-presents the Pokéballs from the save position):
+    Sequence per attempt:
 
+        1× DpadLeft — kicks off Tierno's cutscene
         25× A — clears Tierno's setup        (gap)
         cursor + confirm:                    (gap)
             Chespin   → 1× A, 2× DpadLeft, 2× A
@@ -259,11 +259,12 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
         time.sleep(sleep_for)
         return True
 
-    # No initial DpadLeft — Tierno auto-presents the Pokéballs from the
-    # save position, so any directional press just walks the player off
-    # the saved spot. Go straight to dialogue mash.
+    # Step 1 — DpadLeft kicks off Tierno's cutscene. Required even
+    # though there's no walking-to-table interaction afterwards.
+    if not _tap("DpadLeft", gap):
+        return False
 
-    # Step 1 — clear Tierno's setup dialogue.
+    # Step 2 — clear Tierno's setup dialogue.
     log.info(f"X/Y: {pre_taps}× A to clear Tierno's dialogue (gap {gap}s)")
     for _ in range(pre_taps):
         if not _tap("A", gap):
