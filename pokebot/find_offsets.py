@@ -260,6 +260,144 @@ def scan(rpc: CitraRPC,
             last_progress = time.monotonic()
 
 
+# ---------------------------------------------------------------------------
+# Pokemon Accessor scanner
+# ---------------------------------------------------------------------------
+# Layout (per Project Pokémon's Gen 6 RAM map, "Pokemon Accessor"):
+#   0x0  u32   vtable pointer        — points into the application code segment
+#   0x4  u32   is_pkm_in_party       — 0 or 1
+#   0x8  u32   pkm_data_ptr          — points into the linear heap
+#   0xC  u8    is_pkm_data_encrypted — 0 or 1
+#   0xD  u8    encrypt_pkm_data      — 0 or 1
+#
+# Total useful payload is 14 bytes; the structure is presumably padded to 16.
+# This signature is much tighter than checking PK6 checksums against random
+# RAM — almost zero false positives — so scanning for accessors is the
+# preferred way to find every Pokémon currently loaded by the game.
+#
+# 3DS virtual memory regions we care about:
+#   0x00100000 - 0x10000000  application code (vtables live here)
+#   0x14000000 - 0x20000000  linear heap (pkm data lives here for Gen 6)
+#   0x30000000 - 0x40000000  N3DS extended heap (Gen 7)
+
+CODE_SEG_LO  = 0x00100000
+CODE_SEG_HI  = 0x10000000
+HEAP_LO      = 0x14000000
+HEAP_HI      = 0x40000000
+
+
+def is_likely_accessor(buf: bytes) -> tuple[bool, dict | None]:
+    """Heuristic check whether ``buf`` is a Pokemon Accessor struct.
+
+    Returns ``(True, info)`` on match where ``info`` has keys:
+      - ``vtable``      — u32, should land in the code segment
+      - ``is_in_party`` — 0 or 1
+      - ``data_ptr``    — heap pointer to the underlying PK6 record
+      - ``is_encrypted``— True if the PK6 at data_ptr is in storage form
+    """
+    if len(buf) < 14:
+        return False, None
+    vtable      = int.from_bytes(buf[0:4], "little")
+    is_in_party = int.from_bytes(buf[4:8], "little")
+    data_ptr    = int.from_bytes(buf[8:12], "little")
+    is_enc      = buf[12]
+    enc_flag    = buf[13]
+    if not (CODE_SEG_LO <= vtable < CODE_SEG_HI) or (vtable & 3):
+        return False, None
+    if is_in_party not in (0, 1):
+        return False, None
+    if not (HEAP_LO <= data_ptr < HEAP_HI) or (data_ptr & 3):
+        return False, None
+    if is_enc not in (0, 1) or enc_flag not in (0, 1):
+        return False, None
+    return True, {
+        "vtable":       vtable,
+        "is_in_party":  bool(is_in_party),
+        "data_ptr":     data_ptr,
+        "is_encrypted": bool(is_enc),
+    }
+
+
+def scan_accessors(rpc: CitraRPC,
+                   start: int,
+                   end:   int,
+                   step:  int = 4,
+                   chunk: int = 0x4000,
+                   probe_size: int = 256,
+                   skip_unit:  int = 0x100000,
+                   throttle_s: float = 0.005):
+    """Yield ``(data_addr, info)`` for every Pokemon Accessor found.
+
+    Same scan-the-heap loop shape as ``scan()`` (probe-and-skip per
+    1 MB block, throttled per chunk so we don't crash Azahar), but
+    with the much tighter Accessor signature instead of a 260-byte
+    PK6 checksum. ``data_addr`` is the address the accessor's
+    ``data_ptr`` field points at — i.e. where the PK6/PK7 record
+    actually lives — so callers that previously consumed
+    ``scan()``'s output can swap to this with minimal change.
+
+    ``info`` extends ``is_likely_accessor`` output with:
+      - ``accessor_addr``  — where the accessor struct itself sits
+      - ``enc_key``        — encryption key of the underlying PK6
+                             (None if the parse fails)
+      - ``species``        — national-dex ID, for cheap pre-filtering
+    """
+    cur = start
+    last_progress = time.monotonic()
+    while cur < end:
+        try:
+            probe = rpc.read(cur, probe_size)
+        except Exception:
+            cur += skip_unit
+            continue
+        if not probe or probe == b"\x00" * len(probe) \
+                     or probe == b"\xFF" * len(probe):
+            cur += skip_unit
+            continue
+
+        region_end = min(cur + skip_unit, end)
+        while cur < region_end:
+            try:
+                block = rpc.read(cur, chunk)
+            except Exception:
+                cur += chunk
+                continue
+            if len(block) < 16:
+                cur += chunk
+                continue
+            for off in range(0, len(block) - 14 + 1, step):
+                ok, info = is_likely_accessor(block[off:off + 14])
+                if not ok:
+                    continue
+                # Verify by reading the underlying PK6 and parsing.
+                try:
+                    raw = rpc.read(info["data_ptr"], 260)
+                except Exception:
+                    continue
+                if len(raw) < 232:
+                    continue
+                enc_key = int.from_bytes(raw[:4], "little")
+                if enc_key in (0, 0xFFFFFFFF):
+                    continue
+                # Cheap species check via decrypt+checksum (the strict
+                # sanity check from is_likely_pk7).
+                ok2, pk_info = is_likely_pk7(raw)
+                if not ok2:
+                    continue
+                info["accessor_addr"] = cur + off
+                info["enc_key"]       = enc_key
+                info["species"]       = pk_info["species"] if pk_info else None
+                yield (info["data_ptr"], info)
+            cur += chunk - 16
+            if throttle_s:
+                time.sleep(throttle_s)
+
+        if time.monotonic() - last_progress > 2.0:
+            pct = 100 * (cur - start) / max(1, end - start)
+            log.info(f"accessor scan: {cur:#010x} ({pct:.1f}%)")
+            last_progress = time.monotonic()
+
+
 def trainer_name_pattern(name: str) -> bytes:
     """Encode an X/Y trainer name as the byte pattern that lives in
     RAM: UTF-16LE characters followed by a u16 null terminator.

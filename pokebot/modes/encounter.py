@@ -208,7 +208,7 @@ def _autodiscover_foe_base(ctx, movement: str) -> bool:
     """
     import threading
 
-    from ..find_offsets import scan
+    from ..find_offsets import scan_accessors
     from ..games import heap_range_for
 
     range_ = heap_range_for(ctx.game.generation)
@@ -228,8 +228,8 @@ def _autodiscover_foe_base(ctx, movement: str) -> bool:
         t0 = time.monotonic()
         log.info("  scanner: building baseline (overworld) …")
         try:
-            for addr, _info in scan(ctx.rpc, range_[0], range_[1],
-                                    chunk=0x4000, throttle_s=0.005):
+            for addr, _info in scan_accessors(ctx.rpc, range_[0], range_[1],
+                                              chunk=0x4000, throttle_s=0.005):
                 baseline.add(addr)
                 if ctx.should_stop() or discovered.is_set():
                     return

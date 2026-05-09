@@ -120,19 +120,23 @@ def run(ctx) -> None:
 def _full_scan(ctx) -> Optional[list[tuple[int, int]]]:
     """One full-heap pass. Returns [(addr, enc_key), ...] or None on error.
 
-    Doesn't decrypt — just collects the addresses + enc_keys of valid
-    PK6 records. We re-decrypt lazily when reporting.
+    Looks for Pokemon Accessor structs (Gen 6 RAM-map "Pokemon Accessor")
+    rather than scanning for PK6 records by checksum. Tighter signature
+    means fewer false positives — vtable in code segment + bool flags +
+    heap-pointing data pointer is much harder to hit by chance than a
+    PK6 checksum. ``addr`` returned here is the underlying PK6 data
+    address (so callers' hot-poll loop reads PKM data directly).
     """
-    from ..find_offsets import scan
+    from ..find_offsets import scan_accessors
     from ..games import heap_range_for
     range_ = heap_range_for(ctx.game.generation)
     out: list[tuple[int, int]] = []
     try:
-        for addr, info in scan(ctx.rpc, range_[0], range_[1],
-                               chunk=0x4000, throttle_s=0.005):
+        for data_addr, info in scan_accessors(ctx.rpc, range_[0], range_[1],
+                                              chunk=0x4000, throttle_s=0.005):
             if ctx.should_stop():
                 return out
-            out.append((addr, info["enc_key"]))
+            out.append((data_addr, info["enc_key"]))
     except Exception as e:
         log.error(f"full scan failed: {e}")
         return None
