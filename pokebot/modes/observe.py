@@ -183,16 +183,20 @@ def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
     for cand in candidates:
         try:
             raw = ctx.rpc.read(cand, 260)
-        except Exception:
+        except Exception as e:
+            log.info(f"  fast path: candidate {cand:#010x} read failed: {e}")
             continue
         ok, _ = is_likely_pk7(raw)
+        ek = int.from_bytes(raw[:4], "little")
         if ok:
             party_base = cand
             log.info(f"  fast path: party_base = {cand:#010x}")
             break
+        log.info(f"  fast path: candidate {cand:#010x} not PK6 "
+                 f"(enc_key={ek:#010x}, first16={raw[:16].hex()})")
         # Empty slot 0 still tells us this is the right anchor IF the
         # next slot reads valid. Try slot 1 as confirmation.
-        if int.from_bytes(raw[:4], "little") == 0:
+        if ek == 0:
             try:
                 raw1 = ctx.rpc.read(cand + party_stride, 260)
             except Exception:
@@ -203,6 +207,39 @@ def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
                 log.info(f"  fast path: party_base = {cand:#010x} "
                          f"(slot 0 empty, slot 1 valid)")
                 break
+
+    if party_base is None:
+        # Candidates didn't match — but trainer block IS live, so the
+        # data is somewhere in the save block. Brute-force a targeted
+        # scan: walk tb..b1+0x100 in 4-byte steps, looking for any
+        # valid PK6 record. Probe-and-skip is OFF here (we know the
+        # region is mapped), so it can't skip past data hiding in a
+        # zero-padded 1 MB block.
+        scan_lo = min(tb_addr, b1) - 0x100
+        scan_hi = max(tb_addr, b1) + 0x500
+        log.info(f"  fast path: targeted PK6 scan in "
+                 f"[{scan_lo:#010x}, {scan_hi:#010x}) ({scan_hi - scan_lo:#x} bytes)")
+        try:
+            chunk = ctx.rpc.read(scan_lo, scan_hi - scan_lo)
+        except Exception as e:
+            log.warning(f"  fast path: targeted read failed: {e}")
+            chunk = b""
+        if chunk:
+            hits = []
+            for off in range(0, len(chunk) - 260 + 1, 4):
+                ok, info = is_likely_pk7(chunk[off:off + 260])
+                if ok and info:
+                    hits.append((scan_lo + off, info))
+            log.info(f"  fast path: found {len(hits)} PK6 record(s) "
+                     f"in the save-block region")
+            for hit_addr, hit_info in hits[:8]:
+                log.info(f"    {hit_addr:#010x} species=#{hit_info.get('species')}")
+            if hits:
+                # Lowest address is most likely party slot 0; party
+                # comes before boxes in the save layout.
+                party_base = hits[0][0]
+                log.info(f"  fast path: party_base = {party_base:#010x} "
+                         f"(brute-force pick)")
 
     if party_base is not None:
         ctx.game.offsets.party_base = party_base
