@@ -257,31 +257,60 @@ def methods_for(game_key: str) -> list[Method]:
 # 3DS virtual address ranges. Where the player's party block lives
 # depends on the game:
 #
+#   - Gen 6 (X/Y, OR/AS) — O3DS titles. The save block (trainer card,
+#     party, boxes) is allocated by the game in the application heap
+#     around 0x08000000-0x10000000. PKHeX-Plugins LiveHeX confirms
+#     trainer_block @ 0x08C79C3C and box1_slot1 @ 0x08C861C8 for
+#     X/Y v1.5. The linear heap (0x14000000+) holds graphics scratch
+#     and battle effect buffers, not party data.
 #   - Gen 7 (S/M, US/UM) — N3DS-only titles. Party data lives in the
 #     extended linear heap at 0x30000000 - 0x40000000.
-#   - Gen 6 (X/Y, OR/AS) — originally O3DS titles. Party data lives in
-#     the standard linear heap at 0x14000000 - 0x20000000.
 #
-# Scanning the right range matters: targeting 0x30M+ for an X/Y session
-# returns zero hits because the data simply isn't there.
-HEAP_RANGE_3DS         = (0x08000000, 0x40000000)
-LINEAR_HEAP_RANGE_3DS  = (0x14000000, 0x20000000)   # Gen 6 (O3DS) full
-LINEAR_HEAP_HOT_3DS    = (0x14000000, 0x18000000)   # Gen 6 active region
+# Scanning the right range matters: targeting the linear heap on X/Y
+# (which the bot did pre-2026-05-10) returns zero hits because the
+# data simply isn't there.
+HEAP_RANGE_3DS         = (0x08000000, 0x40000000)   # all-3DS catch-all
+APP_HEAP_RANGE_3DS     = (0x08000000, 0x10000000)   # Gen 6 save-block region
+APP_HEAP_HOT_3DS       = (0x08000000, 0x0A000000)   # Gen 6 hot 32 MB
+LINEAR_HEAP_RANGE_3DS  = (0x14000000, 0x20000000)   # gfx scratch / FX buffers
+LINEAR_HEAP_HOT_3DS    = (0x14000000, 0x18000000)
 EXT_HEAP_RANGE_N3DS    = (0x30000000, 0x40000000)   # Gen 7
 
 
 def heap_range_for(gen: int) -> tuple[int, int]:
-    """Return the heap range most likely to contain party data.
+    """Return the most-likely heap range for party data.
 
-    For Gen 6 we return only the first 64 MB of the linear heap —
-    where every published X/Y party_base address lives. The full
-    128 MB linear range is the *fallback* if the hot region misses,
-    avoiding ~half the unmapped-read log spam that Azahar emits
-    during a wider scan.
+    For Gen 6 we return the hot 32 MB at the start of the app heap —
+    every published LiveHeX party_base for X/Y / OR/AS lives in
+    0x08C00000-0x08D00000 — so a small targeted scan finishes fast
+    AND has near-zero noise from unmapped pages.
+
+    Callers that want broader coverage should use
+    ``scan_ranges_for(gen)`` which returns a list of fallback
+    ranges in priority order.
     """
     if gen == 6:
-        return LINEAR_HEAP_HOT_3DS
+        return APP_HEAP_HOT_3DS
     return EXT_HEAP_RANGE_N3DS
+
+
+def scan_ranges_for(gen: int) -> list[tuple[int, int]]:
+    """Heap ranges to scan, in priority order.
+
+    Callers walk this list, scanning each region until they find what
+    they need. Lets us start with the hot region (fast) and fall back
+    to wider coverage only when the targeted scan misses.
+
+    Gen 6:
+      1. APP_HEAP_HOT_3DS    32 MB centred on the LiveHeX save block
+      2. APP_HEAP_RANGE_3DS  full 128 MB application heap
+      3. LINEAR_HEAP_HOT_3DS 64 MB graphics scratch (battle FX may live here)
+
+    Gen 7: just the extended heap — that's where everything lives.
+    """
+    if gen == 6:
+        return [APP_HEAP_HOT_3DS, APP_HEAP_RANGE_3DS, LINEAR_HEAP_HOT_3DS]
+    return [EXT_HEAP_RANGE_N3DS]
 
 
 # --------------------------------------------------------------------

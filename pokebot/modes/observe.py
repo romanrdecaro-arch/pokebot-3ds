@@ -120,27 +120,37 @@ def run(ctx) -> None:
 def _full_scan(ctx) -> Optional[list[tuple[int, int]]]:
     """One full-heap pass. Returns [(addr, enc_key), ...] or None on error.
 
-    Looks for Pokemon Accessor structs (Gen 6 RAM-map "Pokemon Accessor")
-    rather than scanning for PK6 records by checksum. Tighter signature
-    means fewer false positives — vtable in code segment + bool flags +
-    heap-pointing data pointer is much harder to hit by chance than a
-    PK6 checksum. ``addr`` returned here is the underlying PK6 data
-    address (so callers' hot-poll loop reads PKM data directly).
+    Walks every heap range in priority order (hot save-block region
+    first, then wider fallbacks) looking for Pokemon Accessor structs.
+    Stops early as soon as a range yields hits — the ranges that
+    follow are fallbacks for when the priority range is empty.
     """
     from ..find_offsets import scan_accessors
-    from ..games import heap_range_for
-    range_ = heap_range_for(ctx.game.generation)
+    from ..games import scan_ranges_for
     out: list[tuple[int, int]] = []
-    try:
-        for data_addr, info in scan_accessors(ctx.rpc, range_[0], range_[1],
-                                              chunk=0x4000, throttle_s=0.005):
-            if ctx.should_stop():
-                return out
-            out.append((data_addr, info["enc_key"]))
-    except Exception as e:
-        log.error(f"full scan failed: {e}")
-        return None
-    return out
+    seen: set[int] = set()
+    for r_lo, r_hi in scan_ranges_for(ctx.game.generation):
+        log.info(f"  scan range {r_lo:#x}-{r_hi:#x}…")
+        before = len(out)
+        try:
+            for data_addr, info in scan_accessors(ctx.rpc, r_lo, r_hi,
+                                                  chunk=0x4000, throttle_s=0.005):
+                if ctx.should_stop():
+                    return out
+                k = info["enc_key"]
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append((data_addr, k))
+        except Exception as e:
+            log.warning(f"  range {r_lo:#x} failed: {e}")
+            continue
+        new_in_range = len(out) - before
+        log.info(f"  range {r_lo:#x}-{r_hi:#x}: +{new_in_range} accessor(s)")
+        if new_in_range > 0:
+            # Found data here; subsequent ranges are fallbacks. Stop.
+            break
+    return out if out else None
 
 
 def _background_rescan(ctx, seen_keys: set[int], known_addrs: set[int],
