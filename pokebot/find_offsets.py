@@ -398,6 +398,114 @@ def scan_accessors(rpc: CitraRPC,
             last_progress = time.monotonic()
 
 
+# ---------------------------------------------------------------------------
+# gfl::fs::ver4::ArcFileAccessor scanner
+# ---------------------------------------------------------------------------
+# Layout (per the user's RAM-map notes):
+#   0x0   u32   vtable pointer
+#   0x4   u32   Ptr to GARC memory block
+#   0x8   u32   Ptr to FATO data within the block
+#   0xC   u32   Ptr to FATB data within the block
+#   0x10  u32   Ptr to FIMB data within the block
+#
+# Constraints we enforce:
+#   - vtable in code segment, 4-byte aligned
+#   - all four pointers 4-byte aligned
+#   - all four heap pointers in the same heap (linear or extended)
+#   - FATO < FATB < FIMB and all >= GARC-block pointer
+#     (the three section pointers live INSIDE the GARC block)
+
+
+def is_likely_arc_accessor(buf: bytes) -> tuple[bool, dict | None]:
+    """Heuristic check whether ``buf`` is a gfl ArcFileAccessor.
+
+    Returns ``(True, info)`` with keys garc, fato, fatb, fimb on match.
+    """
+    if len(buf) < 20:
+        return False, None
+    vtable = int.from_bytes(buf[0:4],   "little")
+    garc   = int.from_bytes(buf[4:8],   "little")
+    fato   = int.from_bytes(buf[8:12],  "little")
+    fatb   = int.from_bytes(buf[12:16], "little")
+    fimb   = int.from_bytes(buf[16:20], "little")
+    if not (CODE_SEG_LO <= vtable < CODE_SEG_HI) or (vtable & 3):
+        return False, None
+    for ptr in (garc, fato, fatb, fimb):
+        if not (HEAP_LO <= ptr < HEAP_HI) or (ptr & 3):
+            return False, None
+    if not (garc <= fato < fatb < fimb):
+        return False, None
+    # All three section pointers should sit within a few MB of the
+    # GARC base — GARC files for X/Y aren't multi-gigabyte.
+    if fimb - garc > 0x4000000:        # 64 MB sanity cap
+        return False, None
+    return True, {
+        "vtable": vtable,
+        "garc":   garc,
+        "fato":   fato,
+        "fatb":   fatb,
+        "fimb":   fimb,
+    }
+
+
+def scan_arc_accessors(rpc: CitraRPC,
+                       start: int,
+                       end:   int,
+                       step:  int = 4,
+                       chunk: int = 0x4000,
+                       probe_size: int = 256,
+                       skip_unit:  int = 0x100000,
+                       throttle_s: float = 0.005):
+    """Yield ``(accessor_addr, info)`` for each ArcFileAccessor found.
+
+    Same probe-and-skip / throttle shape as ``scan_accessors``. ``info``
+    carries the four pointers (garc, fato, fatb, fimb) so callers can
+    cross to the in-memory GARC block.
+    """
+    cur = start
+    last_progress = time.monotonic()
+    while cur < end:
+        try:
+            probe = rpc.read(cur, probe_size)
+        except Exception:
+            cur += skip_unit
+            continue
+        if not probe or probe == b"\x00" * len(probe) \
+                     or probe == b"\xFF" * len(probe):
+            cur += skip_unit
+            continue
+        region_end = min(cur + skip_unit, end)
+        while cur < region_end:
+            try:
+                block = rpc.read(cur, chunk)
+            except Exception:
+                cur += chunk
+                continue
+            if len(block) < 20:
+                cur += chunk
+                continue
+            for off in range(0, len(block) - 20 + 1, step):
+                ok, info = is_likely_arc_accessor(block[off:off + 20])
+                if not ok:
+                    continue
+                # Verify by reading the first 4 bytes of the GARC block —
+                # GARC files start with magic "CRAG" (little-endian).
+                try:
+                    head = rpc.read(info["garc"], 4)
+                except Exception:
+                    continue
+                if head != b"CRAG":
+                    continue
+                yield (cur + off, info)
+            cur += chunk - 20
+            if throttle_s:
+                time.sleep(throttle_s)
+        if time.monotonic() - last_progress > 2.0:
+            pct = 100 * (cur - start) / max(1, end - start)
+            log.info(f"arc accessor scan: {cur:#010x} ({pct:.1f}%)")
+            last_progress = time.monotonic()
+
+
 def trainer_name_pattern(name: str) -> bytes:
     """Encode an X/Y trainer name as the byte pattern that lives in
     RAM: UTF-16LE characters followed by a u16 null terminator.
