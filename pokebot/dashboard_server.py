@@ -28,7 +28,7 @@ _IV_ORDER = ("HP", "Atk", "Def", "SpA", "SpD", "Spe")
 def _format_encounter(f: dict) -> str:
     sp = f.get("species", "?")
     lvl = f.get("level")
-    shiny = " ★ SHINY" if f.get("shiny") else ""
+    shiny = " *SHINY*" if f.get("shiny") else ""
     nature = f.get("nature", "?")
     gender = f.get("gender", "G")
     ivs = f.get("ivs") or {}
@@ -37,9 +37,32 @@ def _format_encounter(f: dict) -> str:
     pid = int(f.get("pid", 0))
     nick = f.get("nickname") or f"#{sp}"
     lvl_str = f"Lv{lvl}" if lvl is not None else "Lv?"
+
+    extras: list[str] = []
+    markings = f.get("markings") or []
+    if markings:
+        extras.append(f"marks={'+'.join(markings)}")
+    pokerus = f.get("pokerus") or {}
+    if pokerus.get("infected"):
+        extras.append(f"PKRS infected ({pokerus.get('days_left', '?')}d)")
+    elif pokerus.get("cured"):
+        extras.append("PKRS cured")
+    enc_type = f.get("encounter_type")
+    enc_type_id = f.get("encounter_type_id", 0)
+    # Skip the noisy default-zero "Egg / Hatched / Special Event" tag
+    # for live wild encounters where it's almost always 0.
+    if enc_type and enc_type_id != 0:
+        extras.append(f"via={enc_type}")
+    ot_game = f.get("ot_game")
+    ot_game_id = f.get("ot_game_id", 0)
+    if ot_game and ot_game_id != 0 and "unknown" not in ot_game:
+        extras.append(f"OT-game={ot_game}")
+    extras_line = ("  " + "  ".join(extras)) if extras else ""
+
     return (f"  [enc #{f.get('count', '?')}] {nick} {lvl_str} {gender}{shiny}\n"
             f"             nature={nature}  IVs {iv_str} ({iv_sum})  "
-            f"PID={pid:08X}  ability#{f.get('ability_id', '?')}")
+            f"PID={pid:08X}  ability#{f.get('ability_id', '?')}"
+            + (f"\n             {extras_line.strip()}" if extras_line else ""))
 
 
 def _format_target_hit(f: dict) -> str:

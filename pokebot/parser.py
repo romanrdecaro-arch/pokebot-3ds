@@ -162,6 +162,59 @@ LANGUAGES = {
     5: "GER", 7: "SPA", 8: "KOR",
 }
 
+# Per Project Pokémon Gen 6 PK6 spec — byte at 0x2A is a markings bitfield.
+MARKINGS = [
+    (0x01, "circle"),  (0x02, "triangle"), (0x04, "square"),
+    (0x08, "heart"),   (0x10, "star"),     (0x20, "diamond"),
+]
+
+# Encounter type byte at 0xDE. X/Y don't write this for native encounters
+# (they leave it 0); transferred Pokémon carry their original gen value.
+ENCOUNTER_TYPES = {
+    0x0: "Egg / Hatched / Special Event",
+    0x2: "Tall Grass",
+    0x4: "Dialga/Palkia In-Game Event",
+    0x5: "Cave / Hall of Origin",
+    0x7: "Surfing / Fishing",
+    0x9: "Building",
+    0xA: "Great Marsh (Safari Zone)",
+    0xC: "Starter / Fossil / Gift",
+}
+
+# OT Game ID byte at 0xDF — version of the originating game.
+OT_GAME_IDS = {
+    7:  "HeartGold",  8:  "SoulSilver",
+    10: "Diamond",    11: "Pearl",       12: "Platinum",
+    20: "White",      21: "Black",
+    22: "White 2",    23: "Black 2",
+    24: "X",          25: "Y",
+    26: "Alpha Sapphire", 27: "Omega Ruby",
+    30: "Sun",        31: "Moon",
+    32: "Ultra Sun",  33: "Ultra Moon",
+    34: "Red (VC)",   35: "Green (VC)",  36: "Blue (VC)",
+    37: "Yellow (VC)",
+}
+
+
+def _decode_markings(byte: int) -> list[str]:
+    return [name for mask, name in MARKINGS if byte & mask]
+
+
+def _decode_pokerus(byte: int) -> dict:
+    """Pokérus byte: high nibble = strain, low nibble = days remaining.
+
+    - 0x00            never infected
+    - high != 0, low = 0  cured / immune
+    - both != 0       currently infected, ``days_left`` = low nibble
+    """
+    strain = (byte >> 4) & 0x0F
+    days   = byte & 0x0F
+    if byte == 0:
+        return {"infected": False, "cured": False, "strain": 0, "days_left": 0}
+    if days == 0:
+        return {"infected": False, "cured": True, "strain": strain, "days_left": 0}
+    return {"infected": True, "cured": False, "strain": strain, "days_left": days}
+
 
 @dataclass
 class ParsedPokemon:
@@ -204,6 +257,15 @@ class ParsedPokemon:
     move_pp: list
     move_pp_ups: list
 
+    # Cosmetic / status (Gen 6 PK6 spec, bytes 0x2A / 0x2B / 0xDE / 0xDF)
+    markings: list           # subset of {"circle","triangle","square","heart","star","diamond"}
+    markings_byte: int       # raw byte, in case caller wants masks directly
+    pokerus: dict            # {"infected", "cured", "strain", "days_left"}
+    encounter_type_id: int
+    encounter_type: str
+    ot_game_id: int
+    ot_game: str
+
     # Computed flags
     shiny: bool
     tsv: int                # trainer shiny value
@@ -216,6 +278,40 @@ class ParsedPokemon:
 
     # Party-only (None for box records)
     party: Optional[dict] = None
+
+
+def encounter_payload(pkm: "ParsedPokemon") -> dict:
+    """Build the ``**fields`` kwargs all our broadcasts use, one place.
+
+    Centralised so that adding a new field to ``ParsedPokemon`` doesn't
+    mean editing every broadcast call site.
+    """
+    return {
+        "species":     pkm.species,
+        "form":        pkm.form,
+        "nickname":    pkm.nickname,
+        "shiny":       pkm.shiny,
+        "nature":      pkm.nature,
+        "gender":      pkm.gender,
+        "ivs":         pkm.ivs,
+        "evs":         pkm.evs,
+        "pid":         pkm.pid,
+        "tsv":         pkm.tsv,
+        "psv":         pkm.psv,
+        "ability_id":  pkm.ability_id,
+        "ability_num": pkm.ability_num,
+        "level":       pkm.party["level"] if pkm.party else None,
+        "moves":       pkm.moves,
+        "markings":    pkm.markings,
+        "pokerus":     pkm.pokerus,
+        "encounter_type":    pkm.encounter_type,
+        "encounter_type_id": pkm.encounter_type_id,
+        "ot_game":     pkm.ot_game,
+        "ot_game_id":  pkm.ot_game_id,
+        "ot_name":     pkm.ot_name,
+        "fateful":     pkm.fateful_encounter,
+        "is_egg":      pkm.is_egg,
+    }
 
 
 def parse_pkm(plain: bytes) -> ParsedPokemon:
@@ -258,6 +354,8 @@ def parse_pkm(plain: bytes) -> ParsedPokemon:
         "HP":  u8(0x1E), "Atk": u8(0x1F), "Def": u8(0x20),
         "Spe": u8(0x21), "SpA": u8(0x22), "SpD": u8(0x23),
     }
+    markings_byte = u8(0x2A)
+    pokerus_byte  = u8(0x2B)
 
     # Block B (0x40-0x77)
     nickname = plain[0x40:0x58].decode("utf-16-le", errors="replace")
@@ -286,6 +384,8 @@ def parse_pkm(plain: bytes) -> ParsedPokemon:
     met_byte     = u8(0xDD)
     met_level    = met_byte & 0x7F
     ot_female    = bool(met_byte & 0x80)
+    enc_type_id  = u8(0xDE)
+    ot_game_id   = u8(0xDF)
     ot_lang      = u8(0xE3)
 
     # Shiny computation
@@ -309,6 +409,13 @@ def parse_pkm(plain: bytes) -> ParsedPokemon:
         held_item=held_item, exp=exp,
         ivs=ivs, evs=evs,
         moves=moves, move_pp=move_pp, move_pp_ups=move_pp_ups,
+        markings=_decode_markings(markings_byte),
+        markings_byte=markings_byte,
+        pokerus=_decode_pokerus(pokerus_byte),
+        encounter_type_id=enc_type_id,
+        encounter_type=ENCOUNTER_TYPES.get(enc_type_id, f"unknown ({enc_type_id})"),
+        ot_game_id=ot_game_id,
+        ot_game=OT_GAME_IDS.get(ot_game_id, f"unknown ({ot_game_id})"),
         shiny=shiny, tsv=tsv, psv=psv,
         checksum_stored=cs_store, checksum_computed=cs_calc,
         checksum_valid=(cs_store == cs_calc),

@@ -103,17 +103,9 @@ def run(ctx):
             continue
         last_foe_key = key
         encounters += 1
+        from ..parser import encounter_payload
         ctx.dashboard.broadcast(
-            "encounter",
-            count=encounters,
-            species=pkm.species, nickname=pkm.nickname,
-            shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
-            ivs=pkm.ivs, pid=pkm.pid,
-            tsv=pkm.tsv, psv=pkm.psv,
-            ability_id=pkm.ability_id, ability_num=pkm.ability_num,
-            level=pkm.party["level"] if pkm.party else None,
-            moves=pkm.moves,
-        )
+            "encounter", count=encounters, **encounter_payload(pkm))
 
         if ctx.target and ctx.target.matches(pkm):
             log.info(f"TARGET! enc#{encounters}: {ctx.target.describe(pkm)}")
