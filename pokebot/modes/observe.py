@@ -53,19 +53,32 @@ def run(ctx) -> None:
     last_full_scan = [0.0]
     rescan_in_flight = [False]
 
-    # ── Baseline ────────────────────────────────────────────────────────
-    log.info("Baseline scan — cataloguing existing party + box Pokémon "
-             "(can take 30-90 s).")
-    initial = _full_scan(ctx)
-    if initial is None:
-        log.error("Baseline scan failed; observe can't continue without "
-                  "a starting picture. Stop.")
-        return
-    for addr, key in initial:
-        seen_keys.add(key)
-        known_addrs.add(addr)
-    log.info(f"Baseline: {len(known_addrs)} Pokémon catalogued. "
-             f"Watching for new encounters now.")
+    # ── Fast path: probe the LiveHeX-published addresses directly ──────
+    # Heap scans waste minutes when we already know where the data is.
+    # PKHeX-Plugins LiveHeX has verified addresses for X/Y / OR/AS /
+    # SM / USUM. If the read at trainer_block lands valid data, we can
+    # find party slots by candidate offsets without scanning at all.
+    fast_addrs = _try_livehex_fast_path(ctx)
+    if fast_addrs:
+        log.info(f"  fast path OK — {len(fast_addrs)} known address(es) "
+                 f"will hot-poll without a heap scan.")
+        for addr, key in fast_addrs:
+            seen_keys.add(key)
+            known_addrs.add(addr)
+    else:
+        # ── Baseline (heap scan) ────────────────────────────────────────
+        log.info("Baseline scan — cataloguing existing party + box Pokémon "
+                 "(can take 30-90 s).")
+        initial = _full_scan(ctx)
+        if initial is None:
+            log.error("Baseline scan found no Pokémon and no LiveHeX "
+                      "mapping is set for this game. Stop.")
+            return
+        for addr, key in initial:
+            seen_keys.add(key)
+            known_addrs.add(addr)
+        log.info(f"Baseline: {len(known_addrs)} Pokémon catalogued. "
+                 f"Watching for new encounters now.")
     last_full_scan[0] = time.monotonic()
 
     # ── Watch loop ──────────────────────────────────────────────────────
@@ -116,6 +129,114 @@ def run(ctx) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
+    """Read the published LiveHeX addresses directly. Skip the heap scan
+    when we get hits.
+
+    Returns ``[(data_addr, enc_key), ...]`` of every PK6 we found
+    (party slots + box1 slot1 if non-empty). Empty list when:
+      - the game has no LiveHeX mapping
+      - the trainer-block read returns unmapped/zero bytes (the
+        published address doesn't apply to the user's setup)
+      - none of the candidate party addresses parse as a PK6
+    """
+    from ..livehex_compat import (
+        livehex_version_for, get_trainer_block_offset,
+        get_trainer_block_size, get_b1s1_offset, get_slot_size,
+        get_gap_size, LiveHeXVersion,
+    )
+    from ..find_offsets import is_likely_pk7
+    from ..games import party_base_candidates
+
+    game_key = ctx.game.key
+    lv = livehex_version_for(game_key)
+    if lv == LiveHeXVersion.UNKNOWN:
+        log.info("  fast path: no LiveHeX mapping for this game.")
+        return []
+
+    tb_addr = get_trainer_block_offset(lv)
+    tb_size = get_trainer_block_size(lv) or 0x100
+
+    # 1. Trainer block sanity probe — confirms the published address
+    #    actually maps to something in this user's emulator session.
+    log.info(f"  fast path: probing trainer block @ {tb_addr:#010x}")
+    try:
+        tb = ctx.rpc.read(tb_addr, tb_size)
+    except Exception as e:
+        log.info(f"  fast path: trainer block read failed: {e}")
+        return []
+    if not tb or tb == b"\x00" * len(tb) or tb == b"\xFF" * len(tb):
+        log.info("  fast path: trainer block read returned unmapped/zero "
+                 "bytes; falling back to heap scan.")
+        return []
+    log.info(f"  fast path: trainer block looks live "
+             f"(first 8 bytes = {tb[:8].hex()})")
+
+    found: list[tuple[int, int]] = []
+
+    # 2. Try each candidate party_base. The first one that parses as a
+    #    valid PK6 is the player's party.
+    candidates = party_base_candidates(game_key) or []
+    party_base: Optional[int] = None
+    party_stride = ctx.game.offsets.party_stride or 484
+    for cand in candidates:
+        try:
+            raw = ctx.rpc.read(cand, 260)
+        except Exception:
+            continue
+        ok, _ = is_likely_pk7(raw)
+        if ok:
+            party_base = cand
+            log.info(f"  fast path: party_base = {cand:#010x}")
+            break
+        # Empty slot 0 still tells us this is the right anchor IF the
+        # next slot reads valid. Try slot 1 as confirmation.
+        if int.from_bytes(raw[:4], "little") == 0:
+            try:
+                raw1 = ctx.rpc.read(cand + party_stride, 260)
+            except Exception:
+                continue
+            ok1, _ = is_likely_pk7(raw1)
+            if ok1:
+                party_base = cand
+                log.info(f"  fast path: party_base = {cand:#010x} "
+                         f"(slot 0 empty, slot 1 valid)")
+                break
+
+    if party_base is not None:
+        ctx.game.offsets.party_base = party_base
+        # Read all 6 slots
+        for slot in range(6):
+            addr = party_base + slot * party_stride
+            try:
+                raw = ctx.rpc.read(addr, 260)
+            except Exception:
+                continue
+            if int.from_bytes(raw[:4], "little") == 0:
+                continue
+            ok, info = is_likely_pk7(raw)
+            if ok and info:
+                found.append((addr, info["enc_key"]))
+                log.info(f"  fast path: slot {slot} @ {addr:#010x} "
+                         f"species #{info.get('species', '?')}")
+
+    # 3. Box 1 slot 1 — gives us a stable hot-poll target during play
+    #    (the user might move Pokémon between PC slots while observing).
+    b1 = get_b1s1_offset(lv)
+    if b1:
+        try:
+            raw = ctx.rpc.read(b1, 232)
+            ok, info = is_likely_pk7(raw + b"\x00" * 28)
+            if ok and info:
+                found.append((b1, info["enc_key"]))
+                log.info(f"  fast path: box1 slot1 @ {b1:#010x} "
+                         f"species #{info.get('species', '?')}")
+        except Exception:
+            pass
+
+    return found
+
 
 def _full_scan(ctx) -> Optional[list[tuple[int, int]]]:
     """One full-heap pass. Returns [(addr, enc_key), ...] or None on error.
