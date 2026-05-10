@@ -157,6 +157,7 @@ def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
 
     tb_addr = get_trainer_block_offset(lv)
     tb_size = get_trainer_block_size(lv) or 0x100
+    b1 = get_b1s1_offset(lv)            # box1 slot1 — used by brute-scan below
 
     # 1. Trainer block sanity probe — confirms the published address
     #    actually maps to something in this user's emulator session.
@@ -225,21 +226,46 @@ def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
             log.warning(f"  fast path: targeted read failed: {e}")
             chunk = b""
         if chunk:
-            hits = []
+            from ..parser import decrypt_pkm, calc_checksum
+            strict_hits: list[tuple[int, dict]] = []
+            relaxed_hits: list[tuple[int, int]] = []  # (addr, species)
             for off in range(0, len(chunk) - 260 + 1, 4):
-                ok, info = is_likely_pk7(chunk[off:off + 260])
+                rec = chunk[off:off + 260]
+                ok, info = is_likely_pk7(rec)
                 if ok and info:
-                    hits.append((scan_lo + off, info))
-            log.info(f"  fast path: found {len(hits)} PK6 record(s) "
-                     f"in the save-block region")
-            for hit_addr, hit_info in hits[:8]:
-                log.info(f"    {hit_addr:#010x} species=#{hit_info.get('species')}")
-            if hits:
+                    strict_hits.append((scan_lo + off, info))
+                    continue
+                # Relaxed path: skip the sanity==0 / level<=100 / nature<=24
+                # checks and JUST verify the checksum after decrypt. The
+                # X/Y in-RAM party slot might carry extra metadata that
+                # makes is_likely_pk7's strict filters reject it even when
+                # the underlying PK6 is fine.
+                ek = int.from_bytes(rec[:4], "little")
+                if ek == 0 or ek == 0xFFFFFFFF:
+                    continue
+                try:
+                    pt = decrypt_pkm(rec)
+                    stored = int.from_bytes(pt[6:8], "little")
+                    if calc_checksum(pt) == stored:
+                        species = int.from_bytes(pt[8:10], "little")
+                        if 0 < species <= 1000:
+                            relaxed_hits.append((scan_lo + off, species))
+                except Exception:
+                    pass
+            log.info(f"  fast path: strict PK6 hits: {len(strict_hits)}, "
+                     f"relaxed (checksum-only) hits: {len(relaxed_hits)}")
+            for hit_addr, hit_info in strict_hits[:6]:
+                log.info(f"    strict  {hit_addr:#010x} species=#{hit_info.get('species')}")
+            for hit_addr, sp in relaxed_hits[:6]:
+                log.info(f"    relaxed {hit_addr:#010x} species=#{sp}")
+            picks = strict_hits or [(a, {"species": s}) for a, s in relaxed_hits]
+            if picks:
                 # Lowest address is most likely party slot 0; party
                 # comes before boxes in the save layout.
-                party_base = hits[0][0]
+                party_base = picks[0][0]
+                tag = "strict" if strict_hits else "relaxed"
                 log.info(f"  fast path: party_base = {party_base:#010x} "
-                         f"(brute-force pick)")
+                         f"({tag} brute-force pick)")
 
     if party_base is not None:
         ctx.game.offsets.party_base = party_base
@@ -260,7 +286,6 @@ def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
 
     # 3. Box 1 slot 1 — gives us a stable hot-poll target during play
     #    (the user might move Pokémon between PC slots while observing).
-    b1 = get_b1s1_offset(lv)
     if b1:
         try:
             raw = ctx.rpc.read(b1, 232)
