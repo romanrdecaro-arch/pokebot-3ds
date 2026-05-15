@@ -108,8 +108,62 @@ def run(ctx) -> None:
             ok, info = is_likely_pk7(raw)
             if ok and info:
                 fast_addrs.append((a, info["enc_key"]))
-                log.info(f"  cached: slot {slot} @ {a:#010x} "
-                         f"species #{info.get('species', '?')}")
+                # Full diagnostic: shows whether this address is the
+                # LIVE party (level/exp track in-game) or a stale
+                # snapshot. EXP at 0x10, party-stat level byte at 0xEC.
+                try:
+                    pt = decrypt_pkm(raw)
+                    exp = int.from_bytes(pt[0x10:0x14], "little")
+                    lvl_byte = pt[0xEC]
+                    hp_max = int.from_bytes(pt[0xF2:0xF4], "little")
+                    pkm = parse_pkm(pt)
+                    log.info(f"  cached: slot {slot} @ {a:#010x} "
+                             f"#{info.get('species','?')} "
+                             f"lvl(0xEC)={lvl_byte} exp={exp} "
+                             f"hp_max={hp_max} shiny={pkm.shiny} "
+                             f"nick={pkm.nickname!r} pid={pkm.pid:#010x}")
+                except Exception as e:
+                    log.info(f"  cached: slot {slot} @ {a:#010x} "
+                             f"species #{info.get('species','?')} "
+                             f"(detail parse failed: {e})")
+        # Region map: walk trainer_block .. tb+0x600 and log EVERY
+        # checksum-valid record (relaxed — sanity word allowed nonzero)
+        # with its level/exp. Lets us tell the LIVE party slot (level
+        # tracks in-game) from a stale snapshot, and pin the real
+        # party_base if the cached one is the wrong copy.
+        try:
+            from ..livehex_compat import (livehex_version_for,
+                                          get_trainer_block_offset)
+            from ..parser import calc_checksum
+            lv6 = livehex_version_for(ctx.game.key)
+            tb = get_trainer_block_offset(lv6) if lv6 else 0
+            if tb:
+                region = ctx.rpc.read(tb, 0x600)
+                log.info(f"  region map [{tb:#010x}, {tb+0x600:#010x}) — "
+                         f"all checksum-valid records:")
+                for o in range(0, len(region) - 260 + 1, 4):
+                    rec = region[o:o + 260]
+                    ek = int.from_bytes(rec[:4], "little")
+                    if ek in (0, 0xFFFFFFFF):
+                        continue
+                    try:
+                        pt = decrypt_pkm(rec)
+                    except Exception:
+                        continue
+                    if calc_checksum(pt) != int.from_bytes(pt[6:8], "little"):
+                        continue
+                    sp = int.from_bytes(pt[8:10], "little")
+                    if not (0 < sp <= 721):
+                        continue
+                    lvl_b = pt[0xEC]
+                    exp = int.from_bytes(pt[0x10:0x14], "little")
+                    san = int.from_bytes(pt[4:6], "little")
+                    log.info(f"    {tb+o:#010x} (tb+{o:#05x}) "
+                             f"#{sp} lvl(0xEC)={lvl_b} exp={exp} "
+                             f"sanityword={san:#06x}")
+        except Exception as e:
+            log.debug(f"  region map failed: {e}")
+
         if not fast_addrs:
             log.warning("  cached party_base read nothing valid — "
                         "falling back to the LiveHeX probe.")
