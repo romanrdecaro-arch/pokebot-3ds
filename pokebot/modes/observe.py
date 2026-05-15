@@ -156,8 +156,12 @@ def run(ctx) -> None:
         pb = cached_pb or min(a for a, _ in fast_addrs)
         lv = livehex_version_for(ctx.game.key)
         b1 = get_b1s1_offset(lv) if lv else 0
-        scan_lo = pb - 0x8000
-        scan_hi = (b1 + 0x10000) if b1 else (pb + 0x20000)
+        # Wide window: the wild-battle foe buffer isn't necessarily in
+        # the save block. 0x40000 before party_base through 0x80000
+        # past box1 ≈ 0.8 MB → ~830 1 KB reads → ~2-4 s/pass, still
+        # fine for a 3 s-interval background thread.
+        scan_lo = pb - 0x40000
+        scan_hi = (b1 + 0x80000) if b1 else (pb + 0xC0000)
         threading.Thread(
             target=_foe_finder,
             args=(ctx, seen_keys, known_addrs, addr_lock,
@@ -221,37 +225,59 @@ def _foe_finder(ctx, seen_keys: set, known_addrs: set,
     added to known_addrs (so the hot-poll thread tracks it cheaply
     from then on). The first such address is persisted as foe_base.
     """
+    from ..parser import calc_checksum
+
     span = scan_hi - scan_lo
     foe_persisted = False
+    pass_n = 0
     while not ctx.should_stop():
         time.sleep(3.0)
+        pass_n += 1
+        t0 = time.monotonic()
         try:
             chunk = ctx.rpc.read(scan_lo, span)
         except Exception as e:
-            log.debug(f"  foe finder read failed: {e}")
+            log.warning(f"  foe-finder pass #{pass_n} read failed: {e}")
             continue
+        new_here = 0
         for off in range(0, len(chunk) - 260 + 1, 4):
             rec = chunk[off:off + 260]
             ek = int.from_bytes(rec[:4], "little")
             if ek == 0 or ek == 0xFFFFFFFF or ek in seen_keys:
                 continue
-            ok, info = is_likely_pk7(rec)
-            if not (ok and info):
-                continue
-            addr = scan_lo + off
+            # Accept on checksum match (decrypt + recompute) rather than
+            # the strict is_likely_pk7 filter — an in-RAM wild foe slot
+            # can carry a non-zero sanity word / partial battle state
+            # that the strict filter rejects even though the underlying
+            # PK6 is sound. species sanity guards against false hits.
             try:
-                pkm = parse_pkm(decrypt_pkm(rec))
+                pt = decrypt_pkm(rec)
             except Exception:
                 continue
-            if not pkm.checksum_valid:
+            if calc_checksum(pt) != int.from_bytes(pt[6:8], "little"):
                 continue
+            species = int.from_bytes(pt[8:10], "little")
+            if not (0 < species <= 1000):
+                continue
+            try:
+                pkm = parse_pkm(pt)
+            except Exception:
+                continue
+            addr = scan_lo + off
             seen_keys.add(ek)
             with lock:
                 known_addrs.add(addr)
+            new_here += 1
+            log.info(f"  foe-finder: NEW @ {addr:#010x} "
+                     f"species=#{species} enc_key={ek:#010x}")
             _report(ctx, pkm, addr, source="foe-finder")
             if not foe_persisted:
                 _persist_foe_base(addr)
                 foe_persisted = True
+        if pass_n == 1 or new_here:
+            log.info(f"  foe-finder: pass #{pass_n} scanned "
+                     f"{span:#x} bytes in {time.monotonic()-t0:.1f}s, "
+                     f"{new_here} new record(s).")
 
 
 def _broadcast_party(ctx, party_base: int, stride: int) -> None:

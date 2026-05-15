@@ -38,14 +38,17 @@ class GameOffsets:
     Use 0 for "unknown / not yet found"; modes that require an offset will
     refuse to start if it's still 0.
     """
-    # Party (your team)
+    # Party (your team). The save-block party in Gen 6/7 is six
+    # contiguous party-format PK6/PK7 records of 0x104 = 260 bytes
+    # each. Confirmed on Y-USA: slot 0 = a clean 260-byte record.
+    # (484 was a wrong Gen-7-battle-structure guess.)
     party_base:     int = 0   # first party slot (260-byte PK7)
-    party_stride:   int = 484 # bytes between party slot N and N+1
+    party_stride:   int = 260 # bytes between party slot N and N+1
     party_count:    int = 0   # u8 byte: how many slots are filled
 
     # Wild / battle foe (the Pokémon currently fighting you)
     foe_base:       int = 0   # opposing Pokémon slot 1 (260-byte PK7)
-    foe_stride:     int = 484
+    foe_stride:     int = 260
     foe_count:      int = 0   # u8: number of foes (1 single, 2 double, ...)
 
     # Battle state

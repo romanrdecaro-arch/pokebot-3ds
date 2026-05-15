@@ -82,10 +82,10 @@ soft_reset:
 #
 # Without these the dashboard will show no party or encounter data.
 offsets:
-  party_base: 0x0
+  party_base: 0x08c79da8
   foe_base: 0x0
   in_battle_flag: 0x0
-  party_stride: 484   # 0x1E4; only change if offsets look right but data is garbled
+  party_stride: 260   # 0x104; Gen 6/7 save-block party = 6 contiguous 260-byte records
 
 # Target / filter is configured in the launcher (Hunt → Target filter).
 # Default is "Shiny only". To override from the CLI: pass --target shiny
