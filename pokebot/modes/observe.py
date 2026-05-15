@@ -59,26 +59,23 @@ def run(ctx) -> None:
     # SM / USUM. If the read at trainer_block lands valid data, we can
     # find party slots by candidate offsets without scanning at all.
     fast_addrs = _try_livehex_fast_path(ctx)
-    if fast_addrs:
-        log.info(f"  fast path OK — {len(fast_addrs)} known address(es) "
-                 f"will hot-poll without a heap scan.")
-        for addr, key in fast_addrs:
-            seen_keys.add(key)
-            known_addrs.add(addr)
-    else:
-        # ── Baseline (heap scan) ────────────────────────────────────────
-        log.info("Baseline scan — cataloguing existing party + box Pokémon "
-                 "(can take 30-90 s).")
-        initial = _full_scan(ctx)
-        if initial is None:
-            log.error("Baseline scan found no Pokémon and no LiveHeX "
-                      "mapping is set for this game. Stop.")
-            return
-        for addr, key in initial:
-            seen_keys.add(key)
-            known_addrs.add(addr)
-        log.info(f"Baseline: {len(known_addrs)} Pokémon catalogued. "
-                 f"Watching for new encounters now.")
+    if not fast_addrs:
+        # The old behaviour fell through to a full-heap scan here. With
+        # Azahar's 1 KB-per-request read ceiling, scanning 200+ MB takes
+        # 10-15 min — effectively "scanning indefinitely". We don't do
+        # that any more: the fast path already dumped the save-block
+        # region for analysis. Stop cleanly so the log is readable.
+        log.error("Could not locate the party via the LiveHeX fast "
+                  "path. See the tb+... dump lines above — paste them "
+                  "back so we can pin the exact offset/format. "
+                  "(No full-heap scan: it can't finish at the 1 KB "
+                  "RPC read limit.)")
+        return
+    log.info(f"  fast path OK — {len(fast_addrs)} known address(es) "
+             f"will hot-poll without a heap scan.")
+    for addr, key in fast_addrs:
+        seen_keys.add(key)
+        known_addrs.add(addr)
     last_full_scan[0] = time.monotonic()
 
     # ── Watch loop ──────────────────────────────────────────────────────
@@ -109,20 +106,11 @@ def run(ctx) -> None:
             seen_keys.add(enc_key)
             _report(ctx, pkm, addr, source="hot-poll")
 
-        # Trigger a background full-heap rescan if it's time and one
-        # isn't already running.
-        now = time.monotonic()
-        if (now - last_full_scan[0] > _FULL_RESCAN_INTERVAL_S
-                and not rescan_in_flight[0]):
-            rescan_in_flight[0] = True
-            last_full_scan[0] = now
-            threading.Thread(
-                target=_background_rescan,
-                args=(ctx, seen_keys, known_addrs, addr_lock,
-                      rescan_in_flight),
-                name="ObserveRescan", daemon=True
-            ).start()
-
+        # No background full-heap rescan. At the 1 KB RPC read ceiling
+        # a 200+ MB pass takes 10-15 min and never catches up — the
+        # hot-poll of the known party/box/foe addresses is what
+        # actually detects encounters. New foes reuse the foe slot
+        # (a known address), so hot-poll sees them on the next tick.
         time.sleep(_HOT_POLL_INTERVAL_S)
 
 
@@ -258,6 +246,30 @@ def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
                 log.info(f"    strict  {hit_addr:#010x} species=#{hit_info.get('species')}")
             for hit_addr, sp in relaxed_hits[:6]:
                 log.info(f"    relaxed {hit_addr:#010x} species=#{sp}")
+            # Third interpretation: the decrypted "Pokemon Temp Data"
+            # layout (dex@0x18, form@0x1A, nature@0x20, IVs@0x24..0x2E).
+            # X/Y keeps the active party as plaintext working structs
+            # in some builds — if so, no PK6 record will ever validate
+            # but the temp layout reads cleanly.
+            temp_hits: list[tuple[int, dict]] = []
+            for off in range(0, len(chunk) - 0x40, 4):
+                seg = chunk[off:off + 0x40]
+                dex = int.from_bytes(seg[0x18:0x1A], "little")
+                nature = int.from_bytes(seg[0x20:0x22], "little")
+                ivs = [int.from_bytes(seg[o:o + 2], "little")
+                       for o in range(0x24, 0x30, 2)]
+                if (0 < dex <= 721 and nature <= 24
+                        and all(v <= 31 for v in ivs)
+                        and any(v > 0 for v in ivs)):
+                    temp_hits.append((scan_lo + off, {
+                        "dex": dex, "nature": nature, "ivs": ivs}))
+            if temp_hits:
+                log.info(f"  fast path: TempData-format hits: "
+                         f"{len(temp_hits)}")
+                for ha, hi in temp_hits[:6]:
+                    log.info(f"    temp    {ha:#010x} dex=#{hi['dex']} "
+                             f"nature={hi['nature']} IVs={hi['ivs']}")
+
             picks = strict_hits or [(a, {"species": s}) for a, s in relaxed_hits]
             if picks:
                 # Lowest address is most likely party slot 0; party
@@ -266,6 +278,21 @@ def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
                 tag = "strict" if strict_hits else "relaxed"
                 log.info(f"  fast path: party_base = {party_base:#010x} "
                          f"({tag} brute-force pick)")
+            elif not temp_hits:
+                # Nothing found in ANY format. Dump the region so we
+                # can analyse it, rather than fall through to a
+                # 200+ MB heap scan that takes 15 min at the 1 KB
+                # RPC read ceiling.
+                log.warning("  fast path: no PK6 or TempData records in "
+                            "the save-block region. Dumping for analysis:")
+                for dump_off in (0x100, 0x1B8, 0x1C0, 0x200, 0x300,
+                                 0x400, 0x600):
+                    a = tb_addr + dump_off
+                    rel = a - scan_lo
+                    if 0 <= rel < len(chunk) - 0x30:
+                        seg = chunk[rel:rel + 0x30]
+                        log.warning(f"    tb+{dump_off:#05x} "
+                                    f"({a:#010x}): {seg.hex()}")
 
     if party_base is not None:
         ctx.game.offsets.party_base = party_base
