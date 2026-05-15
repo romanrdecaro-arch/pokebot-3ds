@@ -167,8 +167,21 @@ def run(ctx) -> None:
         log.info(f"  foe finder watching "
                  f"[{scan_lo:#010x}, {scan_hi:#010x}) every 3 s.")
 
+    # Push the party into the launcher's Party tab right away, then
+    # refresh it periodically so catches / evolutions / level-ups show.
+    party_base_now = ctx.game.offsets.party_base or cached_pb
+    party_stride_now = ctx.game.offsets.party_stride or 484
+    if party_base_now:
+        _broadcast_party(ctx, party_base_now, party_stride_now)
+
     # ── Watch loop ──────────────────────────────────────────────────────
+    loop_n = 0
     while not ctx.should_stop():
+        loop_n += 1
+        # Refresh the Party tab every ~5 s (8 hot-poll ticks).
+        if party_base_now and loop_n % 8 == 0:
+            _broadcast_party(ctx, party_base_now, party_stride_now)
+
         # Hot-poll every known address. Cheap (one 260-byte RPC read each).
         # If the data changed (different enc_key), we caught a new
         # Pokémon at an existing slot — typical for the foe slot during
@@ -239,6 +252,44 @@ def _foe_finder(ctx, seen_keys: set, known_addrs: set,
             if not foe_persisted:
                 _persist_foe_base(addr)
                 foe_persisted = True
+
+
+def _broadcast_party(ctx, party_base: int, stride: int) -> None:
+    """Read the 6 party slots and emit a 'party' event for the launcher's
+    Party tab.
+
+    Only non-empty slots are included; the launcher's _PartyStrip keys
+    by the 'slot' field and renders the rest empty. Cheap: 6 × 260-byte
+    reads (each one well under the 1 KB RPC ceiling).
+    """
+    slots: list[dict] = []
+    for slot in range(6):
+        addr = party_base + slot * stride
+        try:
+            raw = ctx.rpc.read(addr, 260)
+        except Exception:
+            continue
+        if int.from_bytes(raw[:4], "little") == 0:
+            continue
+        try:
+            pkm = parse_pkm(decrypt_pkm(raw))
+        except Exception:
+            continue
+        if not pkm.checksum_valid:
+            continue
+        slots.append({
+            "slot":     slot,
+            "species":  pkm.species,
+            "form":     pkm.form,
+            "nickname": pkm.nickname,
+            "level":    pkm.party["level"] if pkm.party else None,
+            "shiny":    pkm.shiny,
+            "nature":   pkm.nature,
+            "gender":   pkm.gender,
+            "ivs":      pkm.ivs,
+            "pid":      pkm.pid,
+        })
+    ctx.dashboard.broadcast("party", slots=slots)
 
 
 def _persist_foe_base(addr: int) -> None:
