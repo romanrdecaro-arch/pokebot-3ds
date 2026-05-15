@@ -373,14 +373,17 @@ def party_base_candidates(game_key: str) -> list[int]:
     tb = ref["trainer_block"]
     b1 = ref["box1_slot1"]
     if game_key in ("X-USA", "Y-USA", "OR-USA", "AS-USA"):
-        # Gen 6 save layout: trainer card 0x19400, party 0x19600,
-        # box 0x27A00. Distances: trainer→party = 0x200,
-        # party→box = 0xE400.
+        # CONFIRMED for Y-USA (2026-05-15): party slot 0 was found at
+        # trainer_block + 0x16C — a strict PK6 record decoding to the
+        # player's Fennekin (#653). The older +0x200 / +0x170 guesses
+        # were wrong. 0x16C is tried first; the rest stay as fallbacks
+        # for X / OR / AS until each is independently confirmed.
         return [
-            tb + 0x200,         # mirror save spacing (most likely)
-            tb + 0x170,         # right after trainer block
-            b1 - 0xE400,        # mirror save party→box spacing
-            b1 - 0xC58C,        # alternative: RAM trainer→box delta
+            tb + 0x16C,         # CONFIRMED Y-USA
+            tb + 0x200,
+            tb + 0x170,
+            b1 - 0xE400,
+            b1 - 0xC58C,
         ]
     # Gen 7 save layout differs significantly; provide a few reasonable
     # guesses around the trainer block.

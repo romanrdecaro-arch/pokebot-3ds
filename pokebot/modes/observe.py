@@ -31,13 +31,47 @@ No offsets required. Works in dry-run, never sends keys.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
+from ..find_offsets import is_likely_pk7
 from ..parser import decrypt_pkm, parse_pkm
 
 log = logging.getLogger(__name__)
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _persist_party_base(addr: int) -> None:
+    """Write party_base into config.yaml's offsets: block (line-aware).
+
+    Once written, the bot reads it back via the config-offset override
+    path on every subsequent run, so the LiveHeX probe + targeted scan
+    can be skipped entirely.
+    """
+    cfg = ROOT / "config.yaml"
+    if not cfg.exists():
+        return
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except Exception as e:
+        log.warning(f"  could not read {cfg.name}: {e}")
+        return
+    new_line = f"  party_base: {addr:#010x}"
+    out, n = re.subn(r"^( *)party_base:\s*[^\n]+", new_line, text,
+                     count=1, flags=re.MULTILINE)
+    if n == 0:
+        log.warning(f"  party_base line not found in {cfg.name}; "
+                    f"{addr:#010x} kept in memory only this run.")
+        return
+    try:
+        cfg.write_text(out, encoding="utf-8")
+        log.info(f"  saved party_base = {addr:#010x} to {cfg.name}")
+    except Exception as e:
+        log.warning(f"  could not write {cfg.name}: {e}")
 
 
 _HOT_POLL_INTERVAL_S    = 0.6     # how often to re-read each known addr
@@ -53,12 +87,40 @@ def run(ctx) -> None:
     last_full_scan = [0.0]
     rescan_in_flight = [False]
 
+    # ── Cached path: config.yaml already has a party_base ─────────────
+    # Once _persist_party_base has written it (or the user set it
+    # manually), bot.py applies it to ctx.game.offsets.party_base.
+    # Read the 6 slots straight off it — no probe, no scan.
+    cached_pb = ctx.game.offsets.party_base
+    fast_addrs: list[tuple[int, int]] = []
+    if cached_pb:
+        stride = ctx.game.offsets.party_stride or 484
+        log.info(f"  cached party_base = {cached_pb:#010x} (config) — "
+                 f"reading slots directly.")
+        for slot in range(6):
+            a = cached_pb + slot * stride
+            try:
+                raw = ctx.rpc.read(a, 260)
+            except Exception:
+                continue
+            if int.from_bytes(raw[:4], "little") == 0:
+                continue
+            ok, info = is_likely_pk7(raw)
+            if ok and info:
+                fast_addrs.append((a, info["enc_key"]))
+                log.info(f"  cached: slot {slot} @ {a:#010x} "
+                         f"species #{info.get('species', '?')}")
+        if not fast_addrs:
+            log.warning("  cached party_base read nothing valid — "
+                        "falling back to the LiveHeX probe.")
+
     # ── Fast path: probe the LiveHeX-published addresses directly ──────
     # Heap scans waste minutes when we already know where the data is.
     # PKHeX-Plugins LiveHeX has verified addresses for X/Y / OR/AS /
     # SM / USUM. If the read at trainer_block lands valid data, we can
     # find party slots by candidate offsets without scanning at all.
-    fast_addrs = _try_livehex_fast_path(ctx)
+    if not fast_addrs:
+        fast_addrs = _try_livehex_fast_path(ctx)
     if not fast_addrs:
         # The old behaviour fell through to a full-heap scan here. With
         # Azahar's 1 KB-per-request read ceiling, scanning 200+ MB takes
@@ -296,6 +358,7 @@ def _try_livehex_fast_path(ctx) -> list[tuple[int, int]]:
 
     if party_base is not None:
         ctx.game.offsets.party_base = party_base
+        _persist_party_base(party_base)
         # Read all 6 slots
         for slot in range(6):
             addr = party_base + slot * party_stride
