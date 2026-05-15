@@ -228,8 +228,7 @@ def run(ctx) -> None:
 
     # ── Scan if cache empty / stale ──────────────────────────────────────
     if not known_acc:
-        from ..games import scan_ranges_for
-        ranges = scan_ranges_for(ctx.game.generation)
+        ranges = _accessor_scan_ranges(ctx.game.generation)
         log.info("  no valid cached accessors — scanning "
                  f"({len(ranges)} range(s)). First run is slow; the "
                  f"result is cached.")
@@ -294,13 +293,29 @@ def run(ctx) -> None:
         time.sleep(_HOT_POLL_INTERVAL_S)
 
 
+def _accessor_scan_ranges(gen: int) -> list[tuple[int, int]]:
+    """Heap ranges to scan for accessors, in priority order.
+
+    Accessors are live runtime objects; for Gen 6 they sit in the
+    linear heap (0x14000000+) where the game's working/battle
+    allocations live — NOT the app heap, which only holds the stale
+    save block. Linear heap first; app heap as a fallback.
+    """
+    if gen == 6:
+        return [
+            (0x14000000, 0x1C000000),   # linear heap (live runtime)
+            (0x08000000, 0x10000000),   # app heap fallback
+        ]
+    # Gen 7: N3DS extended linear heap.
+    return [(0x30000000, 0x40000000), (0x08000000, 0x10000000)]
+
+
 def _rescan_thread(ctx, known_acc: set, seen_keys: set,
                    lock: threading.Lock) -> None:
     """Re-scan the primary heap range for accessors that appeared after
     startup (notably the wild-battle foe). Bounded; daemon thread.
     """
-    from ..games import scan_ranges_for
-    ranges = scan_ranges_for(ctx.game.generation)
+    ranges = _accessor_scan_ranges(ctx.game.generation)
     if not ranges:
         return
     lo, hi = ranges[0]
