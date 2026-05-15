@@ -182,8 +182,11 @@ def run(ctx) -> None:
     loop_n = 0
     while not ctx.should_stop():
         loop_n += 1
-        # Refresh the Party tab every ~5 s (8 hot-poll ticks).
-        if party_base_now and loop_n % 8 == 0:
+        # Refresh the Party tab every ~3 s (5 hot-poll ticks). It always
+        # re-reads the live slots and the launcher REPLACES the strip
+        # (update_from_party), so it reflects current state — level-ups,
+        # catches, evolutions — and never accumulates stale entries.
+        if party_base_now and loop_n % 5 == 0:
             _broadcast_party(ctx, party_base_now, party_stride_now)
 
         # Hot-poll every known address. Cheap (one 260-byte RPC read each).
@@ -228,28 +231,47 @@ def _foe_finder(ctx, seen_keys: set, known_addrs: set,
     from ..parser import calc_checksum
 
     span = scan_hi - scan_lo
+    sub = 0x10000                       # 64 KB resilient sub-windows
     foe_persisted = False
     pass_n = 0
     while not ctx.should_stop():
         time.sleep(3.0)
         pass_n += 1
         t0 = time.monotonic()
-        try:
-            chunk = ctx.rpc.read(scan_lo, span)
-        except Exception as e:
-            log.warning(f"  foe-finder pass #{pass_n} read failed: {e}")
-            continue
+        # Read the window in 64 KB sub-chunks (overlapped by 260 so a
+        # record straddling a boundary isn't missed). A failed sub-chunk
+        # is skipped, not fatal — one slow reply no longer wastes the
+        # whole multi-second pass.
+        chunk = bytearray()
+        fails = 0
+        pos = scan_lo
+        while pos < scan_hi and not ctx.should_stop():
+            n = min(sub, scan_hi - pos)
+            try:
+                chunk += ctx.rpc.read(pos, n)
+            except Exception:
+                # Pad with zeros so absolute offsets stay aligned.
+                chunk += b"\x00" * n
+                fails += 1
+            pos += n
+        if fails:
+            log.debug(f"  foe-finder pass #{pass_n}: {fails} sub-chunk "
+                      f"read(s) failed (zero-padded)")
         new_here = 0
         for off in range(0, len(chunk) - 260 + 1, 4):
             rec = chunk[off:off + 260]
             ek = int.from_bytes(rec[:4], "little")
             if ek == 0 or ek == 0xFFFFFFFF or ek in seen_keys:
                 continue
-            # Accept on checksum match (decrypt + recompute) rather than
-            # the strict is_likely_pk7 filter — an in-RAM wild foe slot
-            # can carry a non-zero sanity word / partial battle state
-            # that the strict filter rejects even though the underlying
-            # PK6 is sound. species sanity guards against false hits.
+            # Validation tiers:
+            #   1. checksum must match (decrypt + recompute)
+            #   2. species in 1..721 (Gen 6 national dex max)
+            #   3. FIELD sanity: level 1..100, nature 0..24,
+            #      ability_num in {0,1,2,4}
+            # We deliberately do NOT require the sanity *word* (bytes
+            # 4:6) to be 0 — an in-RAM foe slot can carry a non-zero
+            # value there — but the field-sanity gate still rejects the
+            # garbage "Lv198 / ability#167" misaligned-record hits.
             try:
                 pt = decrypt_pkm(rec)
             except Exception:
@@ -257,11 +279,18 @@ def _foe_finder(ctx, seen_keys: set, known_addrs: set,
             if calc_checksum(pt) != int.from_bytes(pt[6:8], "little"):
                 continue
             species = int.from_bytes(pt[8:10], "little")
-            if not (0 < species <= 1000):
+            if not (0 < species <= 721):
                 continue
             try:
                 pkm = parse_pkm(pt)
             except Exception:
+                continue
+            lvl = pkm.party["level"] if pkm.party else None
+            if lvl is None or not (1 <= lvl <= 100):
+                continue
+            if pkm.nature_id > 24:
+                continue
+            if pkm.ability_num not in (0, 1, 2, 4):
                 continue
             addr = scan_lo + off
             seen_keys.add(ek)

@@ -93,7 +93,20 @@ class CitraRPC:
     # ----- low-level packet round-trip ---------------------------------
     def _send_request(self, req_type: RequestType, payload: bytes) -> bytes:
         """Send one request, return its payload (header stripped).
-        Retries on timeout."""
+
+        The transport is UDP with no ordering guarantee. A reply that
+        arrives after our recv() timed out will still be sitting in the
+        socket buffer on the *next* request, so a naïve "recv once,
+        compare id" desyncs permanently — every subsequent read then
+        matches the previous request's stale reply, fails the id check,
+        and the connection never recovers (the cascade of "reply header
+        mismatch" the user saw).
+
+        Fix: per attempt, keep recv()-ing and DISCARDING any packet
+        whose req_id != ours until we either get our matching reply or
+        the per-attempt deadline passes. That drains stale replies
+        instead of tripping on them.
+        """
         last_err = None
         for _ in range(self.retries):
             req_id = random.getrandbits(32)
@@ -101,20 +114,46 @@ class CitraRPC:
                                  int(req_type), len(payload))
             try:
                 self.sock.sendto(header + payload, (self.host, self.port))
-                raw = self.sock.recv(MAX_PACKET)
-            except socket.timeout as e:
+            except OSError as e:
                 last_err = e
                 continue
-            if len(raw) < 16:
-                last_err = RPCError(f"short reply: {len(raw)} bytes")
-                continue
-            r_ver, r_id, r_type, r_size = struct.unpack(HEADER_FMT, raw[:16])
-            body = raw[16:]
-            if (r_ver != REQUEST_VERSION or r_id != req_id
-                    or r_type != int(req_type) or r_size != len(body)):
-                last_err = RPCError("reply header mismatch")
-                continue
-            return body
+
+            deadline = time.monotonic() + self.timeout
+            matched: Optional[bytes] = None
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    last_err = socket.timeout("no matching reply in time")
+                    break
+                try:
+                    self.sock.settimeout(remaining)
+                    raw = self.sock.recv(MAX_PACKET)
+                except socket.timeout as e:
+                    last_err = e
+                    break
+                except OSError as e:
+                    last_err = e
+                    break
+                if len(raw) < 16:
+                    # Runt packet — ignore, keep waiting for ours.
+                    continue
+                r_ver, r_id, r_type, r_size = struct.unpack(
+                    HEADER_FMT, raw[:16])
+                if r_id != req_id:
+                    # Stale reply from an earlier (timed-out) request.
+                    # Discard and keep draining.
+                    continue
+                body = raw[16:]
+                if (r_ver != REQUEST_VERSION or r_type != int(req_type)
+                        or r_size != len(body)):
+                    last_err = RPCError("reply header mismatch (matched id)")
+                    break
+                matched = body
+                break
+
+            if matched is not None:
+                return matched
+
         raise RPCError(f"request {req_type.name} failed after "
                        f"{self.retries} retries: {last_err}")
 
