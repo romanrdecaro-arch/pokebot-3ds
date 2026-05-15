@@ -121,22 +121,64 @@ def main():
     except Exception as e:
         print(f"  Read failed: {e}")
 
-    # 3. Candidate party_base addresses
+    # 3. Candidate party_base addresses — dump 0x90 bytes each and try
+    #    BOTH interpretations: encrypted PK6, and the decrypted
+    #    "Pokemon Temp Data" layout the user supplied earlier.
     print()
-    print("== Candidate party_base addresses ==")
+    print("== Candidate party_base addresses (0x90 bytes, both formats) ==")
     candidates = party_base_candidates(g.key) or []
+    # Also add the save-layout-derived guess: PKHeX SAV6XY puts the
+    # TrainerCard at save 0x14000 and Party at 0x14200, delta 0x200.
+    # tb_addr is the TrainerCard start, so tb_addr + 0x200 is party.
+    for extra in (tb_addr + 0x1C0, tb_addr + 0x1B8, tb_addr + 0x180):
+        if extra not in candidates:
+            candidates.append(extra)
+
+    from pokebot.parser import decrypt_pkm, calc_checksum
     for c in candidates:
         try:
-            raw = rpc.read(c, 260)
-            ek = int.from_bytes(raw[:4], "little")
-            ok, info = is_likely_pk7(raw)
-            print(f"  {c:#010x}: enc_key={ek:#010x} valid_PK6={ok} "
-                  f"first8={raw[:8].hex()}")
-            if ok and info:
-                print(f"     -> species={info.get('species')} "
-                      f"nature_id={info.get('nature')}")
+            raw = rpc.read(c, 0x90)
         except Exception as e:
             print(f"  {c:#010x}: read failed: {e}")
+            continue
+        ek = int.from_bytes(raw[:4], "little")
+        print(f"  {c:#010x}: enc_key={ek:#010x}")
+        print(f"    raw[0x00:0x20]={raw[0x00:0x20].hex()}")
+        print(f"    raw[0x20:0x40]={raw[0x20:0x40].hex()}")
+        # --- Interpretation A: encrypted PK6 ---
+        ok, info = is_likely_pk7(raw[:260] if len(raw) >= 260 else
+                                 raw + b"\x00" * (260 - len(raw)))
+        if ok:
+            print(f"    [PK6 strict]  species={info.get('species')}")
+        else:
+            try:
+                full = rpc.read(c, 260)
+                pt = decrypt_pkm(full)
+                stored = int.from_bytes(pt[6:8], "little")
+                calc = calc_checksum(pt)
+                sp = int.from_bytes(pt[8:10], "little")
+                print(f"    [PK6 decrypt] checksum stored={stored:#06x} "
+                      f"calc={calc:#06x} match={stored == calc} "
+                      f"species={sp}")
+            except Exception as e:
+                print(f"    [PK6 decrypt] failed: {e}")
+        # --- Interpretation B: decrypted "Pokemon Temp Data" ---
+        # 0x0 u32 enc_const, 0x8 u32 pid, 0x10 u32 tid/sid,
+        # 0x18 u16 dex, 0x1A u8 form, 0x1E u16 gender, 0x20 u16 nature,
+        # 0x22 u8 ability_num, 0x24..0x2E u16 IVs (HP,Atk,Def,SpA,SpD,Spe)
+        try:
+            dex = int.from_bytes(raw[0x18:0x1A], "little")
+            form = raw[0x1A]
+            pid = int.from_bytes(raw[0x08:0x0C], "little")
+            nature = int.from_bytes(raw[0x20:0x22], "little")
+            ivs = [int.from_bytes(raw[o:o + 2], "little")
+                   for o in range(0x24, 0x30, 2)]
+            plausible = (0 < dex <= 1000 and nature <= 24
+                         and all(v <= 31 for v in ivs))
+            print(f"    [TempData]    dex={dex} form={form} pid={pid:#010x} "
+                  f"nature={nature} IVs={ivs} plausible={plausible}")
+        except Exception as e:
+            print(f"    [TempData]    parse failed: {e}")
 
     # 4. Brute walk of the app heap to find any non-zero region.
     print()
