@@ -140,6 +140,33 @@ def run(ctx) -> None:
         known_addrs.add(addr)
     last_full_scan[0] = time.monotonic()
 
+    # ── Foe finder ──────────────────────────────────────────────────────
+    # The wild foe in a battle is NOT at party_base — it's written to a
+    # battle buffer elsewhere in the save-block region. We can't full-
+    # heap scan (1 KB read ceiling → 15 min), but a *bounded* targeted
+    # diff-scan of the region around the known party/box block is fast
+    # (~150 reads, ~2 s) and runs on a background thread so it doesn't
+    # stall the 0.6 s hot-poll. Any valid PK6 there whose enc_key isn't
+    # one of ours = a foe (or a caught/hatched/PC mon). Its address is
+    # added to known_addrs so hot-poll tracks it from then on, and the
+    # first foe address is persisted as foe_base for encounter mode.
+    if cached_pb or fast_addrs:
+        from ..livehex_compat import (livehex_version_for,
+                                      get_b1s1_offset)
+        pb = cached_pb or min(a for a, _ in fast_addrs)
+        lv = livehex_version_for(ctx.game.key)
+        b1 = get_b1s1_offset(lv) if lv else 0
+        scan_lo = pb - 0x8000
+        scan_hi = (b1 + 0x10000) if b1 else (pb + 0x20000)
+        threading.Thread(
+            target=_foe_finder,
+            args=(ctx, seen_keys, known_addrs, addr_lock,
+                  scan_lo, scan_hi),
+            name="ObserveFoeFinder", daemon=True
+        ).start()
+        log.info(f"  foe finder watching "
+                 f"[{scan_lo:#010x}, {scan_hi:#010x}) every 3 s.")
+
     # ── Watch loop ──────────────────────────────────────────────────────
     while not ctx.should_stop():
         # Hot-poll every known address. Cheap (one 260-byte RPC read each).
@@ -168,12 +195,70 @@ def run(ctx) -> None:
             seen_keys.add(enc_key)
             _report(ctx, pkm, addr, source="hot-poll")
 
-        # No background full-heap rescan. At the 1 KB RPC read ceiling
-        # a 200+ MB pass takes 10-15 min and never catches up — the
-        # hot-poll of the known party/box/foe addresses is what
-        # actually detects encounters. New foes reuse the foe slot
-        # (a known address), so hot-poll sees them on the next tick.
         time.sleep(_HOT_POLL_INTERVAL_S)
+
+
+def _foe_finder(ctx, seen_keys: set, known_addrs: set,
+                lock: "threading.Lock", scan_lo: int, scan_hi: int) -> None:
+    """Background loop: bounded targeted diff-scan for new PK6 records.
+
+    Reads [scan_lo, scan_hi) in 1 KB-capped chunks (rpc.read handles
+    that), walks it 4 bytes at a time for strict-valid PK6 records, and
+    any whose enc_key isn't in seen_keys is announced + its address
+    added to known_addrs (so the hot-poll thread tracks it cheaply
+    from then on). The first such address is persisted as foe_base.
+    """
+    span = scan_hi - scan_lo
+    foe_persisted = False
+    while not ctx.should_stop():
+        time.sleep(3.0)
+        try:
+            chunk = ctx.rpc.read(scan_lo, span)
+        except Exception as e:
+            log.debug(f"  foe finder read failed: {e}")
+            continue
+        for off in range(0, len(chunk) - 260 + 1, 4):
+            rec = chunk[off:off + 260]
+            ek = int.from_bytes(rec[:4], "little")
+            if ek == 0 or ek == 0xFFFFFFFF or ek in seen_keys:
+                continue
+            ok, info = is_likely_pk7(rec)
+            if not (ok and info):
+                continue
+            addr = scan_lo + off
+            try:
+                pkm = parse_pkm(decrypt_pkm(rec))
+            except Exception:
+                continue
+            if not pkm.checksum_valid:
+                continue
+            seen_keys.add(ek)
+            with lock:
+                known_addrs.add(addr)
+            _report(ctx, pkm, addr, source="foe-finder")
+            if not foe_persisted:
+                _persist_foe_base(addr)
+                foe_persisted = True
+
+
+def _persist_foe_base(addr: int) -> None:
+    """Write foe_base into config.yaml's offsets: block (line-aware)."""
+    cfg = ROOT / "config.yaml"
+    if not cfg.exists():
+        return
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except Exception:
+        return
+    out, n = re.subn(r"^( *)foe_base:\s*[^\n]+",
+                     f"  foe_base: {addr:#010x}", text,
+                     count=1, flags=re.MULTILINE)
+    if n:
+        try:
+            cfg.write_text(out, encoding="utf-8")
+            log.info(f"  saved foe_base = {addr:#010x} to {cfg.name}")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
