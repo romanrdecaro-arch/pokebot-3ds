@@ -63,6 +63,9 @@ ram_dump_*.bin
 # Diagnostic event log (created by pokebot.dashboard_server every run)
 last_events.log
 
+# Accessor-address cache (per-game, written by observe mode)
+.pokebot_accessors.json
+
 # pytest / coverage
 .pytest_cache/
 .coverage

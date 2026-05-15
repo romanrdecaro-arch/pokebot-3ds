@@ -282,7 +282,10 @@ def scan(rpc: CitraRPC,
 
 CODE_SEG_LO  = 0x00100000
 CODE_SEG_HI  = 0x10000000
-HEAP_LO      = 0x14000000
+# pkm data can live in EITHER the app heap (0x08000000-0x10000000,
+# where the save block sits) OR the linear heap (0x14000000+, where
+# runtime/battle allocations sit). Accept both.
+HEAP_LO      = 0x08000000
 HEAP_HI      = 0x40000000
 
 
