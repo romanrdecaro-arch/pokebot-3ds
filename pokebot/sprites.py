@@ -9,6 +9,7 @@ Used by the launcher's "Recently Seen" panel.
 """
 from __future__ import annotations
 
+import json
 import logging
 import urllib.request
 from pathlib import Path
@@ -72,6 +73,94 @@ def get_sprite_path(species_id: int, shiny: bool = False) -> Optional[Path]:
             log.debug(f"sprite download failed for #{species_id} ({url}): {e}")
             continue
     return None
+
+
+# ---------------------------------------------------------------------------
+# Animated sprites (Pokémon Showdown). Showdown's "ani" set covers every
+# species incl. Gen 6, but is keyed by name, not dex id — so we resolve
+# id → Showdown name via PokeAPI once and cache it.
+# ---------------------------------------------------------------------------
+
+_SHOWDOWN_TMPL = "https://play.pokemonshowdown.com/sprites/{folder}/{name}.gif"
+_NAME_CACHE = _CACHE_DIR / "_names.json"
+
+
+def _load_name_cache() -> dict:
+    try:
+        if _NAME_CACHE.exists():
+            return json.loads(_NAME_CACHE.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _save_name_cache(cache: dict) -> None:
+    try:
+        cache_dir()
+        _NAME_CACHE.write_text(json.dumps(cache))
+    except Exception:
+        pass
+
+
+def _showdown_name(species_id: int) -> Optional[str]:
+    """dex id → Showdown sprite slug (lowercase, alphanumerics only).
+
+    Cached to ~/.pokebot-3ds-sprites/_names.json so we hit PokeAPI at
+    most once per species, ever.
+    """
+    cache = _load_name_cache()
+    key = str(species_id)
+    if key in cache:
+        return cache[key] or None
+    url = f"https://pokeapi.co/api/v2/pokemon/{species_id}/"
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "pokebot-3ds/0.1"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read())
+        raw = data.get("name", "")
+    except Exception as e:
+        log.debug(f"name lookup failed for #{species_id}: {e}")
+        return None
+    slug = "".join(c for c in raw.lower() if c.isalnum())
+    cache[key] = slug
+    _save_name_cache(cache)
+    return slug or None
+
+
+def get_animated_sprite_path(species_id: int,
+                             shiny: bool = False) -> Optional[Path]:
+    """Return a local animated-GIF path for a species, downloading if
+    missing. ``None`` when unavailable (offline / no Showdown sprite),
+    so callers fall back to ``get_sprite_path`` (static PNG).
+    """
+    if not species_id or species_id < 1:
+        return None
+    fname = f"{species_id}_{'shiny' if shiny else 'normal'}_ani.gif"
+    target = cache_dir() / fname
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    name = _showdown_name(species_id)
+    if not name:
+        return None
+    folder = "ani-shiny" if shiny else "ani"
+    url = _SHOWDOWN_TMPL.format(folder=folder, name=name)
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "pokebot-3ds/0.1"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status != 200:
+                return None
+            data = resp.read()
+        if not data:
+            return None
+        target.write_bytes(data)
+        return target
+    except Exception as e:
+        log.debug(f"animated sprite download failed #{species_id}: {e}")
+        return None
 
 
 def hidden_power(ivs: dict) -> tuple[str, int]:

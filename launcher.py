@@ -212,6 +212,110 @@ def _hidden_power(ivs: dict):
         return ("Normal", 30)
 
 
+# ---------------------------------------------------------------------------
+# Shared sprite loader — prefers Pokémon Showdown animated GIFs, falls
+# back to the static Gen 6 PNG. Used by both _PartyStrip and
+# _RecentlySeen so animation logic lives in exactly one place.
+# ---------------------------------------------------------------------------
+
+def _apply_sprite(widget: tk.Label, sprite) -> None:
+    """Show a sprite on ``widget``. ``sprite`` is either a single
+    PhotoImage (static PNG) or a list of PhotoImages (GIF frames). Any
+    animation already running on the widget is cancelled first.
+    """
+    prev = getattr(widget, "_anim_after", None)
+    if prev:
+        try:
+            widget.after_cancel(prev)
+        except Exception:
+            pass
+        widget._anim_after = None
+    if isinstance(sprite, list):
+        _animate(widget, sprite, 0)
+    else:
+        widget.config(image=sprite, text="")
+
+
+def _animate(widget: tk.Label, frames: list, idx: int) -> None:
+    try:
+        if not widget.winfo_exists():
+            return
+    except Exception:
+        return
+    widget.config(image=frames[idx], text="")
+    widget._anim_after = widget.after(
+        90, _animate, widget, frames, (idx + 1) % len(frames))
+
+
+def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
+                      cache: dict, empty_text: str = "—") -> None:
+    """Fetch + display a species sprite on ``widget`` (worker thread for
+    the network/IO, Tk calls marshalled back via .after). Animated GIF
+    preferred; static PNG fallback; ``#id`` text if neither resolves.
+    ``cache`` maps a per-(species,shiny) key to a PhotoImage or a
+    frame-list so we never re-decode.
+    """
+    if not species_id:
+        widget.config(text=empty_text, fg=_MUTED, width=4, height=2,
+                       font=("Segoe UI", 12))
+        return
+    key = species_id * 2 + (1 if shiny else 0)
+    cached = cache.get(key)
+    if cached is not None:
+        _apply_sprite(widget, cached)
+        return
+    widget.config(text="…", fg=_MUTED, width=4, height=2,
+                  font=("Segoe UI", 11))
+
+    def _worker():
+        path, is_gif = None, False
+        try:
+            from pokebot.sprites import (get_animated_sprite_path,
+                                         get_sprite_path)
+            path = get_animated_sprite_path(species_id, shiny=shiny)
+            if path:
+                is_gif = True
+            else:
+                path = get_sprite_path(species_id, shiny=shiny)
+        except Exception:
+            path = None
+        if not path:
+            widget.after(0, lambda: widget.config(
+                text=f"#{species_id}", fg=_MUTED, font=("Consolas", 8)))
+            return
+
+        def _install():
+            try:
+                if is_gif:
+                    frames = []
+                    i = 0
+                    while True:
+                        try:
+                            frames.append(tk.PhotoImage(
+                                file=str(path), format=f"gif -index {i}"))
+                        except tk.TclError:
+                            break
+                        i += 1
+                    if not frames:
+                        raise ValueError("no GIF frames decoded")
+                    cache[key] = frames
+                    _apply_sprite(widget, frames)
+                else:
+                    img = tk.PhotoImage(file=str(path))
+                    cache[key] = img
+                    _apply_sprite(widget, img)
+            except Exception:
+                try:
+                    widget.config(text=f"#{species_id}", fg=_MUTED,
+                                  font=("Consolas", 8))
+                except Exception:
+                    pass
+
+        widget.after(0, _install)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 class _PartyStrip(tk.Frame):
     """A horizontal row of six slot tiles showing the player's party.
 
@@ -310,38 +414,8 @@ class _PartyStrip(tk.Frame):
 
     def _load_sprite_async(self, species_id: int, shiny: bool,
                            target: tk.Label):
-        if not species_id:
-            target.config(text="—", fg=_MUTED, width=4, height=2,
-                          font=("Segoe UI", 12))
-            return
-        cache_key = species_id * 2 + (1 if shiny else 0)
-        if cache_key in self._slot_sprites:
-            target.config(image=self._slot_sprites[cache_key])
-            return
-        target.config(text="…", fg=_MUTED, width=4, height=2,
-                      font=("Segoe UI", 11))
-
-        def _worker():
-            try:
-                from pokebot.sprites import get_sprite_path
-                p = get_sprite_path(species_id, shiny=shiny)
-            except Exception:
-                p = None
-            if p:
-                try:
-                    img = tk.PhotoImage(file=str(p))
-                    self._slot_sprites[cache_key] = img
-                    target.after(
-                        0, lambda: target.config(image=img, text=""))
-                    return
-                except Exception:
-                    pass
-            target.after(
-                0, lambda: target.config(
-                    text=f"#{species_id}", fg=_MUTED,
-                    font=("Consolas", 8)))
-
-        threading.Thread(target=_worker, daemon=True).start()
+        _load_sprite_into(target, species_id, shiny,
+                          self._slot_sprites, empty_text="—")
 
 
 class _RecentlySeen(tk.Frame):
@@ -559,37 +633,8 @@ class _RecentlySeen(tk.Frame):
 
     def _load_sprite_async(self, species_id: int, shiny: bool,
                            target: tk.Label):
-        if not species_id:
-            target.config(text="?", fg=_MUTED, width=4, height=2,
-                          font=("Segoe UI", 12, "bold"))
-            return
-        cache_key = species_id * 2 + (1 if shiny else 0)
-        if cache_key in self._sprites:
-            target.config(image=self._sprites[cache_key])
-            return
-        # Spinner placeholder while we fetch
-        target.config(text="…", fg=_MUTED, width=4, height=2,
-                      font=("Segoe UI", 12))
-
-        def _worker():
-            try:
-                from pokebot.sprites import get_sprite_path
-                p = get_sprite_path(species_id, shiny=shiny)
-            except Exception:
-                p = None
-            if p:
-                try:
-                    img = tk.PhotoImage(file=str(p))
-                    self._sprites[cache_key] = img
-                    target.after(0, lambda: target.config(image=img, text=""))
-                    return
-                except Exception:
-                    pass
-            target.after(0, lambda: target.config(
-                text=f"#{species_id}", fg=_MUTED,
-                font=("Consolas", 9)))
-
-        threading.Thread(target=_worker, daemon=True).start()
+        _load_sprite_into(target, species_id, shiny,
+                          self._sprites, empty_text="?")
 
     # ---- small helpers -----------------------------------------------------
 
