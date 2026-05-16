@@ -362,6 +362,13 @@ class NTRBridge:
         # a synthetic clean-empty PK6. That lets Connect_NTR validate
         # and PKHeX proceed — its subsequent reads (party/trainer) are
         # then visible in this log so we can map them to real data.
+        # Decode-log slot-sized reads. The spoof is ONLY a no-anchor
+        # crutch: once we've found the save delta the rebased reads are
+        # real, valid data (proven: box1slot1 reads the game's genuine
+        # clean-empty PK6, checksum 0x0545). Spoofing then actively
+        # breaks things — it replaces real data with a synthetic empty
+        # whose checksum differs, so PKHeX rejects OUR fake instead of
+        # accepting the real slot. So: spoof only when NOT anchored.
         note = ""
         if size in (232, 260) and len(data) >= 232:
             try:
@@ -376,12 +383,17 @@ class NTRBridge:
                 valid_pkm = (0 < sp <= 1024 and st == cc)
                 note = (f" | enc_key={ek:#010x} species={sp} "
                         f"csum match={st == cc}")
-                if not (clean_empty or valid_pkm):
+                if not self.delta and not (clean_empty or valid_pkm):
                     data = _empty_pk6(size)
-                    note += " | SPOOFED clean-empty (real data garbage)"
+                    note += " | SPOOFED clean-empty (no anchor)"
+                elif self.delta and not (clean_empty or valid_pkm):
+                    note += " | passthrough (anchored; real data)"
             except Exception as e:
-                data = _empty_pk6(size)
-                note = f" | decode err ({e}); SPOOFED clean-empty"
+                if not self.delta:
+                    data = _empty_pk6(size)
+                    note = f" | decode err ({e}); SPOOFED (no anchor)"
+                else:
+                    note = f" | decode err ({e}); passthrough (anchored)"
         loc = (f"{req_addr:#010x}->{addr:#010x}" if rebased
                else f"{addr:#010x}")
         log.info(f"read {size}@{loc} "
