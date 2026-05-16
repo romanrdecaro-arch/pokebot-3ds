@@ -240,6 +240,12 @@ def methods_for(game_key: str) -> list[Method]:
                notes="Bot sends NO inputs — you play normally. The "
                      "Recently Seen tab still logs wild encounters and "
                      "party additions as they happen."),
+        Method("LiveHeX bridge (PKHeX)", "livehex",
+               notes="Sends NO inputs. Runs an NTR-protocol bridge on "
+                     "port 8000 so PKHeX + PKHeX-Plugins LiveHeX can "
+                     "read/write the running Azahar game. In PKHeX: "
+                     "Auto-Legality → LiveHeX → protocol NTR, IP "
+                     "127.0.0.1, port 8000, Connect."),
         Method("Starters", "soft_reset"),
         Method("Random encounters", "encounter",
                notes="Walks back-and-forth in tall grass on the chosen "
