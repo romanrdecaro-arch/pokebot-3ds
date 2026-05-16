@@ -239,10 +239,30 @@ class NTRBridge:
         try:
             data = self.rpc.read(addr, size)
         except Exception as e:
-            log.debug(f"read {size}@{addr:#x} failed: {e}")
+            log.warning(f"read {size}@{addr:#x} failed: {e}")
             data = b"\x00" * size
         if len(data) < size:                       # pad short reads
             data = data + b"\x00" * (size - len(data))
+        # Diagnostic: PKHeX validates the connection by reading box1
+        # slot1 (232 B) and box reads (slot-sized). Decode what we hand
+        # back so we can see exactly why Connect_NTR accepts/rejects.
+        note = ""
+        if size in (232, 260) and len(data) >= 232:
+            try:
+                from .parser import decrypt_pkm, calc_checksum
+                buf = data if size == 260 else data + b"\x00" * 28
+                ek = int.from_bytes(data[:4], "little")
+                pt = decrypt_pkm(buf)
+                sp = int.from_bytes(pt[8:10], "little")
+                st = int.from_bytes(pt[6:8], "little")
+                cc = calc_checksum(pt)
+                note = (f" | enc_key={ek:#010x} species={sp} "
+                        f"csum stored={st:#06x} calc={cc:#06x} "
+                        f"match={st == cc}")
+            except Exception as e:
+                note = f" | decode failed: {e}"
+        log.info(f"read {size}@{addr:#010x} "
+                 f"first16={data[:16].hex()}{note}")
         send(_pack_packet(seq, 0, 9, data=data))
         # NTRClient.ReadBytes polls for a log line containing
         # "finished" and otherwise blocks the full 10 s timeout per
