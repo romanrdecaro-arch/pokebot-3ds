@@ -1,63 +1,50 @@
 """
-Observe mode — manual control with live encounter detection.
+Manual control — bot sends NO inputs; you play Azahar normally while
+the live party and wild encounters are read and shown in real time.
 
-The bot sends NO inputs; the user plays normally. Detection works off
-the game's own ``pml::pokepara::Accessor`` structs, NOT the save block.
+Detection uses the **authoritative PKMN-NTR address map** (the offset
+table the 3DS Pokémon-bot community has used for a decade), NOT the
+save block and NOT an object-graph scan:
 
-Why: the save block (PKHeX-Plugins' trainer/party addresses) is a
-*stale* snapshot for X/Y — it only syncs on save, so a leveled-up or
-freshly-caught Pokémon never appears there. The game's LIVE party and
-the wild battle foe are reached through Accessor objects:
+  - Party  → ``offsets.party_base`` (X/Y 0x08CE1CF8), ``party_stride``
+             (484 in live RAM), encrypted ekx, up to 6 contiguous slots.
+  - Wild   → a ~128 KB window at ``offsets.foe_base`` (X/Y WildOffset1
+             0x08800000). The encounter is NOT at a fixed sub-offset,
+             so we scan the window for a checksum-valid PK6 — exactly
+             what PKMN-NTR's ReadOpponent does (read 0x1FFFF bytes,
+             decrypt, pattern-match).
 
-    0x0  u32  vtable pointer        (into the code segment)
-    0x4  u32  is_pkm_in_party       (0 / 1)
-    0x8  u32  pkm_data_ptr          (heap pointer to the PK6 record)
-    0xC  u8   is_pkm_data_encrypted (0 / 1)
-    0xD  u8   encrypt_pkm_data      (0 / 1)
+A cheap unencrypted-header pre-filter (PK6 ``Sanity@0x04 == 0`` and
+key ≠ 0 — PKHeX's own ``Valid`` gate) means the 128 KB sweep is fast
+enough to run every poll. Records are decoded both as encrypted ekx
+and as plaintext, so it works whether live RAM holds the data
+encrypted or decrypted.
 
-Strategy:
-  1. Locate accessors by signature scan (tight: vtable in code seg,
-     bool fields, heap-pointing data ptr → near-zero false positives).
-     Cached to .pokebot_accessors.json; re-validated cheaply on the
-     next run so the slow scan only happens once.
-  2. is_in_party=1 accessors → the live party (Party tab).
-  3. Hot-poll every known accessor: re-read the 14-byte struct, follow
-     its (possibly moved) data_ptr, decrypt+parse. Level-ups, catches,
-     evolutions and the wild foe slot all surface here.
-  4. Periodic bounded rescan picks up accessors that appear later
-     (e.g. the wild foe's accessor when a battle starts).
+Shiny is computed by the parser from the record's embedded OT (this is
+identical to PKHeX's ``IsShiny`` — the value PKMN-NTR / PCalc use for
+the opponent). The human log line also prints OT-TID/SID/PID so a
+live test can confirm it's correct for wild mons.
 """
 from __future__ import annotations
 
-import json
 import logging
-import re
-import threading
-import time
-from pathlib import Path
-from typing import Optional
 
-from ..find_offsets import is_likely_accessor
 from ..parser import calc_checksum, decrypt_pkm, encounter_payload, parse_pkm
 
 log = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-_ACCESSOR_CACHE = ROOT / ".pokebot_accessors.json"
-
-_HOT_POLL_INTERVAL_S = 0.6
-_RESCAN_INTERVAL_S   = 20.0
+_POLL_INTERVAL_S = 0.8
+_PARTY_SLOTS = 6
+_PK6 = 260                  # bytes we read/parse per record (party PK6)
 
 
 # ---------------------------------------------------------------------------
-# pkm validation (relaxed — tolerates the non-zero sanity word that live
-# in-RAM slots carry, but still rejects misaligned garbage)
+# Validation / parse
 # ---------------------------------------------------------------------------
 
 def _parse_valid(pt: bytes):
-    """Return a ParsedPokemon if ``pt`` (decrypted 260 bytes) is a sane
-    record, else None. Checksum + species/level/nature/ability gates.
-    """
+    """Return a ParsedPokemon if ``pt`` (decrypted/plaintext 260 B) is a
+    sane record, else None. Checksum + species/level/nature/ability."""
     try:
         if calc_checksum(pt) != int.from_bytes(pt[6:8], "little"):
             return None
@@ -75,55 +62,21 @@ def _parse_valid(pt: bytes):
     return pkm
 
 
-# ---------------------------------------------------------------------------
-# Accessor read / dereference
-# ---------------------------------------------------------------------------
-
-def _read_accessor(ctx, acc_addr: int):
-    """Read+validate the 14-byte accessor at acc_addr. Returns
-    ``(is_in_party, data_ptr, is_encrypted)`` or None.
-    """
-    try:
-        buf = ctx.rpc.read(acc_addr, 14)
-    except Exception:
+def _decode(rec: bytes):
+    """Cheap-filter then decode one ``_PK6``-byte candidate as either
+    encrypted ekx (decrypt) or already-plaintext. Returns ParsedPokemon
+    or None. The pre-filter uses ONLY the unencrypted PK6 header
+    (key @0x00, Sanity @0x04 — PKHeX's `Valid => Sanity==0` gate) so
+    ~all of RAM is rejected without the costly decrypt."""
+    if len(rec) < _PK6:
         return None
-    ok, info = is_likely_accessor(buf)
-    if not ok:
+    if rec[4] or rec[5]:                       # Sanity != 0 → not a mon
         return None
-    return info["is_in_party"], info["data_ptr"], info["is_encrypted"]
-
-
-def _subpointers(buf: bytes, limit: int = 0x40) -> list[int]:
-    """Unique 4-byte-aligned app-heap pointers in the first ``limit``
-    bytes of ``buf``. The accessor's data_ptr points to a wrapper
-    object whose members include the real pkm pointer (it appeared
-    twice in the dump), so we follow these one level deeper.
-    """
-    out: list[int] = []
-    for o in range(0, min(limit, len(buf)) - 3, 4):
-        v = int.from_bytes(buf[o:o + 4], "little")
-        if 0x08000000 <= v < 0x10000000 and (v & 3) == 0 and v not in out:
-            out.append(v)
-    return out
-
-
-def _try_pk6_at(ctx, addr: int):
-    """Read 260 bytes at ``addr`` and try to parse a valid PK6 both as
-    encrypted (decrypt) and as already-plaintext. Returns ParsedPokemon
-    or None.
-    """
-    try:
-        raw = ctx.rpc.read(addr, 260)
-    except Exception:
-        return None
-    if len(raw) < 260:
-        return None
-    ek = int.from_bytes(raw[:4], "little")
-    if ek in (0, 0xFFFFFFFF):
-        return None
-    for candidate in (lambda: decrypt_pkm(raw), lambda: raw):
+    if not (rec[0] or rec[1] or rec[2] or rec[3]):
+        return None                            # key 0 → empty slot
+    for cand in (rec, None):
         try:
-            pt = candidate()
+            pt = rec if cand is None else decrypt_pkm(rec)
         except Exception:
             continue
         pkm = _parse_valid(pt)
@@ -132,377 +85,55 @@ def _try_pk6_at(ctx, addr: int):
     return None
 
 
-def _diag_accessor(ctx, acc_addr: int, info: dict) -> None:
-    """Deep-dump one signature-matched candidate: raw bytes at its
-    data_ptr plus both the PK6 and the decrypted-"Temp Data"
-    interpretations. Lets us identify what these structs actually are
-    when the normal parse rejects them.
-    """
-    dp = info["data_ptr"]
-    try:
-        raw = ctx.rpc.read(dp, 0x90)
-    except Exception as e:
-        log.info(f"    diag {acc_addr:#010x}: data read failed: {e}")
-        return
-    log.info(f"    diag {acc_addr:#010x} vt={info['vtable']:#010x} "
-             f"party={int(info['is_in_party'])} data={dp:#010x} "
-             f"enc={int(info['is_encrypted'])}")
-    log.info(f"      raw[0x00:0x20]={raw[0x00:0x20].hex()}")
-    log.info(f"      raw[0x20:0x40]={raw[0x20:0x40].hex()}")
-    # PK6 interpretation (decrypt + checksum).
-    try:
-        full = ctx.rpc.read(dp, 260)
-        pt = decrypt_pkm(full)
-        sp = int.from_bytes(pt[8:10], "little")
-        stored = int.from_bytes(pt[6:8], "little")
-        calc = calc_checksum(pt)
-        lvl = pt[0xEC]
-        log.info(f"      [PK6] species={sp} csum stored={stored:#06x} "
-                 f"calc={calc:#06x} match={stored == calc} lvl(0xEC)={lvl}")
-    except Exception as e:
-        log.info(f"      [PK6] decrypt failed: {e}")
-    # Temp Data interpretation (decrypted flat struct).
-    try:
-        dex = int.from_bytes(raw[0x18:0x1A], "little")
-        form = raw[0x1A]
-        pid = int.from_bytes(raw[0x08:0x0C], "little")
-        nature = int.from_bytes(raw[0x20:0x22], "little")
-        ivs = [int.from_bytes(raw[o:o + 2], "little")
-               for o in range(0x24, 0x30, 2)]
-        ok = (0 < dex <= 721 and nature <= 24
-              and all(v <= 31 for v in ivs))
-        log.info(f"      [Temp] dex={dex} form={form} pid={pid:#010x} "
-                 f"nature={nature} IVs={ivs} plausible={ok}")
-    except Exception as e:
-        log.info(f"      [Temp] parse failed: {e}")
-    # One level deeper: the wrapper's member pointers. For a party=1
-    # accessor, deep-search each sub-object's first 0x400 bytes for a
-    # region shaped like a Pokémon — both a PK6 (decrypt/raw +
-    # checksum) and the decrypted "Temp Data" layout (dex@+0x18,
-    # nature@+0x20, IVs@+0x24..0x2E). One hit pinpoints exactly where
-    # the live pkm lives inside the object graph.
-    subs = _subpointers(raw)
-    if subs:
-        log.info(f"      subptrs={[hex(s) for s in subs]}")
-        for s in subs:
-            try:
-                blob = ctx.rpc.read(s, 0x400)
-            except Exception:
-                continue
-            hit = False
-            for o in range(0, len(blob) - 260, 4):
-                seg = blob[o:o + 260]
-                # PK6 (encrypted or plaintext) by checksum.
-                for label, fn in (("dec", decrypt_pkm), ("raw", bytes)):
-                    try:
-                        pt = fn(seg)
-                        sp = int.from_bytes(pt[8:10], "little")
-                        if (0 < sp <= 721
-                                and calc_checksum(pt)
-                                == int.from_bytes(pt[6:8], "little")):
-                            log.info(f"        HIT sub {s:#010x}+{o:#x}"
-                                     f" [{label} PK6] species={sp} "
-                                     f"lvl={pt[0xEC]}")
-                            hit = True
-                    except Exception:
-                        pass
-                # Temp Data shape.
-                dex = int.from_bytes(blob[o + 0x18:o + 0x1A], "little")
-                nat = int.from_bytes(blob[o + 0x20:o + 0x22], "little")
-                ivs = [int.from_bytes(blob[o + q:o + q + 2], "little")
-                       for q in range(0x24, 0x30, 2)]
-                if (0 < dex <= 721 and nat <= 24
-                        and all(v <= 31 for v in ivs)
-                        and any(v for v in ivs)):
-                    log.info(f"        HIT sub {s:#010x}+{o:#x} "
-                             f"[Temp] dex={dex} nat={nat} IVs={ivs}")
-                    hit = True
-            if not hit:
-                log.info(f"        sub {s:#010x}: no pkm-shaped region "
-                         f"in first 0x400 B (vt={int.from_bytes(blob[:4],'little'):#010x})")
+# ---------------------------------------------------------------------------
+# Reads
+# ---------------------------------------------------------------------------
 
-
-def _pkm_via_accessor(ctx, acc_addr: int):
-    """Follow an accessor to its live pkm and parse it.
-
-    Returns ``(pkm, data_ptr, is_in_party)`` or None. Re-reads the
-    accessor each call so a moved data_ptr is followed automatically.
-    """
-    acc = _read_accessor(ctx, acc_addr)
-    if acc is None:
-        return None
-    is_in_party, data_ptr, is_enc = acc
-
-    # Path 1: data_ptr points straight at a (en/de)crypted PK6.
-    try:
-        raw = ctx.rpc.read(data_ptr, 260)
-    except Exception:
-        raw = b""
-    if len(raw) >= 232 and int.from_bytes(raw[:4], "little") not in (
-            0, 0xFFFFFFFF):
-        for cand in ((decrypt_pkm(raw),) if is_enc else (raw, )):
-            pkm = _parse_valid(cand)
-            if pkm is not None:
-                return pkm, data_ptr, is_in_party
-        # also try the other interpretation
+def _read_party(ctx, base: int, stride: int) -> list:
+    """Up to 6 contiguous party slots. Stops at the first empty/invalid
+    slot (the party is contiguous)."""
+    out = []
+    for i in range(_PARTY_SLOTS):
         try:
-            alt = raw if is_enc else decrypt_pkm(raw)
-            pkm = _parse_valid(alt)
-            if pkm is not None:
-                return pkm, data_ptr, is_in_party
+            rec = ctx.rpc.read(base + i * stride, _PK6)
         except Exception:
-            pass
-
-    # Path 2: data_ptr is a wrapper object — follow its member pointers
-    # one level deeper and try a PK6 at each.
-    if raw:
-        for sub in _subpointers(raw):
-            pkm = _try_pk6_at(ctx, sub)
-            if pkm is not None:
-                return pkm, sub, is_in_party
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Accessor scan
-# ---------------------------------------------------------------------------
-
-def _scan_accessors(ctx, lo: int, hi: int) -> list[int]:
-    """Walk [lo, hi) for accessor structs that dereference to a valid
-    Pokémon. Returns the list of accessor addresses found.
-
-    Reads in 0x10000 sub-chunks (1 KB RPC-capped internally), probe-
-    and-skips obviously-unmapped 1 MB blocks, and only does the extra
-    deref+decrypt read when the 14-byte signature matches (rare → cheap).
-    """
-    CHUNK   = 0x10000        # 64 KB per read (1 KB RPC-capped internally)
-    OVERLAP = 0x20           # > 14 so a boundary-straddling struct isn't lost
-    found: list[int] = []
-    sig_matches = 0
-    sample_logged = 0
-    cur = lo
-    t_last = time.monotonic()
-    while cur < hi and not ctx.should_stop():
-        if time.monotonic() - t_last > 3.0:
-            pct = 100 * (cur - lo) / max(1, hi - lo)
-            log.info(f"  accessor scan {cur:#010x} ({pct:.0f}%) — "
-                     f"{sig_matches} sig-match, {len(found)} valid")
-            t_last = time.monotonic()
-
-        n = min(CHUNK, hi - cur)
-        if n < 14:                       # nothing meaningful left
             break
+        pkm = _decode(rec)
+        if pkm is None:
+            break
+        out.append(pkm)
+    return out
 
-        # DENSE — no probe-skip. Every probe-skip variant (1 MB or
-        # 64 KB) missed the proven real accessor at 0x08840da8 because
-        # it sits at offset 0x40da8 in a block whose start is zero-
-        # padding. The window is bounded (see _accessor_scan_ranges)
-        # so reading every byte is affordable. Read the full 64 KB
-        # and scan it; only genuinely-unreadable reads are skipped.
+
+def _scan_foe(ctx, base: int, length: int):
+    """Scan [base, base+length) for checksum-valid PK6 records. Yields
+    (addr, pkm). Reads in 64 KB chunks overlapping by one record so a
+    boundary-straddling encounter isn't missed."""
+    CHUNK = 0x10000
+    OVER = _PK6
+    cur = base
+    end = base + length
+    while cur < end and not ctx.should_stop():
+        n = min(CHUNK, end - cur)
         try:
-            block = ctx.rpc.read(cur, n)
+            blk = ctx.rpc.read(cur, n)
         except Exception:
             cur += n
             continue
-        if not block:
+        if not blk:
             cur += n
             continue
-
-        for off in range(0, len(block) - 14 + 1, 4):
-            ok, info = is_likely_accessor(block[off:off + 14])
-            if not ok:
+        for off in range(0, len(blk) - _PK6 + 1, 4):
+            # Cheap reject on the unencrypted header before decrypt.
+            if blk[off + 4] or blk[off + 5]:
                 continue
-            sig_matches += 1
-            acc_addr = cur + off
-            if _pkm_via_accessor(ctx, acc_addr) is not None:
-                found.append(acc_addr)
-                log.info(f"  VALID accessor @ {acc_addr:#010x}")
-            elif sample_logged < 30:
-                # Failed normal parse — deep-dump it (small candidate
-                # set now the signature is tight, so dump them all).
-                _diag_accessor(ctx, acc_addr, info)
-                sample_logged += 1
-
-        # Guaranteed forward progress. Full chunks overlap by OVERLAP
-        # so a 14-byte struct on a boundary isn't missed; the final
-        # partial chunk has no successor so it's just consumed.
-        cur += (n - OVERLAP) if n == CHUNK else n
-    log.info(f"  range [{lo:#010x},{hi:#010x}] done: "
-             f"{sig_matches} signature matches, {len(found)} validated.")
-    return found
-
-
-# ---------------------------------------------------------------------------
-# Accessor address cache
-# ---------------------------------------------------------------------------
-
-def _load_cache() -> list[int]:
-    try:
-        if _ACCESSOR_CACHE.exists():
-            data = json.loads(_ACCESSOR_CACHE.read_text())
-            return [int(x) for x in data.get(_cache_key(), [])]
-    except Exception:
-        pass
-    return []
-
-
-def _save_cache(addrs: list[int]) -> None:
-    try:
-        data = {}
-        if _ACCESSOR_CACHE.exists():
-            data = json.loads(_ACCESSOR_CACHE.read_text())
-        data[_cache_key()] = addrs
-        _ACCESSOR_CACHE.write_text(json.dumps(data))
-    except Exception as e:
-        log.debug(f"  accessor cache write failed: {e}")
-
-
-_cache_key_val = "default"
-
-
-def _cache_key() -> str:
-    return _cache_key_val
-
-
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
-
-def run(ctx) -> None:
-    global _cache_key_val
-    _cache_key_val = ctx.game.key
-    log.info("Mode: observe (accessor-based live detection)")
-
-    seen_keys: set[int] = set()       # enc_keys already reported to Seen
-    known_acc: set[int] = set()       # accessor addrs we track
-    lock = threading.Lock()
-
-    # ── Validate cached accessors (fast path) ────────────────────────────
-    cached = _load_cache()
-    if cached:
-        log.info(f"  validating {len(cached)} cached accessor(s)…")
-        for a in cached:
-            if _pkm_via_accessor(ctx, a) is not None:
-                known_acc.add(a)
-        log.info(f"  {len(known_acc)} cached accessor(s) still valid.")
-
-    # ── Scan if cache empty / stale ──────────────────────────────────────
-    if not known_acc:
-        ranges = _accessor_scan_ranges(ctx.game.generation)
-        log.info("  no valid cached accessors — scanning "
-                 f"({len(ranges)} range(s)). First run is slow; the "
-                 f"result is cached.")
-        for lo, hi in ranges:
-            if ctx.should_stop():
-                return
-            log.info(f"  scanning accessors in [{lo:#010x}, {hi:#010x})")
-            hits = _scan_accessors(ctx, lo, hi)
-            for a in hits:
-                known_acc.add(a)
-            if hits:
-                log.info(f"  found {len(hits)} accessor(s) in this range; "
-                         f"stopping range walk.")
-                break
-        if known_acc:
-            _save_cache(sorted(known_acc))
-
-    if not known_acc:
-        log.error("No Pokémon accessors found. Make sure a save is "
-                  "loaded and you're past the title screen, then retry.")
-        return
-
-    # Classify + initial report.
-    _classify_and_report(ctx, known_acc, seen_keys, initial=True)
-
-    # ── Watch loop ──────────────────────────────────────────────────────
-    last_rescan = time.monotonic()
-    loop_n = 0
-    while not ctx.should_stop():
-        loop_n += 1
-
-        # Hot-poll every known accessor: deref → parse → detect changes.
-        with lock:
-            accs = list(known_acc)
-        party_slots: list[dict] = []
-        for a in accs:
-            res = _pkm_via_accessor(ctx, a)
-            if res is None:
+            if not (blk[off] or blk[off + 1]
+                    or blk[off + 2] or blk[off + 3]):
                 continue
-            pkm, data_ptr, is_in_party = res
-            if is_in_party:
-                party_slots.append(_slot_dict(pkm, len(party_slots)))
-            ek = pkm.encryption_key
-            if ek not in seen_keys:
-                seen_keys.add(ek)
-                _report(ctx, pkm, data_ptr,
-                         "party" if is_in_party else "wild")
-
-        # Refresh the Party tab (replaces, never accumulates).
-        if party_slots and loop_n % 5 == 0:
-            ctx.dashboard.broadcast("party", slots=party_slots)
-
-        # Periodic bounded rescan picks up NEW accessors (the wild foe's
-        # accessor appears only when a battle starts).
-        if time.monotonic() - last_rescan > _RESCAN_INTERVAL_S:
-            last_rescan = time.monotonic()
-            threading.Thread(
-                target=_rescan_thread,
-                args=(ctx, known_acc, seen_keys, lock),
-                name="ObserveRescan", daemon=True).start()
-
-        time.sleep(_HOT_POLL_INTERVAL_S)
-
-
-def _accessor_scan_ranges(gen: int) -> list[tuple[int, int]]:
-    """Heap ranges to scan for accessors, in priority order.
-
-    Proven on Y-USA: real Pokémon accessors live in the APP heap
-    around 0x0852xxxx-0x0884xxxx (vt 0x00598a78 there gave a PK6
-    checksum match). The linear heap held only graphics/float data
-    (0 accessors with the tight vtable band). So Gen 6 scans a
-    bounded app-heap window DENSELY (the caller does no probe-skip —
-    accessors sit deep in zero-padded blocks, any skip misses them).
-    Window 0x08000000-0x09000000 = 16 MB brackets every observed
-    accessor; ~2 min one-time at the RPC speed, then cached. A wider
-    fallback follows if the primary window comes up empty.
-    """
-    if gen == 6:
-        return [
-            (0x08000000, 0x09000000),   # proven accessor neighbourhood
-            (0x09000000, 0x0D000000),   # wider app-heap fallback
-        ]
-    # Gen 7: N3DS extended linear heap.
-    return [(0x30000000, 0x34000000), (0x34000000, 0x40000000)]
-
-
-def _rescan_thread(ctx, known_acc: set, seen_keys: set,
-                   lock: threading.Lock) -> None:
-    """Re-scan the primary heap range for accessors that appeared after
-    startup (notably the wild-battle foe). Bounded; daemon thread.
-    """
-    ranges = _accessor_scan_ranges(ctx.game.generation)
-    if not ranges:
-        return
-    lo, hi = ranges[0]
-    hits = _scan_accessors(ctx, lo, hi)
-    new = 0
-    for a in hits:
-        with lock:
-            if a in known_acc:
-                continue
-            known_acc.add(a)
-        new += 1
-        res = _pkm_via_accessor(ctx, a)
-        if res is None:
-            continue
-        pkm, data_ptr, is_in_party = res
-        if pkm.encryption_key in seen_keys:
-            continue
-        seen_keys.add(pkm.encryption_key)
-        _report(ctx, pkm, data_ptr, "party" if is_in_party else "wild")
-    if new:
-        log.info(f"  rescan: +{new} new accessor(s)")
-        _save_cache(sorted(known_acc))
+            pkm = _decode(blk[off:off + _PK6])
+            if pkm is not None:
+                yield cur + off, pkm
+        cur += (n - OVER) if n == CHUNK else n
 
 
 # ---------------------------------------------------------------------------
@@ -524,41 +155,83 @@ def _slot_dict(pkm, slot: int) -> dict:
     }
 
 
-def _classify_and_report(ctx, known_acc: set, seen_keys: set,
-                         initial: bool) -> None:
-    party: list[dict] = []
-    for a in sorted(known_acc):
-        res = _pkm_via_accessor(ctx, a)
-        if res is None:
-            continue
-        pkm, data_ptr, is_in_party = res
-        tag = "party" if is_in_party else "wild"
-        log.info(f"  accessor {a:#010x} → {data_ptr:#010x} "
-                 f"#{pkm.species} {pkm.nickname!r} "
-                 f"Lv{pkm.party['level'] if pkm.party else '?'} "
-                 f"{'PARTY' if is_in_party else 'non-party'} "
-                 f"shiny={pkm.shiny}")
-        if is_in_party:
-            party.append(_slot_dict(pkm, len(party)))
-        seen_keys.add(pkm.encryption_key)
-        if not is_in_party:
-            _report(ctx, pkm, data_ptr, tag)
-    if party:
-        ctx.dashboard.broadcast("party", slots=party)
-        log.info(f"  party tab populated with {len(party)} Pokémon.")
-
-
-def _report(ctx, pkm, addr: int, source: str) -> None:
+def _report_encounter(ctx, pkm, addr: int, count: int) -> None:
     lvl = pkm.party["level"] if pkm.party else "?"
-    log.info(f"{source.upper()} @ {addr:#010x}: #{pkm.species} "
-             f"{pkm.nickname or ''} Lv{lvl} "
-             f"{'SHINY ' if pkm.shiny else ''}PID={pkm.pid:08X}")
+    log.info(
+        f"WILD @ {addr:#010x}: #{pkm.species} {pkm.nickname or ''} "
+        f"Lv{lvl} {'★SHINY★ ' if pkm.shiny else ''}"
+        f"PID={pkm.pid:08X} OT-TID={pkm.ot_tid} OT-SID={pkm.ot_sid} "
+        f"PSV={pkm.psv} TSV={pkm.tsv}")
     ctx.dashboard.broadcast(
-        "encounter", source=source, address=f"{addr:#010x}",
-        **encounter_payload(pkm))
+        "encounter", source="wild", address=f"{addr:#010x}",
+        count=count, **encounter_payload(pkm))
     if ctx.target and ctx.target.matches(pkm):
+        log.info(f"*** TARGET HIT *** {ctx.target.describe(pkm)}")
         ctx.dashboard.broadcast(
-            "target_hit", reason=ctx.target.describe(pkm),
+            "target_hit", count=count, reason=ctx.target.describe(pkm),
             species=pkm.species, shiny=pkm.shiny,
             nature=pkm.nature, ivs=pkm.ivs)
-        log.info(f"TARGET HIT: {ctx.target.describe(pkm)}")
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+def run(ctx) -> None:
+    o = ctx.game.offsets
+    party_base = o.party_base
+    party_stride = o.party_stride or 484
+    foe_base = o.foe_base
+    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
+
+    log.info("Mode: manual control (live party + wild detection via "
+             "PKMN-NTR address map — bot sends no inputs)")
+    log.info(f"  party_base={party_base:#010x} stride={party_stride}  "
+             f"foe window=[{foe_base:#010x},"
+             f"{foe_base + foe_len:#010x})")
+    if not party_base and not foe_base:
+        log.error("No party_base/foe_base configured. Set them in "
+                  "config.yaml [offsets:] (X/Y: party_base 0x08CE1CF8, "
+                  "foe_base 0x08800000).")
+        return
+
+    seen: set[int] = set()        # wild enc_keys already reported
+    party_keys: set[int] = set()  # party enc_keys (skip in foe scan)
+    enc_count = 0
+    loop_n = 0
+
+    while not ctx.should_stop():
+        loop_n += 1
+
+        # --- Party → Party tab (rebuilt every poll, never accumulates).
+        if party_base:
+            party = _read_party(ctx, party_base, party_stride)
+            party_keys = {p.encryption_key for p in party}
+            if party:
+                slots = [_slot_dict(p, i) for i, p in enumerate(party)]
+                ctx.dashboard.broadcast("party", slots=slots)
+                if loop_n == 1 or loop_n % 12 == 0:
+                    log.info("  party: " + ", ".join(
+                        f"#{p.species}"
+                        f"{'★' if p.shiny else ''}"
+                        f"Lv{p.party['level'] if p.party else '?'}"
+                        for p in party))
+
+        # --- Wild foe → scan window, report each NEW distinct mon.
+        if foe_base:
+            for addr, pkm in _scan_foe(ctx, foe_base, foe_len):
+                ek = pkm.encryption_key
+                if ek in seen or ek in party_keys:
+                    continue
+                seen.add(ek)
+                enc_count += 1
+                _report_encounter(ctx, pkm, addr, enc_count)
+
+        # Drop stale wild keys so a re-encounter of the same species
+        # (new PID) is reported again, but keep memory bounded.
+        if len(seen) > 256:
+            seen.clear()
+
+        ctx._stop_evt.wait(_POLL_INTERVAL_S)
+
+    log.info("Manual control stopped.")

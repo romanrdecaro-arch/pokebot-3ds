@@ -46,9 +46,13 @@ class GameOffsets:
     party_stride:   int = 260 # bytes between party slot N and N+1
     party_count:    int = 0   # u8 byte: how many slots are filled
 
-    # Wild / battle foe (the Pokémon currently fighting you)
-    foe_base:       int = 0   # opposing Pokémon slot 1 (260-byte PK7)
+    # Wild / battle foe (the Pokémon currently fighting you). In Gen 6
+    # the encounter is NOT at a fixed sub-offset — PKMN-NTR reads a
+    # ~128 KB window at WildOffset1 and pattern-matches the PK6. So
+    # foe_base is the WINDOW START and foe_scan_len is how far to scan.
+    foe_base:       int = 0   # WildOffset1 region start (scan, don't index)
     foe_stride:     int = 260
+    foe_scan_len:   int = 0x20000  # bytes to scan from foe_base for a PK6
     foe_count:      int = 0   # u8: number of foes (1 single, 2 double, ...)
 
     # Battle state
