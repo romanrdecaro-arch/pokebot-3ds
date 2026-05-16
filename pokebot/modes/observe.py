@@ -175,32 +175,51 @@ def _diag_accessor(ctx, acc_addr: int, info: dict) -> None:
                  f"nature={nature} IVs={ivs} plausible={ok}")
     except Exception as e:
         log.info(f"      [Temp] parse failed: {e}")
-    # One level deeper: the wrapper's member pointers.
+    # One level deeper: the wrapper's member pointers. For a party=1
+    # accessor, deep-search each sub-object's first 0x400 bytes for a
+    # region shaped like a Pokémon — both a PK6 (decrypt/raw +
+    # checksum) and the decrypted "Temp Data" layout (dex@+0x18,
+    # nature@+0x20, IVs@+0x24..0x2E). One hit pinpoints exactly where
+    # the live pkm lives inside the object graph.
     subs = _subpointers(raw)
     if subs:
         log.info(f"      subptrs={[hex(s) for s in subs]}")
         for s in subs:
             try:
-                sr = ctx.rpc.read(s, 260)
+                blob = ctx.rpc.read(s, 0x400)
             except Exception:
                 continue
-            ek = int.from_bytes(sr[:4], "little")
-            if ek in (0, 0xFFFFFFFF):
-                continue
-            res = ""
-            for label, fn in (("dec", lambda: decrypt_pkm(sr)),
-                              ("raw", lambda: sr)):
-                try:
-                    pt = fn()
-                    sp = int.from_bytes(pt[8:10], "little")
-                    st = int.from_bytes(pt[6:8], "little")
-                    cc = calc_checksum(pt)
-                    if st == cc and 0 < sp <= 721:
-                        res += (f" [{label} PK6 species={sp} "
-                                f"lvl={pt[0xEC]} csum-OK]")
-                except Exception:
-                    pass
-            log.info(f"        sub {s:#010x} ek={ek:#010x}{res or ' (no PK6)'}")
+            hit = False
+            for o in range(0, len(blob) - 260, 4):
+                seg = blob[o:o + 260]
+                # PK6 (encrypted or plaintext) by checksum.
+                for label, fn in (("dec", decrypt_pkm), ("raw", bytes)):
+                    try:
+                        pt = fn(seg)
+                        sp = int.from_bytes(pt[8:10], "little")
+                        if (0 < sp <= 721
+                                and calc_checksum(pt)
+                                == int.from_bytes(pt[6:8], "little")):
+                            log.info(f"        HIT sub {s:#010x}+{o:#x}"
+                                     f" [{label} PK6] species={sp} "
+                                     f"lvl={pt[0xEC]}")
+                            hit = True
+                    except Exception:
+                        pass
+                # Temp Data shape.
+                dex = int.from_bytes(blob[o + 0x18:o + 0x1A], "little")
+                nat = int.from_bytes(blob[o + 0x20:o + 0x22], "little")
+                ivs = [int.from_bytes(blob[o + q:o + q + 2], "little")
+                       for q in range(0x24, 0x30, 2)]
+                if (0 < dex <= 721 and nat <= 24
+                        and all(v <= 31 for v in ivs)
+                        and any(v for v in ivs)):
+                    log.info(f"        HIT sub {s:#010x}+{o:#x} "
+                             f"[Temp] dex={dex} nat={nat} IVs={ivs}")
+                    hit = True
+            if not hit:
+                log.info(f"        sub {s:#010x}: no pkm-shaped region "
+                         f"in first 0x400 B (vt={int.from_bytes(blob[:4],'little'):#010x})")
 
 
 def _pkm_via_accessor(ctx, acc_addr: int):
