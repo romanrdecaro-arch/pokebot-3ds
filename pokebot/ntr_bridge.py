@@ -67,6 +67,21 @@ _TITLE_TO_PNAME = {
 # but it must be non-(-1) and round-trip through Convert.ToInt32(hex).
 _FAKE_PID = 0x11
 
+# A PK6-encrypted all-zero record: PKHeX decrypts it to species 0,
+# EncryptionConstant 0, checksum valid — i.e. a *clean-empty* box
+# slot, which is what Connect_NTR accepts to validate the connection.
+# Built lazily so importing this module doesn't require the parser.
+_EMPTY_PK6: Optional[bytes] = None
+
+
+def _empty_pk6(size: int) -> bytes:
+    global _EMPTY_PK6
+    if _EMPTY_PK6 is None:
+        from .parser import encrypt_pkm
+        _EMPTY_PK6 = encrypt_pkm(bytes(260))
+    return _EMPTY_PK6[:size] if size <= len(_EMPTY_PK6) \
+        else _EMPTY_PK6 + b"\x00" * (size - len(_EMPTY_PK6))
+
 
 def _pack_packet(seq: int, type_: int, cmd: int,
                  args=None, data: bytes = b"") -> bytes:
@@ -243,9 +258,14 @@ class NTRBridge:
             data = b"\x00" * size
         if len(data) < size:                       # pad short reads
             data = data + b"\x00" * (size - len(data))
-        # Diagnostic: PKHeX validates the connection by reading box1
-        # slot1 (232 B) and box reads (slot-sized). Decode what we hand
-        # back so we can see exactly why Connect_NTR accepts/rejects.
+        # PKHeX validates the connection by reading box1slot1 (232 B)
+        # and rejects anything that isn't a valid PK6 OR a clean-empty
+        # slot. X/Y's RAM at the published box offsets doesn't expose
+        # clean records in this Azahar session (decodes to garbage),
+        # so for slot-sized reads that decode to garbage we substitute
+        # a synthetic clean-empty PK6. That lets Connect_NTR validate
+        # and PKHeX proceed — its subsequent reads (party/trainer) are
+        # then visible in this log so we can map them to real data.
         note = ""
         if size in (232, 260) and len(data) >= 232:
             try:
@@ -256,11 +276,16 @@ class NTRBridge:
                 sp = int.from_bytes(pt[8:10], "little")
                 st = int.from_bytes(pt[6:8], "little")
                 cc = calc_checksum(pt)
+                clean_empty = (sp == 0 and ek == 0 and st == cc)
+                valid_pkm = (0 < sp <= 1024 and st == cc)
                 note = (f" | enc_key={ek:#010x} species={sp} "
-                        f"csum stored={st:#06x} calc={cc:#06x} "
-                        f"match={st == cc}")
+                        f"csum match={st == cc}")
+                if not (clean_empty or valid_pkm):
+                    data = _empty_pk6(size)
+                    note += " | SPOOFED clean-empty (real data garbage)"
             except Exception as e:
-                note = f" | decode failed: {e}"
+                data = _empty_pk6(size)
+                note = f" | decode err ({e}); SPOOFED clean-empty"
         log.info(f"read {size}@{addr:#010x} "
                  f"first16={data[:16].hex()}{note}")
         send(_pack_packet(seq, 0, 9, data=data))
