@@ -134,10 +134,20 @@ def _scan_accessors(ctx, lo: int, hi: int) -> list[int]:
     deref+decrypt read when the 14-byte signature matches (rare → cheap).
     """
     found: list[int] = []
+    sig_matches = 0          # 14-byte signature hits (pre pkm-deref)
+    sample_logged = 0        # how many raw candidates we've dumped
     cur = lo
     skip = 0x100000
     t_last = time.monotonic()
     while cur < hi and not ctx.should_stop():
+        # Time-based progress — fires even mid-region so it never looks
+        # hung. Placed at the top of the outer loop AND checked in the
+        # inner loop below.
+        if time.monotonic() - t_last > 3.0:
+            pct = 100 * (cur - lo) / max(1, hi - lo)
+            log.info(f"  accessor scan {cur:#010x} ({pct:.0f}%) — "
+                     f"{sig_matches} sig-match, {len(found)} valid")
+            t_last = time.monotonic()
         # Probe this 1 MB block; skip if unmapped.
         try:
             probe = ctx.rpc.read(cur, 256)
@@ -150,6 +160,11 @@ def _scan_accessors(ctx, lo: int, hi: int) -> list[int]:
             continue
         region_end = min(cur + skip, hi)
         while cur < region_end and not ctx.should_stop():
+            if time.monotonic() - t_last > 3.0:
+                pct = 100 * (cur - lo) / max(1, hi - lo)
+                log.info(f"  accessor scan {cur:#010x} ({pct:.0f}%) — "
+                         f"{sig_matches} sig-match, {len(found)} valid")
+                t_last = time.monotonic()
             n = min(0x10000, region_end - cur)
             try:
                 block = ctx.rpc.read(cur, n)
@@ -157,18 +172,26 @@ def _scan_accessors(ctx, lo: int, hi: int) -> list[int]:
                 cur += n
                 continue
             for off in range(0, len(block) - 14 + 1, 4):
-                ok, _info = is_likely_accessor(block[off:off + 14])
+                ok, info = is_likely_accessor(block[off:off + 14])
                 if not ok:
                     continue
+                sig_matches += 1
                 acc_addr = cur + off
+                # Dump the first 25 raw signature hits so we can SEE
+                # what the structs look like even when the deref +
+                # pkm parse rejects them (format / location debugging).
+                if sample_logged < 25:
+                    log.info(f"    sig@{acc_addr:#010x} "
+                             f"vt={info['vtable']:#010x} "
+                             f"party={int(info['is_in_party'])} "
+                             f"data={info['data_ptr']:#010x} "
+                             f"enc={int(info['is_encrypted'])}")
+                    sample_logged += 1
                 if _pkm_via_accessor(ctx, acc_addr) is not None:
                     found.append(acc_addr)
             cur += n - 14            # small overlap across boundaries
-        if time.monotonic() - t_last > 3.0:
-            pct = 100 * (cur - lo) / max(1, hi - lo)
-            log.info(f"  accessor scan {cur:#010x} ({pct:.0f}%) "
-                     f"— {len(found)} so far")
-            t_last = time.monotonic()
+    log.info(f"  range [{lo:#010x},{hi:#010x}] done: "
+             f"{sig_matches} signature matches, {len(found)} validated.")
     return found
 
 
