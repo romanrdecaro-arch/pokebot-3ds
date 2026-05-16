@@ -93,6 +93,51 @@ def _read_accessor(ctx, acc_addr: int):
     return info["is_in_party"], info["data_ptr"], info["is_encrypted"]
 
 
+def _diag_accessor(ctx, acc_addr: int, info: dict) -> None:
+    """Deep-dump one signature-matched candidate: raw bytes at its
+    data_ptr plus both the PK6 and the decrypted-"Temp Data"
+    interpretations. Lets us identify what these structs actually are
+    when the normal parse rejects them.
+    """
+    dp = info["data_ptr"]
+    try:
+        raw = ctx.rpc.read(dp, 0x90)
+    except Exception as e:
+        log.info(f"    diag {acc_addr:#010x}: data read failed: {e}")
+        return
+    log.info(f"    diag {acc_addr:#010x} vt={info['vtable']:#010x} "
+             f"party={int(info['is_in_party'])} data={dp:#010x} "
+             f"enc={int(info['is_encrypted'])}")
+    log.info(f"      raw[0x00:0x20]={raw[0x00:0x20].hex()}")
+    log.info(f"      raw[0x20:0x40]={raw[0x20:0x40].hex()}")
+    # PK6 interpretation (decrypt + checksum).
+    try:
+        full = ctx.rpc.read(dp, 260)
+        pt = decrypt_pkm(full)
+        sp = int.from_bytes(pt[8:10], "little")
+        stored = int.from_bytes(pt[6:8], "little")
+        calc = calc_checksum(pt)
+        lvl = pt[0xEC]
+        log.info(f"      [PK6] species={sp} csum stored={stored:#06x} "
+                 f"calc={calc:#06x} match={stored == calc} lvl(0xEC)={lvl}")
+    except Exception as e:
+        log.info(f"      [PK6] decrypt failed: {e}")
+    # Temp Data interpretation (decrypted flat struct).
+    try:
+        dex = int.from_bytes(raw[0x18:0x1A], "little")
+        form = raw[0x1A]
+        pid = int.from_bytes(raw[0x08:0x0C], "little")
+        nature = int.from_bytes(raw[0x20:0x22], "little")
+        ivs = [int.from_bytes(raw[o:o + 2], "little")
+               for o in range(0x24, 0x30, 2)]
+        ok = (0 < dex <= 721 and nature <= 24
+              and all(v <= 31 for v in ivs))
+        log.info(f"      [Temp] dex={dex} form={form} pid={pid:#010x} "
+                 f"nature={nature} IVs={ivs} plausible={ok}")
+    except Exception as e:
+        log.info(f"      [Temp] parse failed: {e}")
+
+
 def _pkm_via_accessor(ctx, acc_addr: int):
     """Follow an accessor to its live pkm and parse it.
 
@@ -169,16 +214,14 @@ def _scan_accessors(ctx, lo: int, hi: int) -> list[int]:
                 continue
             sig_matches += 1
             acc_addr = cur + off
-            if sample_logged < 25:
-                log.info(f"    sig@{acc_addr:#010x} "
-                         f"vt={info['vtable']:#010x} "
-                         f"party={int(info['is_in_party'])} "
-                         f"data={info['data_ptr']:#010x} "
-                         f"enc={int(info['is_encrypted'])}")
-                sample_logged += 1
             if _pkm_via_accessor(ctx, acc_addr) is not None:
                 found.append(acc_addr)
                 log.info(f"  VALID accessor @ {acc_addr:#010x}")
+            elif sample_logged < 30:
+                # Failed normal parse — deep-dump it (small candidate
+                # set now the signature is tight, so dump them all).
+                _diag_accessor(ctx, acc_addr, info)
+                sample_logged += 1
 
         # Guaranteed forward progress. Full chunks overlap by OVERLAP
         # so a 14-byte struct on a boundary isn't missed; the final
