@@ -82,15 +82,28 @@ def _pack_packet(seq: int, type_: int, cmd: int,
     return bytes(buf) + data
 
 
-def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
+def _recv_exact(sock: socket.socket, n: int,
+                stop=None) -> Optional[bytes]:
+    """Read exactly ``n`` bytes. A recv timeout is NOT a disconnect —
+    the client legitimately goes quiet between requests while it waits
+    for our replies. Keep waiting through timeouts; only give up on a
+    real EOF / error or when ``stop()`` is True. (socket.timeout is an
+    OSError subclass, so it MUST be caught before the generic OSError —
+    otherwise the bridge closes the connection after one idle second,
+    which is exactly the ~1 s drop that was happening.)
+    """
     out = bytearray()
     while len(out) < n:
+        if stop is not None and stop():
+            return None
         try:
             chunk = sock.recv(n - len(out))
+        except socket.timeout:
+            continue                       # idle, still connected
         except OSError:
-            return None
+            return None                    # real socket error
         if not chunk:
-            return None
+            return None                    # peer closed
         out += chunk
     return bytes(out)
 
@@ -187,9 +200,10 @@ class NTRBridge:
                                   data=self._process_list_text())):
             return
         hb_thread.start()
+        stop_pred = lambda: self._stop.is_set()
         try:
             while not self._stop.is_set():
-                hdr = _recv_exact(sock, HEADER_SIZE)
+                hdr = _recv_exact(sock, HEADER_SIZE, stop=stop_pred)
                 if hdr is None:
                     break
                 magic = struct.unpack_from("<I", hdr, 0x00)[0]
@@ -202,7 +216,8 @@ class NTRBridge:
                 data_len = struct.unpack_from("<I", hdr, 0x50)[0]
                 payload = b""
                 if data_len:
-                    payload = _recv_exact(sock, data_len) or b""
+                    payload = _recv_exact(sock, data_len,
+                                          stop=stop_pred) or b""
 
                 if cmd == 0:
                     _send(_pack_packet(0, 0, 0))      # re-arm heartbeat
