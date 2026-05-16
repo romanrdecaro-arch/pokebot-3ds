@@ -280,13 +280,21 @@ def scan(rpc: CitraRPC,
 #   0x14000000 - 0x20000000  linear heap (pkm data lives here for Gen 6)
 #   0x30000000 - 0x40000000  N3DS extended heap (Gen 7)
 
+# Vtable must land in the executable's actual code/ro/data, which the
+# Y ExHeader puts at 0x00100000-0x005EA0C0 (+ bss to ~0x00660000).
+# The old 0x10000000 ceiling let float/matrix graphics constants
+# (0x3f800000 = 1.0f, 0x0e800000, 0x092c0000, …) masquerade as
+# vtables — every false positive in the linear heap was one of these.
+# 0x00800000 covers code+ro+data+bss with margin and rejects them all.
 CODE_SEG_LO  = 0x00100000
-CODE_SEG_HI  = 0x10000000
+CODE_SEG_HI  = 0x00800000
 # pkm data can live in EITHER the app heap (0x08000000-0x10000000,
 # where the save block sits) OR the linear heap (0x14000000+, where
-# runtime/battle allocations sit). Accept both.
+# runtime/battle allocations sit). Accept both. Exclude the N3DS
+# extended heap (0x1E800000+/0x30000000+) — X/Y is an O3DS title so
+# a data_ptr up there (e.g. 0x3f800000 = 1.0f) is a false positive.
 HEAP_LO      = 0x08000000
-HEAP_HI      = 0x40000000
+HEAP_HI      = 0x1C000000
 
 
 def is_likely_accessor(buf: bytes) -> tuple[bool, dict | None]:
