@@ -136,6 +136,21 @@ _SAVE_WIN_HI = 0x08E00000
 _REBASE_LO = 0x08C00000
 _REBASE_HI = 0x08E00000
 
+# PKHeX-Plugins LiveHeX for X/Y NEVER reads the party — on connect it
+# only reads box1 (ReadBox) + the trainer block (verified in
+# LiveHexUI.cs / LiveHexController.cs). So the only way to see the live
+# party in PKHeX's GUI is to surface it *inside a box*. We capture the
+# live party from the save block and serve it as Box 1.
+_XY_B1S1 = 0x08C861C8           # GetB1S1Offset(XY_v150): box1 slot1
+_BOX_SLOT = 232                 # SIZE_6STORED (box PK6)
+_PARTY_SLOT = 260               # SIZE_6PARTY  (party PK6 = box + 28)
+_PARTY_COUNT = 6
+# Decrypted X/Y save: MyStatus @0x14000, PokePartySave @0x14200 — the
+# party sits exactly 0x200 after the trainer block, so the anchored
+# trainer address gives us the party for free (same allocation).
+_PARTY_FROM_TRAINER = 0x200
+_PK6_OT_NAME = 0xB0             # decrypted PK6 OT_Trash (UTF-16LE, 26 B)
+
 
 class NTRBridge:
     def __init__(self, rpc: CitraRPC, title_id: int,
@@ -148,6 +163,9 @@ class NTRBridge:
         self.trainer_name = trainer_name
         self.pname = _TITLE_TO_PNAME.get(title_id, "kujira-2")
         self.delta = 0          # added to save-block reads once anchored
+        self._trainer_abs: Optional[int] = None   # anchored MyStatus6 addr
+        self._party: list[bytes] = []   # ≤6 box-format (232 B) recs, party order
+        self._party_summary = ""        # human log string, e.g. "653,659"
         self._empty_slot: Optional[bytes] = None  # real captured clean-empty PK6
         self._srv: Optional[socket.socket] = None
         self._stop = threading.Event()
@@ -190,6 +208,7 @@ class NTRBridge:
                 tb = hit - _OT_NAME_SUBOFFSET
                 if self._validate_trainer_block(tb, name):
                     self.delta = tb - _XY_TRAINER_BLOCK
+                    self._trainer_abs = tb
                     log.info(f"  OT name @ {hit:#010x} → trainer_block "
                              f"{tb:#010x}; delta = {self.delta:+#x} "
                              f"(reads in [{_REBASE_LO:#x},{_REBASE_HI:#x}) "
@@ -244,6 +263,110 @@ class NTRBridge:
         log.warning("  no real clean-empty PK6 captured; box reads "
                     "will use the synthetic fallback.")
 
+    # ----- live party capture (surfaced as Box 1) ---------------------
+    def _parse_party(self, block: bytes):
+        """``block`` = 6×260 raw party records. Return a list of 6
+        box-format (232 B) PK6s — the real member for occupied slots,
+        a clean-empty PK6 for empty ones — or None if this isn't a
+        valid party (any slot neither a checksum-valid mon nor a
+        clean-empty record). Also returns the species id list.
+        """
+        from .parser import decrypt_pkm, calc_checksum
+        slots: list[bytes] = []
+        species: list[int] = []
+        n_real = 0
+        for i in range(_PARTY_COUNT):
+            rec = block[i * _PARTY_SLOT:(i + 1) * _PARTY_SLOT]
+            if len(rec) < _PARTY_SLOT:
+                return None, []
+            ek = int.from_bytes(rec[:4], "little")
+            try:
+                pt = decrypt_pkm(rec)
+            except Exception:
+                return None, []
+            sp = int.from_bytes(pt[8:10], "little")
+            csum_ok = (int.from_bytes(pt[6:8], "little")
+                       == calc_checksum(pt))
+            if 0 < sp <= 1024 and csum_ok:
+                slots.append(rec[:_BOX_SLOT])      # 232 B box record
+                species.append(sp)
+                n_real += 1
+            elif sp == 0 and ek == 0 and csum_ok:
+                slots.append(self._empty_bytes(_BOX_SLOT))
+            else:
+                return None, []                    # garbage → not party
+        return (slots, species) if n_real else (None, [])
+
+    def find_party(self) -> None:
+        """Cache the live party as box-format PK6s for Box-1 injection.
+
+        Primary anchor: the decrypted X/Y save keeps PokePartySave
+        exactly 0x200 after MyStatus, so trainer_block + 0x200 is the
+        party (same small-block allocation — unlike the big box block
+        which Azahar relocates separately). Fallback: dense-scan the
+        save window for the first 6-record run that parses as a party.
+        """
+        if self._trainer_abs is None:
+            log.info("Party: trainer block not anchored — skipping "
+                     "(PKHeX will see empty boxes).")
+            return
+        need = _PARTY_COUNT * _PARTY_SLOT          # 1560 bytes
+        cand = self._trainer_abs + _PARTY_FROM_TRAINER
+        try:
+            block = self.rpc.read(cand, need)
+        except Exception as e:
+            block = b""
+            log.warning(f"Party: read @ {cand:#x} failed: {e}")
+        slots, species = (self._parse_party(block)
+                          if len(block) >= need else (None, []))
+        if slots is not None:
+            self._party = slots
+            self._party_summary = ",".join(map(str, species))
+            log.info(f"Party anchored @ {cand:#010x} "
+                     f"(trainer+{_PARTY_FROM_TRAINER:#x}); "
+                     f"{len(species)} member(s): "
+                     f"species [{self._party_summary}] → Box 1")
+            return
+
+        log.info(f"Party: not at trainer+{_PARTY_FROM_TRAINER:#x}; "
+                 f"scanning [{_SAVE_WIN_LO:#x}, {_SAVE_WIN_HI:#x})…")
+        CH = 0x10000
+        cur = _SAVE_WIN_LO
+        carry = b""
+        while cur < _SAVE_WIN_HI and not self._stop.is_set():
+            try:
+                blk = self.rpc.read(cur, min(CH, _SAVE_WIN_HI - cur))
+            except Exception:
+                cur += CH
+                carry = b""
+                continue
+            buf = carry + blk
+            base = cur - len(carry)
+            for off in range(0, len(buf) - need + 1, 4):
+                slots, species = self._parse_party(
+                    buf[off:off + need])
+                if slots is not None:
+                    self._party = slots
+                    self._party_summary = ",".join(map(str, species))
+                    log.info(f"Party found @ {base + off:#010x} "
+                             f"({len(species)} member(s): "
+                             f"species [{self._party_summary}]) → Box 1")
+                    return
+            carry = buf[-(need - 1):]
+            cur += CH
+        log.warning("  party not found in the save window — PKHeX "
+                    "Box 1 will show empty (trainer data still works).")
+
+    def _box1_payload(self, size: int) -> bytes:
+        """``size`` bytes starting at box1 slot1: the live party in
+        slots 0..n (box format) then clean-empty for the remainder."""
+        n = (size + _BOX_SLOT - 1) // _BOX_SLOT
+        out = bytearray()
+        for i in range(n):
+            out += (self._party[i] if i < len(self._party)
+                    else self._empty_bytes(_BOX_SLOT))
+        return bytes(out[:size])
+
     def _validate_trainer_block(self, tb: int, name: str) -> bool:
         """Sanity-check a candidate MyStatus6 trainer block."""
         if tb < _REBASE_LO or tb >= _REBASE_HI:
@@ -296,6 +419,10 @@ class NTRBridge:
             self.find_empty_slot()
         except Exception as e:
             log.warning(f"empty-slot capture failed: {e}")
+        try:
+            self.find_party()
+        except Exception as e:
+            log.warning(f"party capture failed: {e}")
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind((self.host, self.port))
@@ -418,12 +545,23 @@ class NTRBridge:
         # PKHeX accepts by definition; the user's boxes are empty so
         # this is also correct). Valid/clean real reads pass through.
         note = ""
+        is_box1 = (req_addr == _XY_B1S1)
+        # PKHeX-Plugins LiveHeX never reads the X/Y party — on connect
+        # it only reads box1 + the trainer block. To view the live
+        # party in PKHeX's GUI we surface it as Box 1: serve it for
+        # both the box1slot1 connect-validation read (232 → a real
+        # lead mon, which validates) and the full box read (N×232).
+        if (is_box1 and self._party
+                and (size == _BOX_SLOT
+                     or (size >= 464 and size % _BOX_SLOT == 0))):
+            data = self._box1_payload(size)
+            note = f" | box1 -> live party [{self._party_summary}]"
         # Full-box / multi-slot read (size = N×232, N≥2): PKHeX's box
         # view. The box sub-block isn't anchored, so serve the captured
         # clean-empty slot tiled across it → PKHeX shows empty boxes
         # (correct) instead of 30 garbage entries. (232 itself falls to
         # the single-slot path below; 0x170 trainer is untouched.)
-        if size >= 464 and size % 232 == 0:
+        elif size >= 464 and size % 232 == 0:
             data = self._empty_bytes(size)
             note = " | box read -> tiled empty"
         elif size in (232, 260) and len(data) >= 232:

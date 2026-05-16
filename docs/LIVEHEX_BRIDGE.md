@@ -60,18 +60,42 @@ folder and drop `AutoModPlugins.dll` in its `plugins\`.)
 5. Protocol: **NTR**. IP: `127.0.0.1`. Port: `8000`. Click **Connect**.
 6. PKHeX reads the live game through the bridge → Azahar.
 
+## Where to find the party: **Box 1**
+
+PKHeX-Plugins LiveHeX **never reads the party for X/Y** — on connect it
+only reads box 1 and the trainer block (verified in PKHeX-Plugins
+`LiveHexUI.cs` / `LiveHexController.cs`; the party tab stays whatever
+your dummy save had). So PKHeX's *Party* tab will **not** reflect the
+game.
+
+Instead, the bridge captures the live party from the save block and
+**serves it as Box 1**. Open the **box editor** and look at Box 1:
+slots 1–6 are your live party (Fennekin, Bunnelby, …) as full PK6 —
+sprites, legality, summary, the works. The bridge anchors the party at
+`trainer_block + 0x200` (the decrypted X/Y save keeps `PokePartySave`
+right after `MyStatus`), with a save-window scan as fallback.
+
+The bridge log shows it on startup, e.g.:
+
+```
+Party anchored @ 0x08c79e3c (trainer+0x200); 2 member(s): species [653,659] → Box 1
+```
+
 ## What works / caveats
 
-- **Works:** box viewing/editing, trainer block, anything LiveHeX
-  reads at its published RAM offsets — the same data path thousands
-  of LiveHeX users rely on.
-- **Caveat:** the X/Y save block reflects in-game *save* state plus
-  area-transition writes; it is not frame-by-frame live. Save (or
-  cross an area boundary) in-game, then re-read in PKHeX.
+- **Works:** trainer block (Trainer Data editor — real TID/SID/name),
+  the **live party in Box 1**, and box viewing/editing at LiveHeX's
+  published offsets.
+- **Caveat:** the save block reflects in-game *save* state plus
+  area-transition writes; it is not frame-by-frame. Party in Box 1
+  refreshes when you re-Connect (or hit *Read Current Box*) after the
+  game writes the save block (on save / area transition).
+- **Box 1 is overlaid by the party** while connected — your real PC
+  Box 1 isn't shown there (early-game it's empty anyway). Don't *write*
+  Box 1 back to the game expecting it to land in the PC.
 - **Not supported:** real-time wild-encounter capture — a wild
   Pokémon is never written to the save block (you can't save
-  mid-battle). That limitation is inherent to the save-block
-  approach, not the bridge.
+  mid-battle). Inherent to the save-block approach, not the bridge.
 
 ## Ports
 
