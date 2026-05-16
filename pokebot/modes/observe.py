@@ -196,22 +196,18 @@ def _scan_accessors(ctx, lo: int, hi: int) -> list[int]:
         if n < 14:                       # nothing meaningful left
             break
 
-        # Cheap 0x40-byte probe. If it's non-zero we read+scan the full
-        # 64 KB; if zero we advance ONE 64 KB block (NOT a whole 1 MB —
-        # accessors sit deeper in 1 MB blocks whose first chunk is
-        # zero-padding, and the old 1 MB jump skipped ~99% of the heap).
-        try:
-            probe = ctx.rpc.read(cur, 0x40)
-        except Exception:
-            cur += n
-            continue
-        if (not probe or probe == b"\x00" * len(probe)
-                or probe == b"\xFF" * len(probe)):
-            cur += n                     # skip just this 64 KB
-            continue
+        # DENSE — no probe-skip. Every probe-skip variant (1 MB or
+        # 64 KB) missed the proven real accessor at 0x08840da8 because
+        # it sits at offset 0x40da8 in a block whose start is zero-
+        # padding. The window is bounded (see _accessor_scan_ranges)
+        # so reading every byte is affordable. Read the full 64 KB
+        # and scan it; only genuinely-unreadable reads are skipped.
         try:
             block = ctx.rpc.read(cur, n)
         except Exception:
+            cur += n
+            continue
+        if not block:
             cur += n
             continue
 
@@ -363,18 +359,23 @@ def run(ctx) -> None:
 def _accessor_scan_ranges(gen: int) -> list[tuple[int, int]]:
     """Heap ranges to scan for accessors, in priority order.
 
-    Accessors are live runtime objects; for Gen 6 they sit in the
-    linear heap (0x14000000+) where the game's working/battle
-    allocations live — NOT the app heap, which only holds the stale
-    save block. Linear heap first; app heap as a fallback.
+    Proven on Y-USA: real Pokémon accessors live in the APP heap
+    around 0x0852xxxx-0x0884xxxx (vt 0x00598a78 there gave a PK6
+    checksum match). The linear heap held only graphics/float data
+    (0 accessors with the tight vtable band). So Gen 6 scans a
+    bounded app-heap window DENSELY (the caller does no probe-skip —
+    accessors sit deep in zero-padded blocks, any skip misses them).
+    Window 0x08000000-0x09000000 = 16 MB brackets every observed
+    accessor; ~2 min one-time at the RPC speed, then cached. A wider
+    fallback follows if the primary window comes up empty.
     """
     if gen == 6:
         return [
-            (0x14000000, 0x1C000000),   # linear heap (live runtime)
-            (0x08000000, 0x10000000),   # app heap fallback
+            (0x08000000, 0x09000000),   # proven accessor neighbourhood
+            (0x09000000, 0x0D000000),   # wider app-heap fallback
         ]
     # Gen 7: N3DS extended linear heap.
-    return [(0x30000000, 0x40000000), (0x08000000, 0x10000000)]
+    return [(0x30000000, 0x34000000), (0x34000000, 0x40000000)]
 
 
 def _rescan_thread(ctx, known_acc: set, seen_keys: set,
