@@ -150,6 +150,14 @@ _PARTY_COUNT = 6
 # trainer address gives us the party for free (same allocation).
 _PARTY_FROM_TRAINER = 0x200
 _PK6_OT_NAME = 0xB0             # decrypted PK6 OT_Trash (UTF-16LE, 26 B)
+# In Azahar each X/Y save sub-block is a SEPARATE allocation with its
+# own relocation delta (we proved box ≠ trainer), so the party block
+# (PokePartySave) is *not* reliably at trainer+0x200 — it can be
+# anywhere in the app heap. Scan the whole heap for it; a cheap
+# unencrypted-header pre-filter (PK6 Sanity@0x04 == 0, key != 0) keeps
+# this fast (it skips ~all of RAM without decrypting).
+_PARTY_SCAN_LO = 0x08000000
+_PARTY_SCAN_HI = 0x08E00000
 
 
 class NTRBridge:
@@ -264,61 +272,80 @@ class NTRBridge:
                     "will use the synthetic fallback.")
 
     # ----- live party capture (surfaced as Box 1) ---------------------
-    def _parse_party(self, block: bytes):
-        """``block`` = 6×260 raw party records. Return a list of 6
-        box-format (232 B) PK6s — the real member for occupied slots,
-        a clean-empty PK6 for empty ones — or None if this isn't a
-        valid party (any slot neither a checksum-valid mon nor a
-        clean-empty record). Also returns the species id list.
-        """
+    def _decode_pk6(self, rec: bytes):
+        """Cheap-filter then decrypt one 260-byte candidate. Return
+        (species, ot_name, box232) for a checksum-valid stored mon,
+        or None. The pre-filter uses ONLY the unencrypted PK6 header
+        (key @0x00, Sanity @0x04) so 99.99% of RAM is rejected without
+        the expensive decrypt."""
+        if len(rec) < _PARTY_SLOT:
+            return None
+        if rec[4] or rec[5]:                 # Sanity != 0 → not a mon
+            return None
+        if rec[0] == 0 and rec[1] == 0 and rec[2] == 0 and rec[3] == 0:
+            return None                      # key 0 → empty slot
         from .parser import decrypt_pkm, calc_checksum
+        try:
+            pt = decrypt_pkm(rec)
+        except Exception:
+            return None
+        sp = int.from_bytes(pt[8:10], "little")
+        if not (0 < sp <= 1024):
+            return None
+        if int.from_bytes(pt[6:8], "little") != calc_checksum(pt):
+            return None
+        raw = pt[_PK6_OT_NAME:_PK6_OT_NAME + 24]
+        nul = raw.find(b"\x00\x00")
+        if nul >= 0:
+            raw = raw[:nul + (nul & 1)]
+        try:
+            ot = raw.decode("utf-16-le", "replace")
+        except Exception:
+            ot = ""
+        return sp, ot, rec[:_BOX_SLOT]
+
+    def _collect_party(self, base: int):
+        """Read 6×260 from absolute ``base`` and build the Box-1
+        payload. The party is contiguous; slot 0 must be a real mon,
+        trailing non-mon slots end it (served clean-empty). Returns
+        (slots, species) or (None, []) if slot 0 isn't a mon."""
+        try:
+            block = self.rpc.read(base, _PARTY_COUNT * _PARTY_SLOT)
+        except Exception:
+            return None, []
         slots: list[bytes] = []
         species: list[int] = []
-        n_real = 0
+        ended = False
         for i in range(_PARTY_COUNT):
             rec = block[i * _PARTY_SLOT:(i + 1) * _PARTY_SLOT]
-            if len(rec) < _PARTY_SLOT:
-                return None, []
-            ek = int.from_bytes(rec[:4], "little")
-            try:
-                pt = decrypt_pkm(rec)
-            except Exception:
-                return None, []
-            sp = int.from_bytes(pt[8:10], "little")
-            csum_ok = (int.from_bytes(pt[6:8], "little")
-                       == calc_checksum(pt))
-            if 0 < sp <= 1024 and csum_ok:
-                slots.append(rec[:_BOX_SLOT])      # 232 B box record
-                species.append(sp)
-                n_real += 1
-            elif sp == 0 and ek == 0 and csum_ok:
+            dec = None if ended else self._decode_pk6(rec)
+            if dec is None:
+                if i == 0:
+                    return None, []          # no lead → not the party
                 slots.append(self._empty_bytes(_BOX_SLOT))
+                ended = True                 # party is contiguous
             else:
-                return None, []                    # garbage → not party
-        return (slots, species) if n_real else (None, [])
+                sp, _ot, box = dec
+                slots.append(box)
+                species.append(sp)
+        return slots, species
 
     def find_party(self) -> None:
         """Cache the live party as box-format PK6s for Box-1 injection.
 
-        Primary anchor: the decrypted X/Y save keeps PokePartySave
-        exactly 0x200 after MyStatus, so trainer_block + 0x200 is the
-        party (same small-block allocation — unlike the big box block
-        which Azahar relocates separately). Fallback: dense-scan the
-        save window for the first 6-record run that parses as a party.
+        Try trainer+0x200 first (cheap; works iff Azahar kept the
+        party adjacent to MyStatus). Otherwise scan the whole app heap
+        for the lead mon — boxes are empty this early, so the only
+        checksum-valid stored PK6s in RAM are the party. The
+        unencrypted-header pre-filter makes a 14 MB sweep fast.
         """
         if self._trainer_abs is None:
             log.info("Party: trainer block not anchored — skipping "
-                     "(PKHeX will see empty boxes).")
+                     "(PKHeX Box 1 will show empty).")
             return
-        need = _PARTY_COUNT * _PARTY_SLOT          # 1560 bytes
+
         cand = self._trainer_abs + _PARTY_FROM_TRAINER
-        try:
-            block = self.rpc.read(cand, need)
-        except Exception as e:
-            block = b""
-            log.warning(f"Party: read @ {cand:#x} failed: {e}")
-        slots, species = (self._parse_party(block)
-                          if len(block) >= need else (None, []))
+        slots, species = self._collect_party(cand)
         if slots is not None:
             self._party = slots
             self._party_summary = ",".join(map(str, species))
@@ -329,33 +356,53 @@ class NTRBridge:
             return
 
         log.info(f"Party: not at trainer+{_PARTY_FROM_TRAINER:#x}; "
-                 f"scanning [{_SAVE_WIN_LO:#x}, {_SAVE_WIN_HI:#x})…")
-        CH = 0x10000
-        cur = _SAVE_WIN_LO
+                 f"scanning [{_PARTY_SCAN_LO:#x}, "
+                 f"{_PARTY_SCAN_HI:#x}) for the lead mon "
+                 f"(OT {self.trainer_name!r})…")
+        CH = 0x40000
+        cur = _PARTY_SCAN_LO
         carry = b""
-        while cur < _SAVE_WIN_HI and not self._stop.is_set():
+        while cur < _PARTY_SCAN_HI and not self._stop.is_set():
             try:
-                blk = self.rpc.read(cur, min(CH, _SAVE_WIN_HI - cur))
+                blk = self.rpc.read(
+                    cur, min(CH, _PARTY_SCAN_HI - cur))
             except Exception:
                 cur += CH
                 carry = b""
                 continue
             buf = carry + blk
             base = cur - len(carry)
-            for off in range(0, len(buf) - need + 1, 4):
-                slots, species = self._parse_party(
-                    buf[off:off + need])
-                if slots is not None:
-                    self._party = slots
-                    self._party_summary = ",".join(map(str, species))
-                    log.info(f"Party found @ {base + off:#010x} "
-                             f"({len(species)} member(s): "
-                             f"species [{self._party_summary}]) → Box 1")
-                    return
-            carry = buf[-(need - 1):]
+            for off in range(0, len(buf) - _PARTY_SLOT + 1, 4):
+                # Cheap reject on the unencrypted header first.
+                if buf[off + 4] or buf[off + 5]:
+                    continue
+                if not (buf[off] or buf[off + 1]
+                        or buf[off + 2] or buf[off + 3]):
+                    continue
+                dec = self._decode_pk6(buf[off:off + _PARTY_SLOT])
+                if dec is None:
+                    continue
+                lead = base + off
+                p_slots, p_sp = self._collect_party(lead)
+                if p_slots is None:
+                    continue
+                ot_ok = dec[1] == self.trainer_name
+                self._party = p_slots
+                self._party_summary = ",".join(map(str, p_sp))
+                log.info(
+                    f"Party found @ {lead:#010x} "
+                    f"(lead species {dec[0]} OT {dec[1]!r}"
+                    f"{'' if ot_ok else ' — OT≠trainer, accepted'}); "
+                    f"{len(p_sp)} member(s): "
+                    f"species [{self._party_summary}] → Box 1")
+                return
+            carry = buf[-(_PARTY_SLOT - 1):]
             cur += CH
-        log.warning("  party not found in the save window — PKHeX "
-                    "Box 1 will show empty (trainer data still works).")
+        log.warning("  party not found in the heap scan — PKHeX "
+                    "Box 1 will show empty (trainer data still "
+                    "works). Have you saved in-game since forming "
+                    "the party? The save-block party only updates "
+                    "on save / area transition.")
 
     def _box1_payload(self, size: int) -> bytes:
         """``size`` bytes starting at box1 slot1: the live party in
