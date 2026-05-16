@@ -236,6 +236,10 @@ def methods_for(game_key: str) -> list[Method]:
     anchor path.
     """
     return [
+        Method("Manual control", "observe",
+               notes="Bot sends NO inputs — you play normally. The "
+                     "Recently Seen tab still logs wild encounters and "
+                     "party additions as they happen."),
         Method("Starters", "soft_reset"),
         Method("Random encounters", "encounter",
                notes="Walks back-and-forth in tall grass on the chosen "
@@ -244,10 +248,6 @@ def methods_for(game_key: str) -> list[Method]:
                      "bot resumes walking. Requires foe_base + "
                      "in_battle_flag offsets — run Debug first if "
                      "those aren't set."),
-        Method("Manual control", "observe",
-               notes="Bot sends NO inputs — you play normally. The "
-                     "Recently Seen tab still logs wild encounters and "
-                     "party additions as they happen."),
         Method("Debug — find offsets", "debug",
                notes="One-shot offset bootstrap. Sends NO inputs. "
                      "Brute-force scans memory for party_base, then "
