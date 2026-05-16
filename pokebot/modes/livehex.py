@@ -23,7 +23,10 @@ def run(ctx) -> None:
     rpc_cfg = ctx.config.get("rpc", {})
     host = rpc_cfg.get("livehex_host", "127.0.0.1")
     port = int(rpc_cfg.get("livehex_port", 8000))
-    bridge = NTRBridge(ctx.rpc, tid, host=host, port=port)
+    tname = (ctx.config.get("soft_reset", {}) or {}).get(
+        "trainer_name", "Roman")
+    bridge = NTRBridge(ctx.rpc, tid, host=host, port=port,
+                       trainer_name=tname)
 
     # Stop the bridge when the launcher requests a stop.
     import threading

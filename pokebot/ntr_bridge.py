@@ -123,16 +123,103 @@ def _recv_exact(sock: socket.socket, n: int,
     return bytes(out)
 
 
+# PKHeX-Plugins XY_v150 save-block anchors (real-hardware NTR addrs).
+# In Azahar the save block is relocated, so we find the real base via
+# the OT-name string and rebase every save-block read by one delta.
+_XY_TRAINER_BLOCK = 0x08C79C3C        # MyStatus6; OT name at +0x48
+_OT_NAME_SUBOFFSET = 0x48
+# Generous window to dense-scan for the OT string (the save block
+# stays in this app-heap neighbourhood across Azahar sessions).
+_SAVE_WIN_LO = 0x08C00000
+_SAVE_WIN_HI = 0x08E00000
+# Reads whose target falls in this range get the delta applied.
+_REBASE_LO = 0x08C00000
+_REBASE_HI = 0x08E00000
+
+
 class NTRBridge:
     def __init__(self, rpc: CitraRPC, title_id: int,
-                 host: str = "127.0.0.1", port: int = 8000):
+                 host: str = "127.0.0.1", port: int = 8000,
+                 trainer_name: str = "Roman"):
         self.rpc = rpc
         self.title_id = title_id
         self.host = host
         self.port = port
+        self.trainer_name = trainer_name
         self.pname = _TITLE_TO_PNAME.get(title_id, "kujira-2")
+        self.delta = 0          # added to save-block reads once anchored
         self._srv: Optional[socket.socket] = None
         self._stop = threading.Event()
+
+    # ----- save-block anchoring (OT-name → delta) ----------------------
+    def find_save_delta(self) -> None:
+        """Dense-scan the app-heap save neighbourhood for the OT name
+        (UTF-16LE + NUL). The OT string sits at trainer_block+0x48, so
+        trainer_block = hit - 0x48 and delta = trainer_block -
+        PKHeX-Plugins' expected address. Sets self.delta.
+        """
+        name = self.trainer_name or "Roman"
+        pat = name.encode("utf-16-le") + b"\x00\x00"
+        log.info(f"Anchoring save block: scanning "
+                 f"[{_SAVE_WIN_LO:#x}, {_SAVE_WIN_HI:#x}) for OT "
+                 f"name {name!r} ({pat.hex()})…")
+        CH = 0x10000
+        cur = _SAVE_WIN_LO
+        carry = b""
+        while cur < _SAVE_WIN_HI and not self._stop.is_set():
+            try:
+                blk = self.rpc.read(cur, min(CH, _SAVE_WIN_HI - cur))
+            except Exception:
+                cur += CH
+                carry = b""
+                continue
+            buf = carry + blk
+            idx = buf.find(pat)
+            while idx != -1:
+                # buf[0] is at absolute address (cur - len(carry)).
+                hit = cur - len(carry) + idx
+                tb = hit - _OT_NAME_SUBOFFSET
+                if self._validate_trainer_block(tb, name):
+                    self.delta = tb - _XY_TRAINER_BLOCK
+                    log.info(f"  OT name @ {hit:#010x} → trainer_block "
+                             f"{tb:#010x}; delta = {self.delta:+#x} "
+                             f"(reads in [{_REBASE_LO:#x},{_REBASE_HI:#x}) "
+                             f"will be rebased)")
+                    return
+                idx = buf.find(pat, idx + 1)
+            carry = buf[-(len(pat) - 1):] if len(pat) > 1 else b""
+            cur += CH
+        log.warning("  OT name not found in the save window — no "
+                    "rebasing (PKHeX will see spoofed-empty data). "
+                    "If the save block is elsewhere, widen "
+                    "_SAVE_WIN_LO/_HI.")
+
+    def _validate_trainer_block(self, tb: int, name: str) -> bool:
+        """Sanity-check a candidate MyStatus6 trainer block."""
+        if tb < _REBASE_LO or tb >= _REBASE_HI:
+            return False
+        try:
+            hdr = self.rpc.read(tb, 0x4A + len(name) * 2)
+        except Exception:
+            return False
+        if len(hdr) < 0x4A:
+            return False
+        tid = int.from_bytes(hdr[0:2], "little")
+        sid = int.from_bytes(hdr[2:4], "little")
+        ot = hdr[0x48:0x48 + len(name) * 2]
+        if ot != name.encode("utf-16-le"):
+            return False
+        # TID/SID shouldn't both be 0 or both 0xFFFF on a real card.
+        if (tid, sid) in ((0, 0), (0xFFFF, 0xFFFF)):
+            return False
+        log.info(f"  trainer block {tb:#010x}: TID={tid} SID={sid} "
+                 f"OT={name!r} ✓")
+        return True
+
+    def _rebase(self, addr: int) -> int:
+        if self.delta and _REBASE_LO <= addr < _REBASE_HI:
+            return addr + self.delta
+        return addr
 
     # ----- process-list reply -----------------------------------------
     def _process_list_text(self) -> bytes:
@@ -149,6 +236,12 @@ class NTRBridge:
 
     # ----- lifecycle ---------------------------------------------------
     def serve_forever(self) -> None:
+        # Anchor the save block BEFORE accepting connections so the
+        # very first PKHeX read is already rebased to real data.
+        try:
+            self.find_save_delta()
+        except Exception as e:
+            log.warning(f"save-delta anchoring failed: {e}")
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind((self.host, self.port))
@@ -156,7 +249,8 @@ class NTRBridge:
         self._srv.settimeout(0.5)
         log.info(f"NTR bridge listening on {self.host}:{self.port} "
                  f"(emulating process {self.pname!r}, "
-                 f"tid {self.title_id:#018x})")
+                 f"tid {self.title_id:#018x}, "
+                 f"save delta {self.delta:+#x})")
         log.info("In PKHeX → Auto-Legality → LiveHeX, set protocol NTR, "
                  f"IP {self.host}, port {self.port}, then Connect.")
         while not self._stop.is_set():
@@ -249,8 +343,10 @@ class NTRBridge:
 
     # ----- command handlers -------------------------------------------
     def _do_read(self, send, seq: int, args) -> None:
-        addr = args[1]
+        req_addr = args[1]
         size = args[2]
+        addr = self._rebase(req_addr)
+        rebased = addr != req_addr
         try:
             data = self.rpc.read(addr, size)
         except Exception as e:
@@ -286,7 +382,9 @@ class NTRBridge:
             except Exception as e:
                 data = _empty_pk6(size)
                 note = f" | decode err ({e}); SPOOFED clean-empty"
-        log.info(f"read {size}@{addr:#010x} "
+        loc = (f"{req_addr:#010x}->{addr:#010x}" if rebased
+               else f"{addr:#010x}")
+        log.info(f"read {size}@{loc} "
                  f"first16={data[:16].hex()}{note}")
         send(_pack_packet(seq, 0, 9, data=data))
         # NTRClient.ReadBytes polls for a log line containing
