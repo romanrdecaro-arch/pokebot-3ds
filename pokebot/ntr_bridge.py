@@ -157,25 +157,34 @@ class NTRBridge:
     # ----- per-connection loop ----------------------------------------
     def _handle_client(self, sock: socket.socket) -> None:
         sock.settimeout(1.0)
-        # Heartbeat sender: LiveHeX only sends its own heartbeat while
-        # _heartbeatSendable==1, which our cmd 0 packets re-arm.
+        # ALL writes go through this lock. The heartbeat thread and the
+        # request handler both write to the same socket; unsynchronized
+        # sendall() calls interleave their bytes, the client reads a
+        # corrupt header, sees magic != 0x12345678, and drops the
+        # connection (~1 s in). Serialising every write fixes it.
+        send_lock = threading.Lock()
+
+        def _send(pkt: bytes) -> bool:
+            with send_lock:
+                try:
+                    sock.sendall(pkt)
+                    return True
+                except OSError:
+                    return False
+
         hb_stop = threading.Event()
 
         def _hb():
             while not hb_stop.is_set() and not self._stop.is_set():
-                try:
-                    sock.sendall(_pack_packet(0, 0, 0))
-                except OSError:
+                if not _send(_pack_packet(0, 0, 0)):
                     return
                 hb_stop.wait(1.0)
 
         hb_thread = threading.Thread(target=_hb, daemon=True)
 
         # Greet with the process list so GetGame() learns pname+PID.
-        try:
-            sock.sendall(_pack_packet(0, 0, 0,
-                                      data=self._process_list_text()))
-        except OSError:
+        if not _send(_pack_packet(0, 0, 0,
+                                  data=self._process_list_text())):
             return
         hb_thread.start()
         try:
@@ -196,13 +205,12 @@ class NTRBridge:
                     payload = _recv_exact(sock, data_len) or b""
 
                 if cmd == 0:
-                    # client heartbeat — re-arm by replying cmd 0.
-                    sock.sendall(_pack_packet(0, 0, 0))
+                    _send(_pack_packet(0, 0, 0))      # re-arm heartbeat
                 elif cmd == 5:
-                    sock.sendall(_pack_packet(
+                    _send(_pack_packet(
                         0, 0, 0, data=self._process_list_text()))
                 elif cmd == 9:
-                    self._do_read(sock, seq, args)
+                    self._do_read(_send, seq, args)
                 elif cmd == 10:
                     self._do_write(args, payload)
                 # other cmds: silently ignore (LiveHeX doesn't need them)
@@ -210,7 +218,7 @@ class NTRBridge:
             hb_stop.set()
 
     # ----- command handlers -------------------------------------------
-    def _do_read(self, sock: socket.socket, seq: int, args) -> None:
+    def _do_read(self, send, seq: int, args) -> None:
         addr = args[1]
         size = args[2]
         try:
@@ -220,7 +228,13 @@ class NTRBridge:
             data = b"\x00" * size
         if len(data) < size:                       # pad short reads
             data = data + b"\x00" * (size - len(data))
-        sock.sendall(_pack_packet(seq, 0, 9, data=data))
+        send(_pack_packet(seq, 0, 9, data=data))
+        # NTRClient.ReadBytes polls for a log line containing
+        # "finished" and otherwise blocks the full 10 s timeout per
+        # read. Real NTR emits it after a read completes; emit our own
+        # cmd 0 info packet so reads return immediately. GetGame()
+        # ignores it (no kujira/sango/etc substring).
+        send(_pack_packet(0, 0, 0, data=b"finished\n"))
 
     def _do_write(self, args, payload: bytes) -> None:
         addr = args[1]
