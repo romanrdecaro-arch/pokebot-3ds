@@ -93,6 +93,45 @@ def _read_accessor(ctx, acc_addr: int):
     return info["is_in_party"], info["data_ptr"], info["is_encrypted"]
 
 
+def _subpointers(buf: bytes, limit: int = 0x40) -> list[int]:
+    """Unique 4-byte-aligned app-heap pointers in the first ``limit``
+    bytes of ``buf``. The accessor's data_ptr points to a wrapper
+    object whose members include the real pkm pointer (it appeared
+    twice in the dump), so we follow these one level deeper.
+    """
+    out: list[int] = []
+    for o in range(0, min(limit, len(buf)) - 3, 4):
+        v = int.from_bytes(buf[o:o + 4], "little")
+        if 0x08000000 <= v < 0x10000000 and (v & 3) == 0 and v not in out:
+            out.append(v)
+    return out
+
+
+def _try_pk6_at(ctx, addr: int):
+    """Read 260 bytes at ``addr`` and try to parse a valid PK6 both as
+    encrypted (decrypt) and as already-plaintext. Returns ParsedPokemon
+    or None.
+    """
+    try:
+        raw = ctx.rpc.read(addr, 260)
+    except Exception:
+        return None
+    if len(raw) < 260:
+        return None
+    ek = int.from_bytes(raw[:4], "little")
+    if ek in (0, 0xFFFFFFFF):
+        return None
+    for candidate in (lambda: decrypt_pkm(raw), lambda: raw):
+        try:
+            pt = candidate()
+        except Exception:
+            continue
+        pkm = _parse_valid(pt)
+        if pkm is not None:
+            return pkm
+    return None
+
+
 def _diag_accessor(ctx, acc_addr: int, info: dict) -> None:
     """Deep-dump one signature-matched candidate: raw bytes at its
     data_ptr plus both the PK6 and the decrypted-"Temp Data"
@@ -136,6 +175,32 @@ def _diag_accessor(ctx, acc_addr: int, info: dict) -> None:
                  f"nature={nature} IVs={ivs} plausible={ok}")
     except Exception as e:
         log.info(f"      [Temp] parse failed: {e}")
+    # One level deeper: the wrapper's member pointers.
+    subs = _subpointers(raw)
+    if subs:
+        log.info(f"      subptrs={[hex(s) for s in subs]}")
+        for s in subs:
+            try:
+                sr = ctx.rpc.read(s, 260)
+            except Exception:
+                continue
+            ek = int.from_bytes(sr[:4], "little")
+            if ek in (0, 0xFFFFFFFF):
+                continue
+            res = ""
+            for label, fn in (("dec", lambda: decrypt_pkm(sr)),
+                              ("raw", lambda: sr)):
+                try:
+                    pt = fn()
+                    sp = int.from_bytes(pt[8:10], "little")
+                    st = int.from_bytes(pt[6:8], "little")
+                    cc = calc_checksum(pt)
+                    if st == cc and 0 < sp <= 721:
+                        res += (f" [{label} PK6 species={sp} "
+                                f"lvl={pt[0xEC]} csum-OK]")
+                except Exception:
+                    pass
+            log.info(f"        sub {s:#010x} ek={ek:#010x}{res or ' (no PK6)'}")
 
 
 def _pkm_via_accessor(ctx, acc_addr: int):
@@ -148,22 +213,35 @@ def _pkm_via_accessor(ctx, acc_addr: int):
     if acc is None:
         return None
     is_in_party, data_ptr, is_enc = acc
+
+    # Path 1: data_ptr points straight at a (en/de)crypted PK6.
     try:
         raw = ctx.rpc.read(data_ptr, 260)
     except Exception:
-        return None
-    if len(raw) < 232:
-        return None
-    if int.from_bytes(raw[:4], "little") in (0, 0xFFFFFFFF):
-        return None
-    try:
-        pt = decrypt_pkm(raw) if is_enc else raw
-    except Exception:
-        return None
-    pkm = _parse_valid(pt)
-    if pkm is None:
-        return None
-    return pkm, data_ptr, is_in_party
+        raw = b""
+    if len(raw) >= 232 and int.from_bytes(raw[:4], "little") not in (
+            0, 0xFFFFFFFF):
+        for cand in ((decrypt_pkm(raw),) if is_enc else (raw, )):
+            pkm = _parse_valid(cand)
+            if pkm is not None:
+                return pkm, data_ptr, is_in_party
+        # also try the other interpretation
+        try:
+            alt = raw if is_enc else decrypt_pkm(raw)
+            pkm = _parse_valid(alt)
+            if pkm is not None:
+                return pkm, data_ptr, is_in_party
+        except Exception:
+            pass
+
+    # Path 2: data_ptr is a wrapper object — follow its member pointers
+    # one level deeper and try a PK6 at each.
+    if raw:
+        for sub in _subpointers(raw):
+            pkm = _try_pk6_at(ctx, sub)
+            if pkm is not None:
+                return pkm, sub, is_in_party
+    return None
 
 
 # ---------------------------------------------------------------------------
