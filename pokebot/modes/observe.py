@@ -195,17 +195,24 @@ def _scan_accessors(ctx, lo: int, hi: int) -> list[int]:
         n = min(CHUNK, hi - cur)
         if n < 14:                       # nothing meaningful left
             break
+
+        # Cheap 0x40-byte probe. If it's non-zero we read+scan the full
+        # 64 KB; if zero we advance ONE 64 KB block (NOT a whole 1 MB —
+        # accessors sit deeper in 1 MB blocks whose first chunk is
+        # zero-padding, and the old 1 MB jump skipped ~99% of the heap).
+        try:
+            probe = ctx.rpc.read(cur, 0x40)
+        except Exception:
+            cur += n
+            continue
+        if (not probe or probe == b"\x00" * len(probe)
+                or probe == b"\xFF" * len(probe)):
+            cur += n                     # skip just this 64 KB
+            continue
         try:
             block = ctx.rpc.read(cur, n)
         except Exception:
-            cur += n                     # always forward
-            continue
-
-        # Unmapped / empty 64 KB → jump to the next 1 MB boundary.
-        if (not block or block == b"\x00" * len(block)
-                or block == b"\xFF" * len(block)):
-            nxt = (cur & ~0xFFFFF) + 0x100000
-            cur = nxt if nxt > cur else cur + n
+            cur += n
             continue
 
         for off in range(0, len(block) - 14 + 1, 4):

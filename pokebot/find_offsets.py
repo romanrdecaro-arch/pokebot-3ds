@@ -280,14 +280,15 @@ def scan(rpc: CitraRPC,
 #   0x14000000 - 0x20000000  linear heap (pkm data lives here for Gen 6)
 #   0x30000000 - 0x40000000  N3DS extended heap (Gen 7)
 
-# Vtable must land in the executable's actual code/ro/data, which the
-# Y ExHeader puts at 0x00100000-0x005EA0C0 (+ bss to ~0x00660000).
-# The old 0x10000000 ceiling let float/matrix graphics constants
-# (0x3f800000 = 1.0f, 0x0e800000, 0x092c0000, …) masquerade as
-# vtables — every false positive in the linear heap was one of these.
-# 0x00800000 covers code+ro+data+bss with margin and rejects them all.
-CODE_SEG_LO  = 0x00100000
-CODE_SEG_HI  = 0x00800000
+# Real Pokémon-accessor vtables observed on Y-USA cluster tightly in
+# 0x00596000-0x00599000 (the .ro segment; ExHeader .ro =
+# 0x0053C000-0x005A6000). One was proven real by a PK6 checksum match
+# (vt=0x00598a78). A 0x00590000-0x005A0000 band brackets every
+# observed accessor vtable while rejecting the unrelated code/data
+# pointers (0x00321b3c, 0x00330000, 0x00550030, …) that the wider
+# 0x00800000 ceiling still let through.
+CODE_SEG_LO  = 0x00590000
+CODE_SEG_HI  = 0x005A0000
 # pkm data can live in EITHER the app heap (0x08000000-0x10000000,
 # where the save block sits) OR the linear heap (0x14000000+, where
 # runtime/battle allocations sit). Accept both. Exclude the N3DS
