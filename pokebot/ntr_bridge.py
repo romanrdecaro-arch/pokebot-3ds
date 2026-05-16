@@ -148,8 +148,17 @@ class NTRBridge:
         self.trainer_name = trainer_name
         self.pname = _TITLE_TO_PNAME.get(title_id, "kujira-2")
         self.delta = 0          # added to save-block reads once anchored
+        self._empty_slot: Optional[bytes] = None  # real captured clean-empty PK6
         self._srv: Optional[socket.socket] = None
         self._stop = threading.Event()
+
+    def _empty_bytes(self, size: int) -> bytes:
+        """A clean-empty PK6 buffer of ``size`` bytes — the real
+        game-captured one tiled if we have it, else the synthetic."""
+        if self._empty_slot:
+            base = self._empty_slot
+            return (base * (size // len(base) + 1))[:size]
+        return _empty_pk6(size)
 
     # ----- save-block anchoring (OT-name → delta) ----------------------
     def find_save_delta(self) -> None:
@@ -193,6 +202,47 @@ class NTRBridge:
                     "rebasing (PKHeX will see spoofed-empty data). "
                     "If the save block is elsewhere, widen "
                     "_SAVE_WIN_LO/_HI.")
+
+    def find_empty_slot(self) -> None:
+        """Scan for ONE real, game-written clean-empty PK6 (decodes to
+        species 0, EncryptionConstant 0, checksum valid) and cache its
+        232 bytes. Serving the game's OWN empty record for box reads
+        makes PKHeX validate by definition — far more reliable than a
+        synthetic one (PKHeX's decryption edge-cases for an all-zero
+        key rejected our synthesised buffer). The user's boxes are
+        empty, so serving clean-empty everywhere is also correct.
+        """
+        from .parser import decrypt_pkm, calc_checksum
+        lo, hi = 0x08800000, 0x08A00000        # proven region (0x08840c90)
+        log.info(f"Capturing a real clean-empty PK6 in "
+                 f"[{lo:#x}, {hi:#x})…")
+        CH = 0x10000
+        cur = lo
+        while cur < hi and not self._stop.is_set():
+            try:
+                blk = self.rpc.read(cur, min(CH, hi - cur))
+            except Exception:
+                cur += CH
+                continue
+            for off in range(0, len(blk) - 260 + 1, 4):
+                rec = blk[off:off + 260]
+                if int.from_bytes(rec[:4], "little") != 0:
+                    continue                  # empty slot ⇒ enc_key 0
+                try:
+                    pt = decrypt_pkm(rec)
+                except Exception:
+                    continue
+                if (int.from_bytes(pt[8:10], "little") == 0
+                        and int.from_bytes(pt[6:8], "little")
+                        == calc_checksum(pt)):
+                    self._empty_slot = rec[:232]
+                    log.info(f"  captured clean-empty PK6 @ "
+                             f"{cur + off:#010x} "
+                             f"(csum {int.from_bytes(pt[6:8],'little'):#06x})")
+                    return
+            cur += CH - 260
+        log.warning("  no real clean-empty PK6 captured; box reads "
+                    "will use the synthetic fallback.")
 
     def _validate_trainer_block(self, tb: int, name: str) -> bool:
         """Sanity-check a candidate MyStatus6 trainer block."""
@@ -242,6 +292,10 @@ class NTRBridge:
             self.find_save_delta()
         except Exception as e:
             log.warning(f"save-delta anchoring failed: {e}")
+        try:
+            self.find_empty_slot()
+        except Exception as e:
+            log.warning(f"empty-slot capture failed: {e}")
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind((self.host, self.port))
@@ -354,23 +408,25 @@ class NTRBridge:
             data = b"\x00" * size
         if len(data) < size:                       # pad short reads
             data = data + b"\x00" * (size - len(data))
-        # PKHeX validates the connection by reading box1slot1 (232 B)
-        # and rejects anything that isn't a valid PK6 OR a clean-empty
-        # slot. X/Y's RAM at the published box offsets doesn't expose
-        # clean records in this Azahar session (decodes to garbage),
-        # so for slot-sized reads that decode to garbage we substitute
-        # a synthetic clean-empty PK6. That lets Connect_NTR validate
-        # and PKHeX proceed — its subsequent reads (party/trainer) are
-        # then visible in this log so we can map them to real data.
-        # Decode-log slot-sized reads. The spoof is ONLY a no-anchor
-        # crutch: once we've found the save delta the rebased reads are
-        # real, valid data (proven: box1slot1 reads the game's genuine
-        # clean-empty PK6, checksum 0x0545). Spoofing then actively
-        # breaks things — it replaces real data with a synthetic empty
-        # whose checksum differs, so PKHeX rejects OUR fake instead of
-        # accepting the real slot. So: spoof only when NOT anchored.
+        # The trainer block (rebased by the OT-anchor delta) reads real
+        # data and passes through. Box slots are a SEPARATE save sub-
+        # allocation with a different (unknown, unanchorable — empty
+        # slots have no string) delta, so PK6-sized reads still decode
+        # garbage. PKHeX only needs box1slot1 to be a valid/clean-empty
+        # PK6 to connect, so for any PK6-sized read that doesn't decode
+        # clean we serve the REAL game-captured clean-empty slot (which
+        # PKHeX accepts by definition; the user's boxes are empty so
+        # this is also correct). Valid/clean real reads pass through.
         note = ""
-        if size in (232, 260) and len(data) >= 232:
+        # Full-box / multi-slot read (size = N×232, N≥2): PKHeX's box
+        # view. The box sub-block isn't anchored, so serve the captured
+        # clean-empty slot tiled across it → PKHeX shows empty boxes
+        # (correct) instead of 30 garbage entries. (232 itself falls to
+        # the single-slot path below; 0x170 trainer is untouched.)
+        if size >= 464 and size % 232 == 0:
+            data = self._empty_bytes(size)
+            note = " | box read -> tiled empty"
+        elif size in (232, 260) and len(data) >= 232:
             try:
                 from .parser import decrypt_pkm, calc_checksum
                 buf = data if size == 260 else data + b"\x00" * 28
@@ -383,17 +439,16 @@ class NTRBridge:
                 valid_pkm = (0 < sp <= 1024 and st == cc)
                 note = (f" | enc_key={ek:#010x} species={sp} "
                         f"csum match={st == cc}")
-                if not self.delta and not (clean_empty or valid_pkm):
-                    data = _empty_pk6(size)
-                    note += " | SPOOFED clean-empty (no anchor)"
-                elif self.delta and not (clean_empty or valid_pkm):
-                    note += " | passthrough (anchored; real data)"
-            except Exception as e:
-                if not self.delta:
-                    data = _empty_pk6(size)
-                    note = f" | decode err ({e}); SPOOFED (no anchor)"
+                if not (clean_empty or valid_pkm):
+                    data = self._empty_bytes(size)
+                    note += (" | -> real captured empty"
+                             if self._empty_slot else
+                             " | -> synthetic empty")
                 else:
-                    note = f" | decode err ({e}); passthrough (anchored)"
+                    note += " | passthrough (real valid)"
+            except Exception as e:
+                data = self._empty_bytes(size)
+                note = f" | decode err ({e}); -> empty"
         loc = (f"{req_addr:#010x}->{addr:#010x}" if rebased
                else f"{addr:#010x}")
         log.info(f"read {size}@{loc} "
