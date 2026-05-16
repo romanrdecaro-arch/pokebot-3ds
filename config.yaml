@@ -81,11 +81,21 @@ soft_reset:
 #   party_stride:   484
 #
 # Without these the dashboard will show no party or encounter data.
+# Authoritative X/Y live-RAM addresses from PKMN-NTR LookupTable.cs
+# (drgoku282/PKMN-NTR). These are real-hardware NTR virtual addresses;
+# Azahar reads them directly (trainer region is shifted -0x10, the
+# 0x088xxxxx wild region is at its native address).
 offsets:
-  party_base: 0x08c79da8
-  foe_base: 0x0
-  in_battle_flag: 0x0
-  party_stride: 260   # 0x104; Gen 6/7 save-block party = 6 contiguous 260-byte records
+  # PartyOffset (X/Y): 6 live party slots, encrypted ekx, 484 B apart.
+  party_base: 0x08CE1CF8
+  party_stride: 484
+  # WildOffset1 (X/Y): the encounter Pokémon lives somewhere in the
+  # ~128 KB at 0x08800000 — it is NOT at a fixed sub-offset; scan the
+  # region for a checksum-valid encrypted PK6 (PKMN-NTR ReadOpponent).
+  foe_base: 0x08800000
+  foe_stride: 484
+  foe_scan_len: 0x20000      # 0x1FFFF rounded; bytes to scan @ foe_base
+  in_battle_flag: 0x0        # TODO: not yet located (battle-state u8)
 
 # Target / filter is configured in the launcher (Hunt → Target filter).
 # Default is "Shiny only". To override from the CLI: pass --target shiny
