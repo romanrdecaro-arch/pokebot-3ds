@@ -15,12 +15,32 @@ PKHeX + PKHeX-Plugins ──NTR / TCP 8000──▶ pokebot bridge ──UDP 459
 You then get PKHeX's full, battle-tested GUI (box editor, trainer
 data, legality, etc.) working against the running Azahar game.
 
-## One-time: PKHeX-Plugins installed?
+## Use the matched 23.09.25 build (NOT the old PKHeX folder)
 
-You already have it — `D:\PKHeX (26.05.05)\plugins\AutoModPlugins.dll`
-(installed earlier via `setup_bleedingedge.ps1`). Launch
-`PKHeX.exe`; you should see a **Plugins** / **Auto-Legality Mod**
-menu.
+PKHeX-Plugins is abandoned (last release Sept 2023, v23.09.25) and
+the current PKHeX (26.x) silently rejects it — that's why
+`D:\PKHeX (26.05.05)\` shows no Plugins menu (PKHeX 26.5 vs plugin
+24.5).
+
+We built a **guaranteed-matched pair** from source:
+
+```
+D:\PKHeX-23.09.25\
+  PKHeX.exe               (WinForms, built from kwsch/PKHeX tag 23.09.25)
+  PKHeX.Core.dll          (23.9.25.0)
+  plugins\AutoModPlugins.dll  (built against NuGet PKHeX.Core 23.9.25)
+```
+
+PKHeX.Core in the exe and the version the plugin links are the
+**same** (23.9.25.0), so the Plugins menu loads. Needs the .NET 7
+Desktop runtime (installed). **Launch `D:\PKHeX-23.09.25\PKHeX.exe`**,
+not the old 26.05.05 one.
+
+(Rebuild recipe, if ever needed: `dotnet build` PKHeX-Plugins'
+`AutoLegalityMod/AutoModPlugins.csproj -c Release`; `dotnet publish`
+PKHeX `PKHeX.WinForms.csproj -c Release -r win-x64 --self-contained
+false`; copy the `bin/Release/net7.0-windows/win-x64/` output to a
+folder and drop `AutoModPlugins.dll` in its `plugins\`.)
 
 ## Steps
 
@@ -34,7 +54,8 @@ menu.
 
    Or run it standalone: `python -m pokebot.ntr_bridge`
 
-3. Open `PKHeX.exe`, load any X/Y save (so PKHeX knows the format).
+3. Open `D:\PKHeX-23.09.25\PKHeX.exe`, load any X/Y save (so PKHeX
+   knows the format). Confirm a **Plugins** menu is present.
 4. **Plugins → Auto-Legality Mod → LiveHeX**.
 5. Protocol: **NTR**. IP: `127.0.0.1`. Port: `8000`. Click **Connect**.
 6. PKHeX reads the live game through the bridge → Azahar.
