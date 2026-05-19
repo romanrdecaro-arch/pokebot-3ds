@@ -29,14 +29,28 @@ ROOT = Path(__file__).parent
 _STATS_FILE = ROOT / ".pokebot_stats.json"
 
 
+_STATS_DEFAULT = {
+    "total": 0,
+    "phase": 0,
+    "phase_best_sv": None,   # lowest PSV seen this phase (rarer = lower)
+    "phase_best_iv": None,   # highest IV-sum seen this phase
+}
+
+
 def _load_stats() -> dict:
+    s = dict(_STATS_DEFAULT)
     try:
         import json as _j
         d = _j.loads(_STATS_FILE.read_text())
-        return {"total": int(d.get("total", 0)),
-                "phase": int(d.get("phase", 0))}
+        s["total"] = int(d.get("total", 0))
+        s["phase"] = int(d.get("phase", 0))
+        bsv = d.get("phase_best_sv")
+        biv = d.get("phase_best_iv")
+        s["phase_best_sv"] = int(bsv) if bsv is not None else None
+        s["phase_best_iv"] = int(biv) if biv is not None else None
     except Exception:
-        return {"total": 0, "phase": 0}
+        return dict(_STATS_DEFAULT)
+    return s
 
 
 def _save_stats(stats: dict) -> None:
@@ -270,6 +284,44 @@ def _prep_icon(path, max_w: int, max_h: int):
         return None
 
 
+def _prep_gif(path, max_w: int, max_h: int):
+    """Load an animated GIF and return a list of ImageTk frames all
+    scaled to fit ``max_w``×``max_h`` (so it can't overflow the fixed
+    cell). A single UNION bounding box is used for every frame so the
+    sprite doesn't bob around as it animates. None on any failure
+    (caller falls back to raw Tk gif-index frames).
+    """
+    try:
+        from PIL import Image, ImageSequence, ImageTk
+    except Exception:
+        return None
+    try:
+        im = Image.open(path)
+        raw = [f.convert("RGBA")
+               for f in ImageSequence.Iterator(im)]
+        if not raw:
+            return None
+        union = None
+        for f in raw:
+            bb = f.getbbox()
+            if bb is None:
+                continue
+            union = bb if union is None else (
+                min(union[0], bb[0]), min(union[1], bb[1]),
+                max(union[2], bb[2]), max(union[3], bb[3]))
+        if union:
+            raw = [f.crop(union) for f in raw]
+        w, h = raw[0].size
+        if not w or not h:
+            return None
+        scale = min(max_w / w, max_h / h)
+        size = (max(1, round(w * scale)), max(1, round(h * scale)))
+        return [ImageTk.PhotoImage(f.resize(size, Image.NEAREST))
+                for f in raw]
+    except Exception:
+        return None
+
+
 def _apply_sprite(widget: tk.Label, sprite) -> None:
     """Show a sprite on ``widget``. ``sprite`` is either a single
     PhotoImage (static PNG) or a list of PhotoImages (GIF frames). Any
@@ -322,13 +374,15 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
     def _worker():
         path, is_gif = None, False
         try:
-            # Menu / party icon first (what the user wants), then the
-            # static front sprite as a fallback. No animated battle
-            # sprite — that's the "in-game" look we're moving away from.
-            from pokebot.sprites import (get_menu_sprite_path,
+            # Animated Showdown sprite first (downloaded once and
+            # cached as a .gif file), static front PNG as fallback.
+            from pokebot.sprites import (get_animated_sprite_path,
                                          get_sprite_path)
-            path = (get_menu_sprite_path(species_id, shiny=shiny)
-                    or get_sprite_path(species_id, shiny=shiny))
+            path = get_animated_sprite_path(species_id, shiny=shiny)
+            if path:
+                is_gif = True
+            else:
+                path = get_sprite_path(species_id, shiny=shiny)
         except Exception:
             path = None
         if not path:
@@ -339,21 +393,26 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
         def _install():
             try:
                 if is_gif:
-                    frames = []
-                    i = 0
-                    while True:
-                        try:
-                            frames.append(tk.PhotoImage(
-                                file=str(path), format=f"gif -index {i}"))
-                        except tk.TclError:
-                            break
-                        i += 1
+                    # Scale every frame to fit the cell (Pillow);
+                    # fall back to raw Tk gif-index frames if needed.
+                    frames = _prep_gif(path, 68, 54)
+                    if not frames:
+                        frames = []
+                        i = 0
+                        while True:
+                            try:
+                                frames.append(tk.PhotoImage(
+                                    file=str(path),
+                                    format=f"gif -index {i}"))
+                            except tk.TclError:
+                                break
+                            i += 1
                     if not frames:
                         raise ValueError("no GIF frames decoded")
                     cache[key] = frames
                     _apply_sprite(widget, frames)
                 else:
-                    img = (_prep_icon(path, 58, 44)
+                    img = (_prep_icon(path, 68, 54)
                            or tk.PhotoImage(file=str(path)))
                     cache[key] = img
                     _apply_sprite(widget, img)
@@ -481,15 +540,13 @@ class _RecentlySeen(tk.Frame):
 
     MAX_ROWS = 100  # how many recent encounters to keep on screen
 
-    # Column layout: (label, fixed_width_px, anchor). Fixed widths +
-    # a shared uniform group make the header and EVERY row use
-    # identical column geometry, so nothing looks disjointed.
-    # Fixed pixel widths; NO uniform group (a shared uniform forces
-    # every column to the widest one's size — that overflowed the
-    # panel). minsize + weight 0 keeps each column its own width and
-    # identical between the header and every row, so they line up.
+    # Column layout: (label, fixed_width_px, anchor). Fixed pixel
+    # widths, NO uniform group (a shared uniform forces every column
+    # to the widest one's size — that overflowed the panel). minsize
+    # + weight 0 keeps each column its own width and identical
+    # between the header and every row, so they line up.
     _HEADERS = (
-        ("Species",      66, "center"),
+        ("Species",      76, "center"),
         ("Gender",       52, "center"),
         ("Level",        56, "center"),
         ("PID",          82, "center"),
@@ -574,8 +631,28 @@ class _RecentlySeen(tk.Frame):
     # ---- public API --------------------------------------------------------
 
     def _counter_text(self) -> str:
-        return (f"Phase {self._stats['phase']}  ·  "
-                f"Total {self._stats['total']}")
+        s = self._stats
+        bsv = s["phase_best_sv"]
+        biv = s["phase_best_iv"]
+        return (f"Phase {s['phase']}  ·  Total {s['total']}  ·  "
+                f"Best SV {bsv if bsv is not None else '—'}  ·  "
+                f"Best IVs {biv if biv is not None else '—'}")
+
+    @staticmethod
+    def _evt_psv(evt: dict):
+        psv = evt.get("psv")
+        if psv is None:
+            pid = int(evt.get("pid") or 0)
+            psv = ((pid >> 16) ^ (pid & 0xFFFF)) if pid else None
+        return int(psv) if psv is not None else None
+
+    @staticmethod
+    def _evt_ivsum(evt: dict):
+        ivs = evt.get("ivs") or {}
+        if not ivs:
+            return None
+        return sum(int(ivs.get(s, 0)) for s in
+                   ("HP", "Atk", "Def", "Spe", "SpA", "SpD"))
 
     def add_pokemon(self, evt: dict):
         if self._empty:
@@ -583,12 +660,25 @@ class _RecentlySeen(tk.Frame):
             self._empty = None
         # A shiny/target emits a separate 'target_hit' after its
         # 'encounter' — that encounter already bumped the counters, so
-        # target_hit only CLOSES the phase (resets it), no double count.
+        # target_hit only CLOSES the phase (reset phase + per-phase
+        # bests), no double count.
         if evt.get("type") == "target_hit":
             self._stats["phase"] = 0
+            self._stats["phase_best_sv"] = None
+            self._stats["phase_best_iv"] = None
         else:
             self._stats["total"] += 1
             self._stats["phase"] += 1
+            psv = self._evt_psv(evt)
+            if psv is not None:
+                cur = self._stats["phase_best_sv"]
+                self._stats["phase_best_sv"] = (
+                    psv if cur is None else min(cur, psv))
+            ivs = self._evt_ivsum(evt)
+            if ivs is not None:
+                cur = self._stats["phase_best_iv"]
+                self._stats["phase_best_iv"] = (
+                    ivs if cur is None else max(cur, ivs))
         _save_stats(self._stats)
         self._counter_lbl.config(
             text=self._counter_text(),
@@ -635,7 +725,7 @@ class _RecentlySeen(tk.Frame):
         # menu icon can't widen column 0 and shove the row out of
         # alignment; the icon is centred inside the box.
         sp_w = self._HEADERS[0][1]
-        sp_box = tk.Frame(row, bg=bg, width=sp_w, height=46)
+        sp_box = tk.Frame(row, bg=bg, width=sp_w, height=58)
         sp_box.grid(row=0, column=0, sticky="nsew")
         sp_box.grid_propagate(False)
         sp_box.pack_propagate(False)
