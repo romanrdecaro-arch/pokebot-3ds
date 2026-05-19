@@ -108,7 +108,7 @@ random_encounters:
   # Seconds to wait AFTER detecting a wild before fleeing — lets the
   # battle intro/animation finish so the RUN button is actually
   # touchable. Raise if the flee fires before the menu appears.
-  flee_delay: 5.0
+  flee_delay: 3.5
   # Extra wait after clearing the intro text, before touching RUN —
   # lets the command menu finish drawing so the touch lands.
   run_settle: 0.5
