@@ -10,23 +10,22 @@ copies — e.g. reporting your Fennekin instead of the wild Fletchling).
 Party  → ``offsets.party_base`` (X/Y 0x08CE1CF8), ``party_stride``
           (484 in live RAM), up to 6 contiguous slots.
 
-Wild   → PKMN-NTR ``HandleOpponentData`` for Gen 6:
-  1. Read a ~128 KB window at ``offsets.foe_base`` (X/Y WildOffset1
-     0x08800000).
-  2. Find the 12-byte ``OpponentPattern`` — three fixed LE pointers
-     the battle struct always lays down just before the opponent.
-  3. The opponent's encrypted PK6 is exactly ``OpponentOffset`` (637)
-     bytes after each match → decrypt 232 bytes.
-
-Azahar relocates the 0x08C7xxxx pointer neighbourhood by ~-0x10, so
-the pattern is matched at delta 0 AND -0x10. Every valid PK6 in the
-window is also logged (address / species / OT) as a diagnostic so a
-single live encounter pins down exactly what's where.
+Wild   → scan a ~128 KB window at ``offsets.foe_base`` (X/Y
+  WildOffset1 0x08800000) for checksum-valid PK6 records and pick the
+  opponent by OT: a wild Pokémon has an EMPTY OT name (not owned yet),
+  while everything the player owns carries OT = the trainer name.
+  Verified live (Zigzagoon/Bunnelby = OT '' at 0x08803ecc tracked the
+  real encounters; the player's Fennekin = OT 'Roman'). PKMN-NTR's
+  pointer-anchor approach was tried first but Azahar relocates that
+  region non-uniformly (0 anchor hits across every encounter), so the
+  OT discriminator is what's used. Species/PID/IVs/shiny decode
+  exactly; level is derived from EXP (the box-format record has no
+  party level byte). Every valid PK6 is logged on change so the
+  picture stays visible.
 """
 from __future__ import annotations
 
 import logging
-import struct
 
 from ..parser import calc_checksum, decrypt_pkm, encounter_payload, parse_pkm
 
@@ -35,23 +34,14 @@ log = logging.getLogger(__name__)
 _POLL_INTERVAL_S = 0.8
 _PARTY_SLOTS = 6
 _PK6 = 260                  # bytes read/parsed per party record
-_OPP_PK6 = 232              # PKMN-NTR takes 232 (POKEBYTES) for the opponent
+_OPP_PK6 = 232              # min bytes needed to decode a record
 
-# PKMN-NTR LookupTable (X/Y). OpponentPattern is three fixed LE
-# pointers the battle struct always lays down; the opponent's ekx is
-# OpponentOffset (637) bytes past the match. The ABSOLUTE values are
-# version/relocation-dependent (Azahar shifts these regions by an
-# unknown, non-uniform delta — matching literal bytes finds nothing),
-# but the GAPS between the three pointers are invariant. So we match
-# on the structure: three consecutive heap pointers spaced exactly
-# d12 / d23 apart. Relocation-proof and ~zero false positives.
-_XY_OPP_P1 = 0x08C67560
-_XY_OPP_P2 = 0x08C7A8DC
-_XY_OPP_P3 = 0x08C7B6D0
-_XY_OPP_D12 = (_XY_OPP_P2 - _XY_OPP_P1) & 0xFFFFFFFF   # 0x1337C
-_XY_OPP_D23 = (_XY_OPP_P3 - _XY_OPP_P2) & 0xFFFFFFFF   # 0x00DF4
-_XY_OPP_OFFSET = 637
-_HEAP_LO, _HEAP_HI = 0x08000000, 0x10000000
+# NOTE: PKMN-NTR's pointer-anchor approach does NOT work on Azahar —
+# it relocates the battle pointer region non-uniformly, so the
+# OpponentPattern (literal, -0x10, or even gap-invariant) gets 0 hits
+# across every test. Instead the live data gives a reliable
+# discriminator: the wild opponent is the valid PK6 with an EMPTY OT
+# name; everything the player owns carries OT = the trainer name.
 
 
 # ---------------------------------------------------------------------------
@@ -135,29 +125,6 @@ def _read_window(ctx, base: int, length: int) -> bytes:
     return bytes(buf)
 
 
-def _find_opponent(buf: bytes, base: int):
-    """PKMN-NTR opponent locate, relocation-proof: find three
-    consecutive LE heap pointers spaced d12/d23 apart (the
-    OpponentPattern's invariant structure), opponent ekx is +637.
-    Returns list of (abs_addr, pkm, ptr_delta)."""
-    hits = []
-    n = len(buf)
-    for i in range(0, n - 12 + 1, 4):
-        p1, p2, p3 = struct.unpack_from("<III", buf, i)
-        if not (_HEAP_LO <= p1 < _HEAP_HI):
-            continue
-        if ((p2 - p1) & 0xFFFFFFFF) != _XY_OPP_D12:
-            continue
-        if ((p3 - p2) & 0xFFFFFFFF) != _XY_OPP_D23:
-            continue
-        o = i + _XY_OPP_OFFSET
-        pkm = _decode(buf[o:o + _OPP_PK6])
-        if pkm is not None:
-            hits.append((base + o, pkm,
-                         (p1 - _XY_OPP_P1) & 0xFFFFFFFF))
-    return hits
-
-
 def _all_valid(buf: bytes, base: int):
     """Every distinct (by enc_key) checksum-valid PK6 in the window —
     diagnostic so we can see what's actually there."""
@@ -191,20 +158,39 @@ def _slot_dict(pkm, slot: int) -> dict:
     }
 
 
+def _level_from_exp(exp: int) -> int:
+    """Approx level from EXP. The wild record is box-format (no party
+    level byte — reading it gave garbage Lv67/Lv28), so derive it.
+    Medium-Fast curve (exp = n³) is exact for most early-route species
+    (Zigzagoon, Bunnelby, …) and ±1 for others — fine for display /
+    filtering; species+PID+shiny (the shiny-hunt essentials) are exact
+    regardless."""
+    if exp <= 0:
+        return 1
+    n = round(exp ** (1.0 / 3.0))
+    while n > 1 and n ** 3 > exp:
+        n -= 1
+    while (n + 1) ** 3 <= exp and n < 100:
+        n += 1
+    return max(1, min(100, n))
+
+
 def _desc(pkm, addr: int) -> str:
-    lvl = pkm.party["level"] if pkm.party else "?"
     return (f"@{addr:#010x} #{pkm.species} {pkm.nickname or ''} "
-            f"Lv{lvl} {pkm.gender} {'★ ' if pkm.shiny else ''}"
-            f"PID={pkm.pid:08X} OT={pkm.ot_name!r} "
-            f"TID={pkm.ot_tid} SID={pkm.ot_sid}")
+            f"~Lv{_level_from_exp(pkm.exp)} {pkm.gender} "
+            f"{'★ ' if pkm.shiny else ''}PID={pkm.pid:08X} "
+            f"OT={pkm.ot_name!r} TID={pkm.ot_tid} SID={pkm.ot_sid}")
 
 
 def _report_encounter(ctx, pkm, addr: int, count: int, via: str) -> None:
     log.info(f"WILD ({via}) {_desc(pkm, addr)} "
-             f"PSV={pkm.psv} TSV={pkm.tsv}")
+             f"PSV={pkm.psv} TSV={pkm.tsv}"
+             f"{'  <<< SHINY >>>' if pkm.shiny else ''}")
+    payload = encounter_payload(pkm)
+    payload["level"] = _level_from_exp(pkm.exp)   # box record → from EXP
     ctx.dashboard.broadcast(
         "encounter", source="wild", address=f"{addr:#010x}",
-        count=count, **encounter_payload(pkm))
+        count=count, **payload)
     if ctx.target and ctx.target.matches(pkm):
         log.info(f"*** TARGET HIT *** {ctx.target.describe(pkm)}")
         ctx.dashboard.broadcast(
@@ -223,9 +209,11 @@ def run(ctx) -> None:
     party_stride = o.party_stride or 484
     foe_base = o.foe_base
     foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
+    player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
+        "trainer_name", "Roman")
 
-    log.info("Mode: manual control (PKMN-NTR opponent locate — bot "
-             "sends no inputs)")
+    log.info("Mode: manual control (live wild detection — bot sends "
+             f"no inputs; player OT {player_ot!r})")
     log.info(f"  party_base={party_base:#010x} stride={party_stride}  "
              f"foe window=[{foe_base:#010x},{foe_base + foe_len:#010x})")
     if not party_base and not foe_base:
@@ -260,48 +248,50 @@ def run(ctx) -> None:
             continue
 
         buf = _read_window(ctx, foe_base, foe_len)
-        opp_hits = _find_opponent(buf, foe_base)
         valids = _all_valid(buf, foe_base)
 
-        # Diagnostic dump — only when the window's contents change
-        # (new battle / new mon), so the log stays readable.
-        sig = (frozenset(p.encryption_key for _, p in valids),
-               frozenset(p.encryption_key for _, p, _ in opp_hits))
-        if sig != last_window_sig and (valids or opp_hits):
+        # The PKMN-NTR pointer anchor does not exist in Azahar (it
+        # relocates that region non-uniformly — confirmed 0 hits across
+        # many encounters). The live data instead gives a clean,
+        # session-proof discriminator: a WILD opponent has an EMPTY OT
+        # name (it isn't owned yet), while every record the player owns
+        # carries OT = player_ot ('Roman'). Verified across Zigzagoon /
+        # Bunnelby / Fennekin samples. Wild = not-in-party AND
+        # (OT == '' OR OT != player_ot); lowest address = enemy slot 1.
+        def _is_wild(p) -> bool:
+            if p.encryption_key in party_keys:
+                return False
+            ot = p.ot_name or ""
+            return ot == "" or ot != player_ot
+
+        wilds = [(a, p) for a, p in valids if _is_wild(p)]
+        wilds.sort(key=lambda ap: ap[0])
+
+        # Diagnostic dump — only when window contents change.
+        sig = frozenset(p.encryption_key for _, p in valids)
+        if sig != last_window_sig and valids:
             last_window_sig = sig
             log.info(f"  foe window: {len(valids)} valid PK6, "
-                     f"{len(opp_hits)} pattern-located "
-                     f"(anchor Δ d12={_XY_OPP_D12:#x} "
-                     f"d23={_XY_OPP_D23:#x}):")
+                     f"{len(wilds)} wild candidate(s):")
             for a, p in valids:
-                tag = ("PARTY" if p.encryption_key in party_keys
-                       else "stale/other")
+                if p.encryption_key in party_keys:
+                    tag = "PARTY"
+                elif (p.ot_name or "") == "" or p.ot_name != player_ot:
+                    tag = "WILD?"
+                else:
+                    tag = "owned/stale"
                 log.info(f"    [{tag}] {_desc(p, a)}")
-            for a, p, d in opp_hits:
-                log.info(f"    [OPPONENT ptrΔ={d:#x}] {_desc(p, a)}")
-            if not opp_hits:
-                log.info("    [no opponent anchor in window — either "
-                         "not in a wild battle right now, or the "
-                         "anchor lays out differently here; NOT "
-                         "reporting a guess]")
+            if not wilds:
+                log.info("    [no wild candidate — not in a wild "
+                         "battle right now]")
 
-        # Report ONLY the PKMN-NTR pattern-located opponent. No
-        # "first valid PK6" fallback — that grabbed stale/own mons
-        # (the wrong-Pokémon bug). If the anchor isn't found we stay
-        # silent rather than emit a guess.
-        chosen, via = None, ""
-        for a, p, d in opp_hits:
-            if p.encryption_key in party_keys:
-                continue
-            chosen, via = (a, p), f"anchor ptrΔ={d:#x}"
-            break
-
-        if chosen is not None:
-            a, p = chosen
+        # Report the wild opponent (lowest-address empty-OT mon).
+        if wilds:
+            a, p = wilds[0]
             if p.encryption_key not in seen:
                 seen.add(p.encryption_key)
                 enc_count += 1
-                _report_encounter(ctx, p, a, enc_count, via)
+                _report_encounter(ctx, p, a, enc_count, "OT-empty")
 
         if len(seen) > 256:
             seen.clear()
