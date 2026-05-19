@@ -37,23 +37,21 @@ _PARTY_SLOTS = 6
 _PK6 = 260                  # bytes read/parsed per party record
 _OPP_PK6 = 232              # PKMN-NTR takes 232 (POKEBYTES) for the opponent
 
-# PKMN-NTR LookupTable (X/Y). OpponentPattern: three fixed little-endian
-# pointers (0x08C67560, 0x08C7A8DC, 0x08C7B6D0) the battle structure
-# always writes; the opponent's ekx is OpponentOffset bytes past the
-# match. Those pointers sit in the 0x08C7xxxx region Azahar shifts by
-# -0x10, so we also try the pointers shifted by that delta.
-_XY_OPP_PATTERN = bytes.fromhex("6075c608dca8c708d0b6c708")
+# PKMN-NTR LookupTable (X/Y). OpponentPattern is three fixed LE
+# pointers the battle struct always lays down; the opponent's ekx is
+# OpponentOffset (637) bytes past the match. The ABSOLUTE values are
+# version/relocation-dependent (Azahar shifts these regions by an
+# unknown, non-uniform delta — matching literal bytes finds nothing),
+# but the GAPS between the three pointers are invariant. So we match
+# on the structure: three consecutive heap pointers spaced exactly
+# d12 / d23 apart. Relocation-proof and ~zero false positives.
+_XY_OPP_P1 = 0x08C67560
+_XY_OPP_P2 = 0x08C7A8DC
+_XY_OPP_P3 = 0x08C7B6D0
+_XY_OPP_D12 = (_XY_OPP_P2 - _XY_OPP_P1) & 0xFFFFFFFF   # 0x1337C
+_XY_OPP_D23 = (_XY_OPP_P3 - _XY_OPP_P2) & 0xFFFFFFFF   # 0x00DF4
 _XY_OPP_OFFSET = 637
-_XY_OPP_DELTAS = (0, -0x10)
-
-
-def _shift_pattern(pat: bytes, delta: int) -> bytes:
-    """Apply ``delta`` to each 4-byte LE pointer in ``pat``."""
-    out = bytearray()
-    for i in range(0, len(pat), 4):
-        v = (struct.unpack_from("<I", pat, i)[0] + delta) & 0xFFFFFFFF
-        out += struct.pack("<I", v)
-    return bytes(out)
+_HEAP_LO, _HEAP_HI = 0x08000000, 0x10000000
 
 
 # ---------------------------------------------------------------------------
@@ -138,23 +136,25 @@ def _read_window(ctx, base: int, length: int) -> bytes:
 
 
 def _find_opponent(buf: bytes, base: int):
-    """PKMN-NTR opponent locate: every OpponentPattern match (at delta
-    0 and -0x10) → ekx at match+637. Returns list of (abs_addr, pkm,
-    delta)."""
+    """PKMN-NTR opponent locate, relocation-proof: find three
+    consecutive LE heap pointers spaced d12/d23 apart (the
+    OpponentPattern's invariant structure), opponent ekx is +637.
+    Returns list of (abs_addr, pkm, ptr_delta)."""
     hits = []
-    for d in _XY_OPP_DELTAS:
-        pat = _shift_pattern(_XY_OPP_PATTERN, d)
-        start = 0
-        while True:
-            i = buf.find(pat, start)
-            if i < 0:
-                break
-            start = i + 1
-            o = i + _XY_OPP_OFFSET
-            rec = buf[o:o + _OPP_PK6]
-            pkm = _decode(rec)
-            if pkm is not None:
-                hits.append((base + o, pkm, d))
+    n = len(buf)
+    for i in range(0, n - 12 + 1, 4):
+        p1, p2, p3 = struct.unpack_from("<III", buf, i)
+        if not (_HEAP_LO <= p1 < _HEAP_HI):
+            continue
+        if ((p2 - p1) & 0xFFFFFFFF) != _XY_OPP_D12:
+            continue
+        if ((p3 - p2) & 0xFFFFFFFF) != _XY_OPP_D23:
+            continue
+        o = i + _XY_OPP_OFFSET
+        pkm = _decode(buf[o:o + _OPP_PK6])
+        if pkm is not None:
+            hits.append((base + o, pkm,
+                         (p1 - _XY_OPP_P1) & 0xFFFFFFFF))
     return hits
 
 
@@ -265,38 +265,36 @@ def run(ctx) -> None:
 
         # Diagnostic dump — only when the window's contents change
         # (new battle / new mon), so the log stays readable.
-        sig = frozenset(p.encryption_key for _, p in valids)
-        if valids and sig != last_window_sig:
+        sig = (frozenset(p.encryption_key for _, p in valids),
+               frozenset(p.encryption_key for _, p, _ in opp_hits))
+        if sig != last_window_sig and (valids or opp_hits):
             last_window_sig = sig
             log.info(f"  foe window: {len(valids)} valid PK6, "
-                     f"{len(opp_hits)} pattern-located:")
+                     f"{len(opp_hits)} pattern-located "
+                     f"(anchor Δ d12={_XY_OPP_D12:#x} "
+                     f"d23={_XY_OPP_D23:#x}):")
             for a, p in valids:
                 tag = ("PARTY" if p.encryption_key in party_keys
-                       else "opp?")
+                       else "stale/other")
                 log.info(f"    [{tag}] {_desc(p, a)}")
             for a, p, d in opp_hits:
-                log.info(f"    [PATTERN d={d:#x}] {_desc(p, a)}")
+                log.info(f"    [OPPONENT ptrΔ={d:#x}] {_desc(p, a)}")
+            if not opp_hits:
+                log.info("    [no opponent anchor in window — either "
+                         "not in a wild battle right now, or the "
+                         "anchor lays out differently here; NOT "
+                         "reporting a guess]")
 
-        # Choose the encounter to report. Prefer the PKMN-NTR
-        # pattern-located opponent; fall back to a valid PK6 that is
-        # neither a party member nor owned by the player.
+        # Report ONLY the PKMN-NTR pattern-located opponent. No
+        # "first valid PK6" fallback — that grabbed stale/own mons
+        # (the wrong-Pokémon bug). If the anchor isn't found we stay
+        # silent rather than emit a guess.
         chosen, via = None, ""
         for a, p, d in opp_hits:
-            if p.encryption_key not in party_keys:
-                chosen, via = (a, p), f"pattern d={d:#x}"
-                break
-        if chosen is None:
-            player_tid = next(
-                (p.ot_tid for p in
-                 (_read_party(ctx, party_base, party_stride)
-                  if party_base else []) if p.ot_tid), None)
-            for a, p in valids:
-                if p.encryption_key in party_keys:
-                    continue
-                if player_tid and p.ot_tid == player_tid:
-                    continue
-                chosen, via = (a, p), "valid-scan"
-                break
+            if p.encryption_key in party_keys:
+                continue
+            chosen, via = (a, p), f"anchor ptrΔ={d:#x}"
+            break
 
         if chosen is not None:
             a, p = chosen
