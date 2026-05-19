@@ -241,6 +241,35 @@ def _hidden_power(ivs: dict):
 # _RecentlySeen so animation logic lives in exactly one place.
 # ---------------------------------------------------------------------------
 
+def _prep_icon(path, max_w: int, max_h: int):
+    """Menu icons are 68x56 RGBA with the creature sitting at a
+    DIFFERENT spot in the mostly-transparent canvas per species — so
+    centring the raw canvas looks random and they're tiny. With
+    Pillow: crop to the actual art (alpha bbox), then scale UP crisply
+    (nearest-neighbour) to fill the cell. Result: every sprite is the
+    same visual size and properly centred. Returns an ImageTk image
+    or None (caller falls back to a raw tk.PhotoImage).
+    """
+    try:
+        from PIL import Image, ImageTk
+    except Exception:
+        return None
+    try:
+        im = Image.open(path).convert("RGBA")
+        box = im.getbbox()
+        if box:
+            im = im.crop(box)
+        w, h = im.size
+        if not w or not h:
+            return None
+        scale = min(max_w / w, max_h / h)
+        im = im.resize((max(1, round(w * scale)),
+                        max(1, round(h * scale))), Image.NEAREST)
+        return ImageTk.PhotoImage(im)
+    except Exception:
+        return None
+
+
 def _apply_sprite(widget: tk.Label, sprite) -> None:
     """Show a sprite on ``widget``. ``sprite`` is either a single
     PhotoImage (static PNG) or a list of PhotoImages (GIF frames). Any
@@ -324,7 +353,8 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
                     cache[key] = frames
                     _apply_sprite(widget, frames)
                 else:
-                    img = tk.PhotoImage(file=str(path))
+                    img = (_prep_icon(path, 58, 44)
+                           or tk.PhotoImage(file=str(path)))
                     cache[key] = img
                     _apply_sprite(widget, img)
             except Exception:
