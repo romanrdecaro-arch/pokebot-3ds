@@ -1,23 +1,27 @@
 """
 Random-encounter shiny hunt.
 
-Walks back-and-forth in tall grass with SHORT alternating Left/Right
-steps. Detection is battle-presence gated: a wild is "an empty-OT,
-non-party, checksum-valid PK6 in the foe window" (shared with manual
-mode via ``observe.find_wild``). While any wild is present we are IN
-a battle and send ONLY flee inputs — never walk inputs (sending D-pad
-in the battle menu was what got the old loop stuck).
+Key fact learned live: the foe slot KEEPS the last wild even in the
+overworld (it isn't cleared on battle end / bot start). So "a wild is
+present" does NOT mean "in a battle" — the previous design saw the
+stale pre-bot wild, thought it was forever in battle, and flee-spun
+without ever walking.
 
-  - new wild (unique enc key): report it.
-      shiny / target match → STOP + loud alert (battle left on screen).
-      otherwise             → flee, then keep retrying flee until the
-                              foe slot clears (battle over) → walk.
-  - no wild: overworld → one short walk step, poll again.
+Correct model — detect by ENCRYPTION-KEY CHANGE:
 
-X/Y has no clean D-pad battle-menu grid, so fleeing TOUCHES the RUN
-button (Azahar bottom screen) at config ``random_encounters.run_touch``
-fractions — tune those live if the flee misses. Text is cleared with
-B taps before/after so the command menu is actually up when we touch.
+  * At start, whatever wild is already in the slot is recorded as the
+    baseline (added to ``handled``) so it is never reported and never
+    mistaken for an active battle.
+  * Walk short alternating Left/Right steps continuously.
+  * A NEW encounter = the foe slot shows a wild whose encryption key
+    we haven't handled yet (every generated Pokémon has a unique key).
+    On a new one: report it; shiny/target → STOP + alert; otherwise
+    settle, then flee (touch RUN — X/Y has no clean D-pad menu), and
+    resume walking. The fled mon's key is now ``handled`` so the
+    lingering stale record is ignored and we keep roaming.
+
+Detection (``observe.find_wild``) is shared with manual mode. Tune
+``random_encounters.run_touch`` / ``walk_hold`` in config live.
 """
 from __future__ import annotations
 
@@ -113,8 +117,20 @@ def run(ctx) -> None:
         if party_base else set()
 
     handled: set[int] = set()
+
+    # Baseline: a wild left in the slot from before the bot started is
+    # NOT a new encounter and must not trigger a flee. Record it.
+    base = find_wild(ctx, foe_base, foe_len, party_keys, player_ot)
+    if base is not None:
+        handled.add(base[1].encryption_key)
+        log.info(f"  baseline: stale wild #{base[1].species} "
+                 f"key={base[1].encryption_key:#010x} ignored "
+                 f"(pre-bot). Walking…")
+    else:
+        log.info("  baseline: no wild in slot. Walking…")
+
     a, b = _BTN[movement]
-    step_left = True
+    step = 0
     encounters = 0
     last_party = time.monotonic()
 
@@ -125,21 +141,10 @@ def run(ctx) -> None:
             last_party = time.monotonic()
 
         wild = find_wild(ctx, foe_base, foe_len, party_keys, player_ot)
+        is_new = wild is not None and wild[1].encryption_key not in handled
 
-        # -- Overworld: no wild present → take ONE short walk step. ----
-        if wild is None:
-            if dry:
-                ctx._stop_evt.wait(0.4)
-            else:
-                ctx.input.tap(a if step_left else b, hold_s=walk_hold)
-                step_left = not step_left
-                ctx._stop_evt.wait(0.12)
-            continue
-
-        addr, pkm = wild
-
-        # -- In battle. Never walk here. -----------------------------
-        if pkm.encryption_key not in handled:
+        if is_new:
+            addr, pkm = wild
             handled.add(pkm.encryption_key)
             if len(handled) > 256:
                 handled = {pkm.encryption_key}
@@ -149,17 +154,17 @@ def run(ctx) -> None:
                 _alert(ctx, pkm, addr, encounters)
                 ctx.request_stop("shiny / target found")
                 return
-            if dry:
-                ctx._stop_evt.wait(0.4)
-                continue
-            ctx._stop_evt.wait(1.8)        # let the battle UI render
-            _flee(ctx, run_xy)
-        else:
-            # Already evaluated this battle — flee didn't take yet.
-            # Retry the flee; do NOT send walk inputs.
-            if dry:
-                ctx._stop_evt.wait(0.4)
-            else:
+            if not dry:
+                ctx._stop_evt.wait(1.6)       # let the battle UI render
                 _flee(ctx, run_xy)
+            continue                          # do NOT walk this iter
+
+        # Overworld, or the lingering stale/just-fled record → roam.
+        if dry:
+            ctx._stop_evt.wait(0.4)
+            continue
+        ctx.input.tap(a if step % 2 == 0 else b, hold_s=walk_hold)
+        step += 1
+        ctx._stop_evt.wait(0.12)
 
     log.info(f"Shiny hunt stopped after {encounters} encounter(s).")
