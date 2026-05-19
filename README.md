@@ -29,16 +29,11 @@ but adapted to Azahar's UDP RPC instead of an in-emulator Lua console.
 - **Target system** — filter by shininess, IVs, nature, gender, species, or ability; combine rules with AND/OR
 - **GUI launcher** ([launcher.py](launcher.py)) — auto-installs deps, **live-detects Azahar and your loaded game**, picks game/mode/starter
 - **Terminal output** — each encounter is printed as a readable line in the launcher's log tab (and stdout when running the bot directly)
-- **Offset finder** — scans FCRAM for valid PK7 records and reports party + foe addresses
+- **No offset hunting (X/Y)** — addresses ship in `config.yaml`; detection scans the live opponent/party region automatically (PKMN-NTR map)
 - **PK6/PK7 parser** — full block decryption + shuffle, checksum verification
 
 > **Step-by-step walkthrough:** see [docs/TUTORIAL.md](docs/TUTORIAL.md)
 > for a full first-time setup + soft-reset starter hunt.
->
-> **Trouble finding party_base?** See
-> [docs/LIVEHEX_SETUP.md](docs/LIVEHEX_SETUP.md) for the most
-> reliable workflow — install PKHeX-Plugins LiveHeX, connect to
-> Azahar, copy the address it uses into the bot's config.
 
 ## Status — what works
 
@@ -110,12 +105,12 @@ git clone https://github.com/romanrdecaro-arch/pokebot-3ds.git
    (Python 3.10+ recommended. The launcher auto-installs `PyYAML` and
    `pynput` if missing.)
 
-3. **Find your offsets** — with the game running and party loaded,
-   click *Find Offsets* in the launcher. Paste the reported addresses
-   into [config.yaml](config.yaml) under the `offsets:` section.
-
-4. **Pick a mode**, click *Start Bot*, watch the Recently Seen tab
-   fill up as the bot encounters wild Pokémon.
+3. **Pick a mode and start.** For **Pokémon X/Y** the offsets ship in
+   [config.yaml](config.yaml) — nothing to find. Pick *Random
+   encounters* (or *Manual control*), click *Start Bot*, and watch
+   the Recently Seen tab fill as the bot detects wild Pokémon. (Other
+   Gen 6/7 titles use the same wired offsets — see
+   [Status](#status--what-works).)
 
 ## Manual / CLI usage
 
@@ -123,37 +118,35 @@ If you'd rather skip the GUI:
 
 ```
 pip install -r requirements.txt
-python -m pokebot.find_offsets         # one-time per game
-# edit config.yaml: paste offsets, set mode + target
+# config.yaml ships X/Y offsets; just set mode + target
 python run.py
 # encounters print to stdout as they happen
 ```
 
 ## Architecture
 
-```
-                     ┌────────────────┐
-                     │   Azahar       │
-                     │  (3DS game)    │
-                     └────┬───────────┘
-                          │ UDP :45987 (read/write memory)
-                          ▼
-┌──────────────────────────────────────────┐
-│              pokebot.bot                 │
-│  ┌─────────┐  ┌──────────┐  ┌─────────┐  │
-│  │ citra_  │  │ parser   │  │ modes/  │  │
-│  │ rpc     │─▶│ (PK6/7)  │─▶│ observe │  │
-│  └─────────┘  └──────────┘  │ encntr  │  │
-│       ▲                     │ s_reset │  │
-│       │ keystrokes          └────┬────┘  │
-│  ┌────┴────┐                     │       │
-│  │ input_  │◀────────────────────┘       │
-│  │ driver  │                             │
-│  └─────────┘   ┌──────────────────────┐  │
-│                │  dashboard_server    │──┼──▶ stdout (terminal +
-│                │  (terminal sink)     │  │     launcher Recently Seen)
-│                └──────────────────────┘  │
-└──────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    AZ["🎮 Azahar<br/>(3DS game in RAM)"]
+
+    subgraph BOT["pokebot.bot"]
+        RPC["citra_rpc<br/>UDP :45987"]
+        PAR["parser<br/>PK6/PK7 decrypt + shiny"]
+        MOD["modes/<br/>observe · encounter · soft_reset"]
+        INP["input_driver<br/>keystrokes + touch"]
+        DASH["dashboard_server<br/>terminal event sink"]
+    end
+
+    LAUNCH["launcher.py<br/>Recently Seen · Party · stats"]
+
+    AZ -- "read memory" --> RPC
+    RPC --> PAR
+    PAR --> MOD
+    MOD -- "find wild / party<br/>(scan WildOffset1)" --> RPC
+    MOD -- "walk / flee" --> INP
+    INP -- "PostMessage / touch" --> AZ
+    MOD --> DASH
+    DASH -- "EVENT JSON + log lines" --> LAUNCH
 ```
 
 ## Modes
@@ -180,41 +173,13 @@ Build a target from any combination of these rules in `config.yaml`:
 
 Combine with `mode: all` (AND) or `mode: any` (OR).
 
-## Filling in offsets
+## Offsets
 
-The hardest part of any cross-game memory-reading bot is that
-addresses change between games, regions, and patches.
-
-### Easy way: the offset finder
-
-```
-python -m pokebot.find_offsets
-```
-
-(Or click *Find Offsets* in the launcher.) This scans the heap and
-reports every region that decrypts to a valid PK7 record. Six
-consecutive valid records spaced by ~484 bytes is your party. A
-standalone hit during a battle is the foe.
-
-Paste the reported addresses into `config.yaml`:
-
-```yaml
-offsets:
-  party_base:     0x330D8B58
-  foe_base:       0x330D93D8
-  in_battle_flag: 0x330D9438
-```
-
-### Manual way
-
-Azahar's *Tools → Memory Viewer* and the
-[PKHeX-Plugins LiveHeX](https://github.com/architdate/PKHeX-Plugins)
-project both expose the same address space; LiveHeX offset tables work
-directly.
-
-For `in_battle_flag`: once `foe_base` is known, watch the bytes around
-it during a battle transition; the byte that flips 0→1 entering and
-1→0 exiting is your flag.
+For **Pokémon X/Y the offsets ship in `config.yaml`** already — no
+setup needed. Detection scans the `WildOffset1` region for the live
+opponent and reads the party at `PartyOffset` (the PKMN-NTR address
+map), so you don't hand-find anything. The other Gen 6/7 titles have
+their offsets wired from the same map (see [Status](#status--what-works)).
 
 ## Shiny-locked Pokémon
 
