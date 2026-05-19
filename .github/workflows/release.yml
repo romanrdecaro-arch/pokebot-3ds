@@ -55,10 +55,31 @@ jobs:
                "dist/*"
           ls -la dist/
 
+      # Reusing one rolling release keeps GitHub's original publish
+      # date, so the Releases page shows "released N weeks ago" even
+      # though the asset is current. Delete the old release AND its
+      # tag first so the next step recreates both fresh at THIS
+      # commit with today's date. Errors ignored (first run / none).
+      - name: Refresh the rolling release (so the date isn't stale)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="${{ github.repository }}"
+          rid=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$repo/releases/tags/latest" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+          if [ -n "$rid" ]; then
+            curl -s -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$repo/releases/$rid" || true
+          fi
+          curl -s -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$repo/git/refs/tags/latest" || true
+
       - name: Update rolling "latest" release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
+          target_commitish: ${{ github.sha }}
           name: Latest build (${{ steps.meta.outputs.sha }})
           body: |
             Auto-built from `main` on ${{ steps.meta.outputs.date }}.
