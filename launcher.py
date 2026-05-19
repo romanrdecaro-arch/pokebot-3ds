@@ -284,12 +284,23 @@ def _prep_icon(path, max_w: int, max_h: int):
         return None
 
 
-def _prep_gif(path, max_w: int, max_h: int):
-    """Load an animated GIF and return a list of ImageTk frames all
-    scaled to fit ``max_w``×``max_h`` (so it can't overflow the fixed
-    cell). A single UNION bounding box is used for every frame so the
-    sprite doesn't bob around as it animates. None on any failure
-    (caller falls back to raw Tk gif-index frames).
+def _hex_to_rgb(c: str):
+    c = (c or "#1c1c1e").lstrip("#")
+    if len(c) != 6:
+        return (28, 28, 30)
+    return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _prep_gif(path, max_w: int, max_h: int, bg: str = "#1c1c1e"):
+    """Animated GIF → list of ImageTk frames, scaled to fit and made
+    FULLY OPAQUE on ``bg``.
+
+    The flicker was transparency: Tk clears the label and the cell
+    background flashes between frames. We rebuild the GIF properly —
+    composite each frame cumulatively onto a running canvas (handles
+    GIF disposal/partial frames), crop every frame to ONE union bbox
+    (no bobbing), then flatten onto a solid ``bg`` so every frame is
+    identical-size and opaque → smooth playback. None on failure.
     """
     try:
         from PIL import Image, ImageSequence, ImageTk
@@ -297,12 +308,19 @@ def _prep_gif(path, max_w: int, max_h: int):
         return None
     try:
         im = Image.open(path)
-        raw = [f.convert("RGBA")
-               for f in ImageSequence.Iterator(im)]
-        if not raw:
+        base = None          # cumulative RGBA canvas (disposal-safe)
+        comp = []
+        for fr in ImageSequence.Iterator(im):
+            f = fr.convert("RGBA")
+            if base is None or base.size != f.size:
+                base = Image.new("RGBA", f.size, (0, 0, 0, 0))
+            base = base.copy()
+            base.alpha_composite(f)
+            comp.append(base.copy())
+        if not comp:
             return None
         union = None
-        for f in raw:
+        for f in comp:
             bb = f.getbbox()
             if bb is None:
                 continue
@@ -310,14 +328,20 @@ def _prep_gif(path, max_w: int, max_h: int):
                 min(union[0], bb[0]), min(union[1], bb[1]),
                 max(union[2], bb[2]), max(union[3], bb[3]))
         if union:
-            raw = [f.crop(union) for f in raw]
-        w, h = raw[0].size
+            comp = [f.crop(union) for f in comp]
+        w, h = comp[0].size
         if not w or not h:
             return None
         scale = min(max_w / w, max_h / h)
         size = (max(1, round(w * scale)), max(1, round(h * scale)))
-        return [ImageTk.PhotoImage(f.resize(size, Image.NEAREST))
-                for f in raw]
+        rgb = _hex_to_rgb(bg)
+        out = []
+        for f in comp:
+            f = f.resize(size, Image.NEAREST)
+            flat = Image.new("RGB", size, rgb)
+            flat.paste(f, (0, 0), f)          # opaque, on cell bg
+            out.append(ImageTk.PhotoImage(flat))
+        return out
     except Exception:
         return None
 
@@ -395,7 +419,11 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
                 if is_gif:
                     # Scale every frame to fit the cell (Pillow);
                     # fall back to raw Tk gif-index frames if needed.
-                    frames = _prep_gif(path, 68, 54)
+                    try:
+                        _bg = widget.cget("bg")
+                    except Exception:
+                        _bg = "#1c1c1e"
+                    frames = _prep_gif(path, 68, 54, _bg)
                     if not frames:
                         frames = []
                         i = 0
@@ -557,10 +585,22 @@ class _RecentlySeen(tk.Frame):
         ("Hidden Power", 96, "center"),
     )
 
+    # Data columns live at grid index 1..N. Columns 0 and N+1 are
+    # flexible spacers (weight 1) so the fixed block is CENTRED in
+    # the panel instead of jammed left with dead space on the right.
     @classmethod
     def _config_cols(cls, frame) -> None:
+        n = len(cls._HEADERS)
+        frame.grid_columnconfigure(0, weight=1, minsize=0)
         for i, (_, w, _) in enumerate(cls._HEADERS):
-            frame.grid_columnconfigure(i, minsize=w, weight=0)
+            frame.grid_columnconfigure(i + 1, minsize=w, weight=0)
+        frame.grid_columnconfigure(n + 1, weight=1, minsize=0)
+
+    @staticmethod
+    def _col(i: int) -> int:
+        """Grid column for data column ``i`` (0-based) — offset by the
+        left spacer."""
+        return i + 1
 
     def __init__(self, parent):
         super().__init__(parent, bg=_PANEL)
@@ -587,7 +627,7 @@ class _RecentlySeen(tk.Frame):
         for i, (text, _, anchor) in enumerate(self._HEADERS):
             tk.Label(header, text=text, bg=_PANEL, fg=_MUTED,
                      font=("Segoe UI", 9, "bold"),
-                     anchor=anchor).grid(row=0, column=i,
+                     anchor=anchor).grid(row=0, column=self._col(i),
                                          pady=(0, 6), sticky="nsew")
         tk.Frame(self, bg=_BORDER, height=1).pack(fill="x", padx=8)
 
@@ -726,7 +766,7 @@ class _RecentlySeen(tk.Frame):
         # alignment; the icon is centred inside the box.
         sp_w = self._HEADERS[0][1]
         sp_box = tk.Frame(row, bg=bg, width=sp_w, height=58)
-        sp_box.grid(row=0, column=0, sticky="nsew")
+        sp_box.grid(row=0, column=self._col(0), sticky="nsew")
         sp_box.grid_propagate(False)
         sp_box.pack_propagate(False)
         sprite_lbl = tk.Label(sp_box, bg=bg)
@@ -738,18 +778,18 @@ class _RecentlySeen(tk.Frame):
         sex_glyph = {"M": "♂", "F": "♀", "G": "—"}.get(gender, "—")
         tk.Label(row, text=sex_glyph, bg=bg, fg=sex_color,
                  font=("Segoe UI", 12, "bold")).grid(
-                     row=0, column=1, sticky="nsew")
+                     row=0, column=self._col(1), sticky="nsew")
 
         # Level
         lvl = f"Lv {level}" if level is not None else "Lv ?"
         tk.Label(row, text=lvl, bg=bg, fg=_TEXT,
                  font=("Segoe UI", 10, "bold")).grid(
-                     row=0, column=2, sticky="nsew")
+                     row=0, column=self._col(2), sticky="nsew")
 
         # PID
         tk.Label(row, text=f"{pid:08X}", bg=bg, fg=_TEXT,
                  font=("Consolas", 10)).grid(
-                     row=0, column=3, sticky="nsew")
+                     row=0, column=self._col(3), sticky="nsew")
 
         # Shiny Value (PSV) — gold if shiny, muted otherwise
         psv_text = f"{int(psv):05d}" if psv is not None else "—"
@@ -759,13 +799,13 @@ class _RecentlySeen(tk.Frame):
         else:
             sv_lbl = tk.Label(row, text=f"— {psv_text}", bg=bg,
                               fg=_MUTED, font=("Consolas", 10))
-        sv_lbl.grid(row=0, column=4, sticky="nsew")
+        sv_lbl.grid(row=0, column=self._col(4), sticky="nsew")
 
         # Ability
         ab_text = self._ability_text(ability_id, ability_num)
         tk.Label(row, text=ab_text, bg=bg, fg=_TEXT,
                  font=("Segoe UI", 10)).grid(
-                     row=0, column=5, sticky="nsew")
+                     row=0, column=self._col(5), sticky="nsew")
 
         # Nature
         nat_text = nature if isinstance(nature, str) and nature else \
@@ -773,12 +813,12 @@ class _RecentlySeen(tk.Frame):
              and 0 <= int(nature) < 25 else "?")
         tk.Label(row, text=nat_text, bg=bg, fg=_TEXT,
                  font=("Segoe UI", 10)).grid(
-                     row=0, column=6, sticky="nsew")
+                     row=0, column=self._col(6), sticky="nsew")
 
         # IVs — per-stat coloured (red=31, blue=0, white otherwise),
         # centred in the column.
         iv_outer = tk.Frame(row, bg=bg)
-        iv_outer.grid(row=0, column=7, sticky="nsew")
+        iv_outer.grid(row=0, column=self._col(7), sticky="nsew")
         iv_frame = tk.Frame(iv_outer, bg=bg)
         iv_frame.place(relx=0.5, rely=0.5, anchor="center")
         order = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
@@ -795,7 +835,7 @@ class _RecentlySeen(tk.Frame):
 
         # Hidden Power (type pill + power), centred in the column
         hp_outer = tk.Frame(row, bg=bg)
-        hp_outer.grid(row=0, column=8, sticky="nsew")
+        hp_outer.grid(row=0, column=self._col(8), sticky="nsew")
         hp_frame = tk.Frame(hp_outer, bg=bg)
         hp_frame.place(relx=0.5, rely=0.5, anchor="center")
         hp_color = _TYPE_COLORS.get(hp_type, "#888")
