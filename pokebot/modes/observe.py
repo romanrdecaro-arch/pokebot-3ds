@@ -117,6 +117,73 @@ def _read_party(ctx, base: int, stride: int) -> list:
     return out
 
 
+def _party_slots(party):
+    """Launcher 'party' slot dicts. Level from party stats if the
+    record has them, else derived from EXP (box-format copies)."""
+    out = []
+    for i, p in enumerate(party):
+        lvl = (p.party["level"] if p.party
+               else _level_from_exp(p.exp))
+        out.append({
+            "slot": i, "species": p.species, "form": p.form,
+            "nickname": p.nickname, "level": lvl, "shiny": p.shiny,
+            "nature": p.nature, "gender": p.gender,
+            "ivs": p.ivs, "pid": p.pid,
+        })
+    return out
+
+
+# Azahar relocates the fixed PartyOffset (like every other address),
+# so reading it literally returns nothing. Locate the live party by
+# content instead: the player's team are checksum-valid PK6 whose OT
+# is the trainer (boxes are empty early game). Scan the PartyOffset
+# neighbourhood first, then wider; cache the base on ctx.
+_PARTY_SCAN_RANGES = [(0x08C00000, 0x08F00000),
+                      (0x08000000, 0x08C00000)]
+
+
+def _scan_owned(ctx, lo, hi, player_ot):
+    """All checksum-valid PK6 in [lo,hi) whose OT == player_ot,
+    deduped by key, lowest address first."""
+    CH = 0x20000
+    seen, out = set(), []
+    cur = lo
+    while cur < hi and not ctx.should_stop():
+        buf = _read_window(ctx, cur, min(CH, hi - cur))
+        if not buf:
+            cur += CH
+            continue
+        for a, p in _all_valid(buf, cur):
+            if ((p.ot_name or "") == player_ot
+                    and p.encryption_key not in seen):
+                seen.add(p.encryption_key)
+                out.append((a, p))
+        cur += CH - _OPP_PK6                  # overlap so none is split
+    out.sort(key=lambda ap: ap[0])
+    return out
+
+
+def get_party(ctx, party_base_cfg, party_stride, player_ot):
+    """The live party as a list of ParsedPokemon. Tries a cached /
+    configured base (fast stride read) first; otherwise scans for the
+    player-owned cluster and caches its base on ctx for next time."""
+    stride = party_stride or 484
+    for base in (getattr(ctx, "_party_base", 0), party_base_cfg):
+        if base:
+            p = _read_party(ctx, base, stride)
+            if p:
+                ctx._party_base = base
+                return p
+    for lo, hi in _PARTY_SCAN_RANGES:
+        owned = _scan_owned(ctx, lo, hi, player_ot)
+        if owned:
+            ctx._party_base = owned[0][0]
+            log.info(f"  party located @ {owned[0][0]:#010x} "
+                     f"({len(owned)} owned PK6, OT {player_ot!r})")
+            return [p for _, p in owned[:_PARTY_SLOTS]]
+    return []
+
+
 def _read_window(ctx, base: int, length: int) -> bytes:
     buf = bytearray()
     CHUNK = 0x10000
@@ -265,10 +332,11 @@ def run(ctx) -> None:
                   "0x08CE1CF8, foe_base 0x08800000).")
         return
 
-    party_keys: set[int] = set()
-    if party_base:
-        party_keys = {p.encryption_key for p in
-                      _read_party(ctx, party_base, party_stride)}
+    party = get_party(ctx, party_base, party_stride, player_ot)
+    party_keys: set[int] = {p.encryption_key for p in party}
+    if party:
+        ctx.dashboard.broadcast(
+            "party", slots=_party_slots(party))
 
     # Baseline: ignore every non-party PK6 already in the foe window
     # (a wild left over from before the bot started + the player's
@@ -288,18 +356,14 @@ def run(ctx) -> None:
     while not ctx.should_stop():
         loop_n += 1
 
-        if party_base:
-            party = _read_party(ctx, party_base, party_stride)
-            party_keys = {p.encryption_key for p in party}
+        # Refresh + rebroadcast the party every ~15 polls (cheap once
+        # the base is cached; locates by content on the first miss).
+        if loop_n % 15 == 0:
+            party = get_party(ctx, party_base, party_stride, player_ot)
             if party:
+                party_keys = {p.encryption_key for p in party}
                 ctx.dashboard.broadcast(
-                    "party",
-                    slots=[_slot_dict(p, i) for i, p in enumerate(party)])
-                if loop_n == 1 or loop_n % 15 == 0:
-                    log.info("  party: " + ", ".join(
-                        f"#{p.species}{'★' if p.shiny else ''}"
-                        f"Lv{p.party['level'] if p.party else '?'}"
-                        for p in party))
+                    "party", slots=_party_slots(party))
 
         if not foe_base:
             ctx._stop_evt.wait(_POLL_INTERVAL_S)

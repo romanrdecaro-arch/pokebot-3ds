@@ -27,8 +27,8 @@ from __future__ import annotations
 import logging
 import time
 
-from .observe import (scan_nonparty, pick_opponent, _read_party,
-                       _report_encounter, _level_from_exp, _slot_dict)
+from .observe import (scan_nonparty, pick_opponent, get_party,
+                       _party_slots, _report_encounter, _level_from_exp)
 
 log = logging.getLogger(__name__)
 
@@ -60,18 +60,14 @@ def _is_target(ctx, pkm) -> bool:
     return bool(pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
 
 
-def _refresh_party(ctx, party_base, party_stride):
+def _refresh_party(ctx, party_base, party_stride, player_ot):
     """Read the live party, push it to the launcher's (always-visible)
     party strip, and return the set of party encryption keys (used to
     exclude the player's own mons from wild detection). Returns an
     empty set when party_base isn't configured."""
-    if not party_base:
-        return set()
-    party = _read_party(ctx, party_base, party_stride)
+    party = get_party(ctx, party_base, party_stride, player_ot)
     if party:
-        ctx.dashboard.broadcast(
-            "party",
-            slots=[_slot_dict(p, i) for i, p in enumerate(party)])
+        ctx.dashboard.broadcast("party", slots=_party_slots(party))
     return {p.encryption_key for p in party}
 
 
@@ -123,6 +119,8 @@ def run(ctx) -> None:
     movement = str(rcfg.get("movement", "horizontal")).lower()
     if movement not in _BTN:
         movement = "horizontal"
+    player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
+        "trainer_name", "Roman")
     walk_hold = float(rcfg.get("walk_hold", 0.35))
     flee_delay = float(rcfg.get("flee_delay", 5.0))
     run_settle = float(rcfg.get("run_settle", 1.5))
@@ -157,7 +155,7 @@ def run(ctx) -> None:
 
     # Read + show the party up front so the strip is populated the
     # moment the hunt starts.
-    party_keys = _refresh_party(ctx, party_base, party_stride)
+    party_keys = _refresh_party(ctx, party_base, party_stride, player_ot)
 
     # Baseline: pre-existing non-party PK6 (stale pre-bot wild +
     # player's battle copy) are NOT new encounters.
@@ -172,8 +170,9 @@ def run(ctx) -> None:
     last_party = time.monotonic()
 
     while not ctx.should_stop():
-        if party_base and time.monotonic() - last_party > 15:
-            party_keys = _refresh_party(ctx, party_base, party_stride)
+        if time.monotonic() - last_party > 15:
+            party_keys = _refresh_party(ctx, party_base, party_stride,
+                                        player_ot)
             last_party = time.monotonic()
 
         cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
