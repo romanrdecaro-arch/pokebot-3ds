@@ -94,17 +94,21 @@ offsets:
   # region for a checksum-valid encrypted PK6 (PKMN-NTR ReadOpponent).
   foe_base: 0x08800000
   foe_stride: 484
-  # Live-verified: the wild sits ~0x3ecc into the window and the
-  # player's battle copies ~0x4a70/0x4e38, so 0x8000 (32 KB) covers
-  # everything and scans ~4x faster than 0x20000 → tighter poll loop,
-  # no missed encounters.
-  foe_scan_len: 0x8000
+  # Scan the WHOLE WildOffset1 region. Azahar relocates the wild slot
+  # per session (one run it was ~0x3ecc in, another it's elsewhere),
+  # so a small window misses it entirely. 0x20000 = PKMN-NTR's
+  # ReadOpponent size; the cheap Sanity pre-filter keeps it fast.
+  foe_scan_len: 0x20000
   in_battle_flag: 0x0        # TODO: not yet located (battle-state u8)
 
 # Random-encounter shiny hunt tuning.
 random_encounters:
   movement: horizontal       # horizontal (Left/Right) | vertical (Up/Down)
   walk_hold: 0.35            # seconds per step; short = tighter detection
+  # Seconds to wait AFTER detecting a wild before fleeing — lets the
+  # battle intro/animation finish so the RUN button is actually
+  # touchable. Raise if the flee fires before the menu appears.
+  flee_delay: 5.0
   # RUN button touch position as window fractions (X/Y wild battle,
   # Azahar default vertical layout). Bottom screen ≈ lower window;
   # nudge these if the flee misses the RUN button.

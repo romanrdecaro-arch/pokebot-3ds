@@ -1,35 +1,34 @@
 """
 Random-encounter shiny hunt.
 
-Key fact learned live: the foe slot KEEPS the last wild even in the
-overworld (it isn't cleared on battle end / bot start). So "a wild is
-present" does NOT mean "in a battle" — the previous design saw the
-stale pre-bot wild, thought it was forever in battle, and flee-spun
-without ever walking.
+Detection model (shared with manual mode, see observe.scan_nonparty):
+the foe slot keeps the last wild even in the overworld, and a stale
+wild can linger at a low address masking the new one — so we DON'T
+key off address/OT. Every generated Pokémon has a unique encryption
+key; the player's battle copy keeps its fixed key, a fresh wild
+ALWAYS brings a brand-new key. So:
 
-Correct model — detect by ENCRYPTION-KEY CHANGE:
-
-  * At start, whatever wild is already in the slot is recorded as the
-    baseline (added to ``handled``) so it is never reported and never
-    mistaken for an active battle.
+  * Baseline at start: every non-party PK6 already in the window is
+    recorded → never reported, never mistaken for a battle (kills the
+    "detects whatever was encountered before the bot started" and the
+    flee-spin-at-launch bugs).
   * Walk short alternating Left/Right steps continuously.
-  * A NEW encounter = the foe slot shows a wild whose encryption key
-    we haven't handled yet (every generated Pokémon has a unique key).
-    On a new one: report it; shiny/target → STOP + alert; otherwise
-    settle, then flee (touch RUN — X/Y has no clean D-pad menu), and
-    resume walking. The fled mon's key is now ``handled`` so the
-    lingering stale record is ignored and we keep roaming.
+  * NEW encounter = a non-party key not seen before appears anywhere
+    in the window (robust no matter which slot the engine used).
+    Report it; shiny/target → STOP + alert; otherwise wait
+    ``flee_delay`` s for the battle intro to finish, then flee
+    (touch RUN — X/Y has no clean D-pad menu), and resume walking.
 
-Detection (``observe.find_wild``) is shared with manual mode. Tune
-``random_encounters.run_touch`` / ``walk_hold`` in config live.
+Tune ``random_encounters`` in config live: movement, walk_hold,
+flee_delay, run_touch.
 """
 from __future__ import annotations
 
 import logging
 import time
 
-from .observe import (find_wild, _read_party, _report_encounter,
-                       _level_from_exp)
+from .observe import (scan_nonparty, pick_opponent, _read_party,
+                       _report_encounter, _level_from_exp)
 
 log = logging.getLogger(__name__)
 
@@ -62,16 +61,16 @@ def _is_target(ctx, pkm) -> bool:
 
 
 def _flee(ctx, run_xy) -> None:
-    """One flee attempt: clear the appearance text so the command
-    menu is up, touch RUN, then clear the got-away text."""
-    for _ in range(5):                       # "Wild X appeared!" / send-out
+    """Clear the appearance text so the command menu is up, touch
+    RUN, then clear the got-away text."""
+    for _ in range(4):
         ctx.input.tap("B", hold_s=0.05)
         ctx._stop_evt.wait(0.35)
     ok = ctx.input.tap_touch(run_xy[0], run_xy[1], hold_s=0.08)
     log.info(f"  flee: touch RUN @ ({run_xy[0]:.2f},{run_xy[1]:.2f}) "
-             f"-> {'sent' if ok else 'FAILED (touch path unavailable)'}")
+             f"-> {'sent' if ok else 'FAILED (touch unavailable)'}")
     ctx._stop_evt.wait(0.6)
-    for _ in range(5):                       # "Got away safely!" etc.
+    for _ in range(5):
         ctx.input.tap("B", hold_s=0.05)
         ctx._stop_evt.wait(0.3)
 
@@ -79,22 +78,21 @@ def _flee(ctx, run_xy) -> None:
 def run(ctx) -> None:
     o = ctx.game.offsets
     foe_base = o.foe_base
-    foe_len = getattr(o, "foe_scan_len", 0) or 0x8000
+    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
     party_base = o.party_base
     party_stride = o.party_stride or 484
     rcfg = ctx.config.get("random_encounters") or {}
-    player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
-        "trainer_name", "Roman")
     movement = str(rcfg.get("movement", "horizontal")).lower()
     if movement not in _BTN:
         movement = "horizontal"
     walk_hold = float(rcfg.get("walk_hold", 0.35))
+    flee_delay = float(rcfg.get("flee_delay", 5.0))
     run_xy = rcfg.get("run_touch") or [0.5, 0.92]
 
     log.info(f"Mode: shiny hunt — random encounters ({movement}, "
-             f"{walk_hold:.2f}s steps)")
+             f"{walk_hold:.2f}s steps, flee_delay {flee_delay:.1f}s)")
     log.info(f"  foe window=[{foe_base:#010x},"
-             f"{foe_base + foe_len:#010x})  player OT {player_ot!r}  "
+             f"{foe_base + foe_len:#010x})  "
              f"RUN touch ({run_xy[0]:.2f},{run_xy[1]:.2f})")
     if not foe_base:
         log.error("foe_base not configured (X/Y: 0x08800000).")
@@ -116,18 +114,12 @@ def run(ctx) -> None:
                   for p in _read_party(ctx, party_base, party_stride)} \
         if party_base else set()
 
-    handled: set[int] = set()
-
-    # Baseline: a wild left in the slot from before the bot started is
-    # NOT a new encounter and must not trigger a flee. Record it.
-    base = find_wild(ctx, foe_base, foe_len, party_keys, player_ot)
-    if base is not None:
-        handled.add(base[1].encryption_key)
-        log.info(f"  baseline: stale wild #{base[1].species} "
-                 f"key={base[1].encryption_key:#010x} ignored "
-                 f"(pre-bot). Walking…")
-    else:
-        log.info("  baseline: no wild in slot. Walking…")
+    # Baseline: pre-existing non-party PK6 (stale pre-bot wild +
+    # player's battle copy) are NOT new encounters.
+    seen: set[int] = {p.encryption_key for _, p in
+                      scan_nonparty(ctx, foe_base, foe_len, party_keys)}
+    log.info(f"  baseline: {len(seen)} pre-existing non-party PK6 "
+             f"ignored. Walking…")
 
     a, b = _BTN[movement]
     step = 0
@@ -140,26 +132,30 @@ def run(ctx) -> None:
                           _read_party(ctx, party_base, party_stride)}
             last_party = time.monotonic()
 
-        wild = find_wild(ctx, foe_base, foe_len, party_keys, player_ot)
-        is_new = wild is not None and wild[1].encryption_key not in handled
+        cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
+        new = [(addr, p) for addr, p in cands
+               if p.encryption_key not in seen]
 
-        if is_new:
-            addr, pkm = wild
-            handled.add(pkm.encryption_key)
-            if len(handled) > 256:
-                handled = {pkm.encryption_key}
+        if new:
+            addr, pkm = pick_opponent(new)
+            for _, np in new:
+                seen.add(np.encryption_key)
+            if len(seen) > 512:
+                seen = {p.encryption_key for _, p in cands}
             encounters += 1
-            _report_encounter(ctx, pkm, addr, encounters, "hunt")
+            _report_encounter(ctx, pkm, addr, encounters, "new-key")
             if _is_target(ctx, pkm):
                 _alert(ctx, pkm, addr, encounters)
                 ctx.request_stop("shiny / target found")
                 return
             if not dry:
-                ctx._stop_evt.wait(1.6)       # let the battle UI render
+                # Wait out the battle intro/animation so the command
+                # menu (and the RUN button) is actually on screen.
+                ctx._stop_evt.wait(flee_delay)
                 _flee(ctx, run_xy)
-            continue                          # do NOT walk this iter
+            continue                          # don't walk this iter
 
-        # Overworld, or the lingering stale/just-fled record → roam.
+        # No new wild → overworld / stale lingering → roam.
         if dry:
             ctx._stop_evt.wait(0.4)
             continue

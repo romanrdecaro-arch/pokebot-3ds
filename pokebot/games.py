@@ -52,7 +52,7 @@ class GameOffsets:
     # foe_base is the WINDOW START and foe_scan_len is how far to scan.
     foe_base:       int = 0   # WildOffset1 region start (scan, don't index)
     foe_stride:     int = 260
-    foe_scan_len:   int = 0x8000   # bytes to scan from foe_base for a PK6
+    foe_scan_len:   int = 0x20000  # bytes to scan from foe_base for a PK6
     foe_count:      int = 0   # u8: number of foes (1 single, 2 double, ...)
 
     # Battle state

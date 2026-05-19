@@ -144,30 +144,39 @@ def _all_valid(buf: bytes, base: int):
     return out
 
 
-def select_wild(valids, party_keys, player_ot):
-    """From ``valids`` [(addr, pkm), …] return the wild candidates,
-    lowest address first. A WILD opponent has an EMPTY OT name (not
-    owned yet); everything the player owns carries OT = player_ot.
-    Verified live (Zigzagoon/Bunnelby OT='' vs Fennekin OT='Roman').
-    Single source of truth — used by manual mode and the hunt loop.
+def scan_nonparty(ctx, foe_base, foe_len, party_keys):
+    """All checksum-valid PK6 in the foe window that are NOT party
+    members, lowest address first — list of (addr, pkm), deduped by
+    key. Every generated Pokémon has a unique encryption key; the
+    player's own battle copy keeps its fixed key so it never looks
+    new, but a freshly-generated wild ALWAYS introduces a brand-new
+    key. So callers detect an encounter by "a key not seen before"
+    rather than by address/OT (a stale wild can linger at a lower
+    address and mask the real one — that was the missed-encounter
+    bug). Single source of truth — manual mode + hunt loop.
     """
-    out = []
-    for a, p in valids:
-        if p.encryption_key in party_keys:
-            continue
-        ot = p.ot_name or ""
-        if ot == "" or ot != player_ot:
-            out.append((a, p))
+    buf = _read_window(ctx, foe_base, foe_len)
+    out = [(a, p) for a, p in _all_valid(buf, foe_base)
+           if p.encryption_key not in party_keys]
     out.sort(key=lambda ap: ap[0])
     return out
 
 
-def find_wild(ctx, foe_base, foe_len, party_keys, player_ot):
-    """Scan the foe window once and return the live wild opponent as
-    ``(addr, pkm)`` or None. The hunt loop's detection entry point."""
-    buf = _read_window(ctx, foe_base, foe_len)
-    wilds = select_wild(_all_valid(buf, foe_base), party_keys, player_ot)
-    return wilds[0] if wilds else None
+def pick_opponent(cands):
+    """Most likely wild among candidates: an empty-OT record (not
+    owned yet) wins, else the lowest address. ``cands`` = [(addr,
+    pkm), …]. Returns (addr, pkm) or None."""
+    if not cands:
+        return None
+    ordered = sorted(cands, key=lambda ap: ap[0])
+    empties = [c for c in ordered if not (c[1].ot_name or "")]
+    return (empties or ordered)[0]
+
+
+def find_wild(ctx, foe_base, foe_len, party_keys, player_ot=None):
+    """Best single wild opponent right now, or None (compat shim)."""
+    return pick_opponent(
+        scan_nonparty(ctx, foe_base, foe_len, party_keys))
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +243,7 @@ def run(ctx) -> None:
     party_base = o.party_base
     party_stride = o.party_stride or 484
     foe_base = o.foe_base
-    foe_len = getattr(o, "foe_scan_len", 0) or 0x8000
+    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
     player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
         "trainer_name", "Roman")
 
@@ -247,8 +256,22 @@ def run(ctx) -> None:
                   "0x08CE1CF8, foe_base 0x08800000).")
         return
 
-    seen: set[int] = set()        # wild enc_keys already reported
     party_keys: set[int] = set()
+    if party_base:
+        party_keys = {p.encryption_key for p in
+                      _read_party(ctx, party_base, party_stride)}
+
+    # Baseline: ignore every non-party PK6 already in the foe window
+    # (a wild left over from before the bot started + the player's
+    # battle copy). Detection is by NEW encryption key after this —
+    # robust to a stale wild lingering at a low address.
+    seen: set[int] = set()
+    if foe_base:
+        for _, p in scan_nonparty(ctx, foe_base, foe_len, party_keys):
+            seen.add(p.encryption_key)
+        log.info(f"  baseline: {len(seen)} pre-existing non-party "
+                 f"PK6 ignored. Watching for new keys…")
+
     last_window_sig = None
     enc_count = 0
     loop_n = 0
@@ -273,43 +296,31 @@ def run(ctx) -> None:
             ctx._stop_evt.wait(_POLL_INTERVAL_S)
             continue
 
-        buf = _read_window(ctx, foe_base, foe_len)
-        valids = _all_valid(buf, foe_base)
-
-        # Wild = the empty-OT non-party record (see select_wild —
-        # shared with the hunt loop). The PKMN-NTR pointer anchor does
-        # not exist in Azahar; OT is the reliable, session-proof
-        # discriminator.
-        wilds = select_wild(valids, party_keys, player_ot)
+        cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
+        new = [(a, p) for a, p in cands
+               if p.encryption_key not in seen]
 
         # Diagnostic dump — only when window contents change.
-        sig = frozenset(p.encryption_key for _, p in valids)
-        if sig != last_window_sig and valids:
+        sig = frozenset(p.encryption_key for _, p in cands)
+        if sig != last_window_sig and cands:
             last_window_sig = sig
-            log.info(f"  foe window: {len(valids)} valid PK6, "
-                     f"{len(wilds)} wild candidate(s):")
-            for a, p in valids:
-                if p.encryption_key in party_keys:
-                    tag = "PARTY"
-                elif (p.ot_name or "") == "" or p.ot_name != player_ot:
-                    tag = "WILD?"
-                else:
-                    tag = "owned/stale"
+            log.info(f"  foe window: {len(cands)} non-party PK6, "
+                     f"{len(new)} new:")
+            for a, p in cands:
+                tag = ("NEW" if p.encryption_key not in seen
+                       else "seen/stale")
                 log.info(f"    [{tag}] {_desc(p, a)}")
-            if not wilds:
-                log.info("    [no wild candidate — not in a wild "
-                         "battle right now]")
 
-        # Report the wild opponent (lowest-address empty-OT mon).
-        if wilds:
-            a, p = wilds[0]
-            if p.encryption_key not in seen:
-                seen.add(p.encryption_key)
-                enc_count += 1
-                _report_encounter(ctx, p, a, enc_count, "OT-empty")
+        if new:
+            a, p = pick_opponent(new)
+            enc_count += 1
+            _report_encounter(ctx, p, a, enc_count, "new-key")
+            for _, np in new:
+                seen.add(np.encryption_key)
 
-        if len(seen) > 256:
-            seen.clear()
+        # Bound memory without re-reporting current stale records.
+        if len(seen) > 512:
+            seen = {p.encryption_key for _, p in cands}
 
         ctx._stop_evt.wait(_POLL_INTERVAL_S)
 
