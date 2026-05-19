@@ -95,6 +95,10 @@ def main(argv=None):
                     choices=["horizontal", "vertical"],
                     help="walking axis for encounter mode "
                          "(horizontal = Left/Right, vertical = Up/Down)")
+    ap.add_argument("--flee-delay", type=float, default=None,
+                    help="seconds to wait after a wild appears before "
+                         "fleeing (encounter mode). Raise for a slower "
+                         "emulator; overrides config.yaml.")
     ap.add_argument("--verify-address", default=None,
                     help="for debug mode: read 260 bytes at this hex "
                          "address and report whether it's a valid PK6 "
@@ -126,6 +130,8 @@ def main(argv=None):
     if args.starter:  config.setdefault("soft_reset", {})["starter"] = args.starter
     if args.movement:
         config.setdefault("random_encounters", {})["movement"] = args.movement
+    if args.flee_delay is not None:
+        config.setdefault("random_encounters", {})["flee_delay"] = args.flee_delay
     if args.target:   config["target"] = _target_preset(args.target)
     if args.verify_address:
         config["verify_address"] = int(args.verify_address, 0)

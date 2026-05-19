@@ -361,7 +361,10 @@ def _apply_sprite(widget: tk.Label, sprite) -> None:
     if isinstance(sprite, list):
         _animate(widget, sprite, 0)
     else:
-        widget.config(image=sprite, text="")
+        # width/height MUST be reset to 0: the "…" placeholder set
+        # them to 4/2 (text units), and on an image Label those are
+        # PIXELS — leaving them clips the sprite to a ~4x2 px dash.
+        widget.config(image=sprite, text="", width=0, height=0)
 
 
 def _animate(widget: tk.Label, frames: list, idx: int) -> None:
@@ -370,7 +373,7 @@ def _animate(widget: tk.Label, frames: list, idx: int) -> None:
             return
     except Exception:
         return
-    widget.config(image=frames[idx], text="")
+    widget.config(image=frames[idx], text="", width=0, height=0)
     widget._anim_after = widget.after(
         90, _animate, widget, frames, (idx + 1) % len(frames))
 
@@ -400,7 +403,10 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
                   font=("Segoe UI", 11))
 
     def _fail():
-        cache[key] = False                    # don't re-hit the network
+        # Show the dex number, but DON'T negative-cache: a transient
+        # network blip shouldn't permanently disable a species for
+        # the session — a later row retries (disk cache makes any
+        # eventual success sticky).
         try:
             widget.config(text=f"#{species_id}", fg=_MUTED,
                            font=("Consolas", 8))
@@ -1135,6 +1141,35 @@ class _App(tk.Tk):
                  bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 9, "italic"),
                  anchor="w", wraplength=235, justify="left"
+                 ).pack(fill="x", pady=(2, 6))
+
+        # Battle-wait slider — how long to wait after a wild appears
+        # before fleeing. Emulator speed varies a lot per user, so
+        # this is tunable live (maps to random_encounters.flee_delay).
+        fd_head = tk.Frame(self._movement_frame, bg=_PANEL2)
+        fd_head.pack(fill="x")
+        tk.Label(fd_head, text="Battle wait before flee",
+                 bg=_PANEL2, fg=_MUTED, font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(side="left")
+        self._flee_var = tk.DoubleVar(value=5.0)
+        self._flee_val_lbl = tk.Label(
+            fd_head, text="5.0 s", bg=_PANEL2, fg=_ACCENT,
+            font=("Segoe UI", 9, "bold"))
+        self._flee_val_lbl.pack(side="right")
+        tk.Scale(self._movement_frame, from_=1.0, to=12.0,
+                 resolution=0.5, orient="horizontal",
+                 variable=self._flee_var, showvalue=False,
+                 bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
+                 highlightthickness=0, bd=0, sliderrelief="flat",
+                 activebackground=_ACCENT,
+                 command=lambda v: self._flee_val_lbl.config(
+                     text=f"{float(v):.1f} s")).pack(fill="x")
+        tk.Label(self._movement_frame,
+                 text="Higher = slower emulator / longer battle intro. "
+                      "If it flees before the menu appears, raise this.",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "italic"),
+                 anchor="w", wraplength=235, justify="left"
                  ).pack(fill="x", pady=(2, 0))
 
         # TARGET FILTER (always visible)
@@ -1478,6 +1513,11 @@ class _App(tk.Tk):
             args += ["--starter", chosen_starter]
         if chosen_movement:
             args += ["--movement", chosen_movement]
+        if method.mode == "encounter":
+            try:
+                args += ["--flee-delay", f"{float(self._flee_var.get()):.1f}"]
+            except Exception:
+                pass
         flag = self._TARGET_FILTER_FLAG.get(self._target_var.get())
         if flag:
             args += ["--target", flag]
