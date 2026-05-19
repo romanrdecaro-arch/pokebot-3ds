@@ -133,6 +133,28 @@ def _party_slots(party):
     return out
 
 
+def _party_sig(party):
+    return tuple(
+        (p.encryption_key,
+         (p.party["level"] if p.party else None), p.shiny)
+        for p in party)
+
+
+def broadcast_party(ctx, party):
+    """Push the party to the launcher strip ONLY when it changed
+    (new mon, level-up, shiny) — so it refreshes the instant a
+    battle ends / a catch happens, with no per-poll flicker. Always
+    returns the party's encryption keys (used to exclude the
+    player's own mons from wild detection)."""
+    sig = _party_sig(party)
+    if sig != getattr(ctx, "_party_sig", None):
+        ctx._party_sig = sig
+        if party:
+            ctx.dashboard.broadcast("party",
+                                    slots=_party_slots(party))
+    return {p.encryption_key for p in party}
+
+
 # Azahar relocates the fixed PartyOffset (like every other address),
 # so reading it literally returns nothing. Locate the live party by
 # content instead: the player's team are checksum-valid PK6 whose OT
@@ -345,10 +367,7 @@ def run(ctx) -> None:
         return
 
     party = get_party(ctx, party_base, party_stride, player_ot)
-    party_keys: set[int] = {p.encryption_key for p in party}
-    if party:
-        ctx.dashboard.broadcast(
-            "party", slots=_party_slots(party))
+    party_keys: set[int] = broadcast_party(ctx, party)
 
     # Baseline: ignore every non-party PK6 already in the foe window
     # (a wild left over from before the bot started + the player's
@@ -368,14 +387,13 @@ def run(ctx) -> None:
     while not ctx.should_stop():
         loop_n += 1
 
-        # Refresh + rebroadcast the party every ~15 polls (cheap once
-        # the base is cached; locates by content on the first miss).
-        if loop_n % 15 == 0:
-            party = get_party(ctx, party_base, party_stride, player_ot)
-            if party:
-                party_keys = {p.encryption_key for p in party}
-                ctx.dashboard.broadcast(
-                    "party", slots=_party_slots(party))
+        # Re-read the party EVERY poll (cheap once the window is
+        # cached) so a catch / level-up / faint shows immediately
+        # when the battle ends; broadcast only on actual change.
+        party = get_party(ctx, party_base, party_stride, player_ot)
+        keys = broadcast_party(ctx, party)
+        if keys:
+            party_keys = keys
 
         if not foe_base:
             ctx._stop_evt.wait(_POLL_INTERVAL_S)

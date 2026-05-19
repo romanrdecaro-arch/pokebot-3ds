@@ -25,10 +25,10 @@ flee_delay, run_touch.
 from __future__ import annotations
 
 import logging
-import time
 
 from .observe import (scan_nonparty, pick_opponent, get_party,
-                       _party_slots, _report_encounter, _level_from_exp)
+                       broadcast_party, _report_encounter,
+                       _level_from_exp)
 
 log = logging.getLogger(__name__)
 
@@ -66,9 +66,7 @@ def _refresh_party(ctx, party_base, party_stride, player_ot):
     exclude the player's own mons from wild detection). Returns an
     empty set when party_base isn't configured."""
     party = get_party(ctx, party_base, party_stride, player_ot)
-    if party:
-        ctx.dashboard.broadcast("party", slots=_party_slots(party))
-    return {p.encryption_key for p in party}
+    return broadcast_party(ctx, party)   # broadcasts only on change
 
 
 def _run_fraction(layout, run_local, override):
@@ -167,13 +165,13 @@ def run(ctx) -> None:
     a, b = _BTN[movement]
     step = 0
     encounters = 0
-    last_party = time.monotonic()
 
     while not ctx.should_stop():
-        if time.monotonic() - last_party > 15:
-            party_keys = _refresh_party(ctx, party_base, party_stride,
-                                        player_ot)
-            last_party = time.monotonic()
+        # Re-read the party every loop (cheap once the window is
+        # cached); broadcast only when it changes, so the strip
+        # updates the moment a battle ends / a catch happens.
+        party_keys = _refresh_party(ctx, party_base, party_stride,
+                                    player_ot) or party_keys
 
         cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
         new = [(addr, p) for addr, p in cands
