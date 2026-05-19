@@ -111,7 +111,7 @@ random_encounters:
   flee_delay: 5.0
   # Extra wait after clearing the intro text, before touching RUN —
   # lets the command menu finish drawing so the touch lands.
-  run_settle: 1.5
+  run_settle: 0.5
   # Azahar screen layout — how the two 3DS screens are arranged in
   # the window. The RUN-button position is computed from this + the
   # live window size, so it stays correct at ANY window size.
