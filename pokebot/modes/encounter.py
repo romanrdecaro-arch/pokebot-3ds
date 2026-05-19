@@ -60,15 +60,36 @@ def _is_target(ctx, pkm) -> bool:
     return bool(pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
 
 
-def _flee(ctx, run_xy, run_settle: float) -> None:
+def _run_fraction(layout, run_local, override):
+    """Window fractions to touch for RUN. Explicit ``override`` wins;
+    otherwise compute from Azahar's live client size + screen layout
+    so it's correct at ANY window size."""
+    if override:
+        return float(override[0]), float(override[1]), "override"
+    try:
+        from ..platform_utils import (find_azahar_hwnd, get_client_size,
+                                       bottom_screen_fraction)
+        hwnd = find_azahar_hwnd()
+        wh = get_client_size(hwnd) if hwnd else None
+        if wh:
+            fx, fy = bottom_screen_fraction(
+                wh[0], wh[1], layout, run_local[0], run_local[1])
+            return fx, fy, f"{layout} {wh[0]}x{wh[1]}"
+    except Exception as e:
+        log.warning(f"  run-position geometry failed: {e}")
+    return 0.5, 0.92, "fallback"
+
+
+def _flee(ctx, layout, run_local, override, run_settle: float) -> None:
     """Clear the appearance text so the command menu is up, wait for
     it to render, touch RUN, then clear the got-away text."""
     for _ in range(4):
         ctx.input.tap("B", hold_s=0.05)
         ctx._stop_evt.wait(0.35)
     ctx._stop_evt.wait(run_settle)            # let the menu draw
-    ok = ctx.input.tap_touch(run_xy[0], run_xy[1], hold_s=0.08)
-    log.info(f"  flee: touch RUN @ ({run_xy[0]:.2f},{run_xy[1]:.2f}) "
+    fx, fy, how = _run_fraction(layout, run_local, override)
+    ok = ctx.input.tap_touch(fx, fy, hold_s=0.08)
+    log.info(f"  flee: touch RUN @ ({fx:.3f},{fy:.3f}) [{how}] "
              f"after {run_settle:.1f}s settle "
              f"-> {'sent' if ok else 'FAILED (touch unavailable)'}")
     ctx._stop_evt.wait(0.6)
@@ -90,14 +111,19 @@ def run(ctx) -> None:
     walk_hold = float(rcfg.get("walk_hold", 0.35))
     flee_delay = float(rcfg.get("flee_delay", 5.0))
     run_settle = float(rcfg.get("run_settle", 1.5))
-    run_xy = rcfg.get("run_touch") or [0.5, 0.92]
+    screen_layout = str(rcfg.get("screen_layout",
+                                 "side_by_side")).lower()
+    run_local = rcfg.get("run_local") or [0.5, 0.86]
+    run_override = rcfg.get("run_touch")     # None ⇒ auto-geometry
 
     log.info(f"Mode: shiny hunt — random encounters ({movement}, "
              f"{walk_hold:.2f}s steps, flee_delay {flee_delay:.1f}s, "
              f"run_settle {run_settle:.1f}s)")
     log.info(f"  foe window=[{foe_base:#010x},"
-             f"{foe_base + foe_len:#010x})  "
-             f"RUN touch ({run_xy[0]:.2f},{run_xy[1]:.2f})")
+             f"{foe_base + foe_len:#010x})  layout={screen_layout} "
+             f"run_local={run_local}"
+             + (f" run_touch override={run_override}"
+                if run_override else " (RUN auto-positioned)"))
     if not foe_base:
         log.error("foe_base not configured (X/Y: 0x08800000).")
         return
@@ -156,7 +182,8 @@ def run(ctx) -> None:
                 # Wait out the battle intro/animation so the command
                 # menu (and the RUN button) is actually on screen.
                 ctx._stop_evt.wait(flee_delay)
-                _flee(ctx, run_xy, run_settle)
+                _flee(ctx, screen_layout, run_local, run_override,
+                      run_settle)
             continue                          # don't walk this iter
 
         # No new wild → overworld / stale lingering → roam.

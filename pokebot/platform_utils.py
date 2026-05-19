@@ -412,3 +412,60 @@ def _focus_linux(title_substrings) -> bool:
         except Exception:
             continue
     return False
+
+
+# ---------------------------------------------------------------------------
+# 3DS screen geometry → touch coordinates (resize/layout robust)
+# ---------------------------------------------------------------------------
+
+# 3DS native screen sizes.
+_TOP_W, _TOP_H = 400, 240
+_BOT_W, _BOT_H = 320, 240
+
+# Azahar screen layouts → (canvas_w, canvas_h, bottom_x, bottom_y).
+# The two screens are drawn on this virtual canvas, then the canvas is
+# scaled to fit the client area preserving aspect (letterboxed,
+# centred). So the RUN button's window position is correct at ANY
+# window size — we recompute it from the live client rect every flee.
+_LAYOUTS = {
+    # default: top above bottom, bottom centred under top.
+    "vertical":     (_TOP_W, _TOP_H + _BOT_H,
+                     (_TOP_W - _BOT_W) // 2, _TOP_H),
+    # side-by-side: top left, bottom right, same height.
+    "side_by_side": (_TOP_W + _BOT_W, _TOP_H, _TOP_W, 0),
+}
+
+
+def get_client_size(hwnd: int):
+    """(width, height) of the window's client area, or None."""
+    if not hwnd or not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return None
+    user32 = ctypes.windll.user32
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return None
+    w, h = rect.right - rect.left, rect.bottom - rect.top
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def bottom_screen_fraction(client_w: int, client_h: int, layout: str,
+                           local_x: float, local_y: float):
+    """Map a point on the 3DS BOTTOM (touch) screen — given as
+    fractions ``local_x``/``local_y`` of that 320x240 screen — to
+    fractions of the whole window client area, for the given Azahar
+    ``layout``. Accounts for the aspect-preserving letterbox so it's
+    correct at any window size. Returns (fx, fy)."""
+    canvas_w, canvas_h, bx, by = _LAYOUTS.get(
+        layout, _LAYOUTS["vertical"])
+    scale = min(client_w / canvas_w, client_h / canvas_h)
+    render_w, render_h = canvas_w * scale, canvas_h * scale
+    ox = (client_w - render_w) / 2.0
+    oy = (client_h - render_h) / 2.0
+    px = ox + (bx + local_x * _BOT_W) * scale
+    py = oy + (by + local_y * _BOT_H) * scale
+    return (px / client_w, py / client_h)

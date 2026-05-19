@@ -112,10 +112,21 @@ random_encounters:
   # Extra wait after clearing the intro text, before touching RUN —
   # lets the command menu finish drawing so the touch lands.
   run_settle: 1.5
-  # RUN button touch position as window fractions (X/Y wild battle,
-  # Azahar default vertical layout). Bottom screen ≈ lower window;
-  # nudge these if the flee misses the RUN button.
-  run_touch: [0.5, 0.92]
+  # Azahar screen layout — how the two 3DS screens are arranged in
+  # the window. The RUN-button position is computed from this + the
+  # live window size, so it stays correct at ANY window size.
+  #   side_by_side : top screen left, touch screen RIGHT  (your setup)
+  #   vertical     : top screen above, touch screen below (Azahar default)
+  screen_layout: side_by_side
+  # Where RUN sits ON the 3DS touch screen, as fractions of that
+  # screen (0,0=top-left .. 1,1=bottom-right). X/Y wild battle: RUN
+  # is the blue button, bottom-centre → ~(0.50, 0.86). Nudge only if
+  # the flee still misses (e.g. y 0.84–0.90).
+  run_local: [0.50, 0.86]
+  # Optional hard override of the WINDOW-fraction touch point. Leave
+  # null to auto-position from screen_layout + window size (robust to
+  # resizing). Set e.g. [0.78, 0.72] only to pin it manually.
+  run_touch: null
 
 # Target / filter is configured in the launcher (Hunt → Target filter).
 # Default is "Shiny only". To override from the CLI: pass --target shiny
