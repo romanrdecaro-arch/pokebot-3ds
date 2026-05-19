@@ -1,347 +1,116 @@
 """
-Soft reset mode.
+Soft-reset mode (starters / gifts).
 
-For starter / legendary / gift Pokémon. The user saves the game in
-the position documented in TUTORIAL.md, then the bot:
+Save in front of the starter table (see TUTORIAL.md), pick the
+starter in the launcher, then per attempt the bot:
 
-  1. Runs the game-specific input sequence to advance dialogue and
-     select the chosen starter (or accept the generic gift).
-  2. Reads the relevant party slot, decrypts and parses it.
-  3. Evaluates against target rules (and a hard species gate when a
-     starter is configured).
-  4. If target hit: stop. Otherwise: soft reset (L+R+Start) and repeat.
+  1. Runs the X/Y input sequence (Tierno cutscene → cursor to the
+     chosen starter → receive it).
+  2. Detects the received Pokémon by CONTENT — observe.get_party()
+     locates the player-owned party in RAM by scanning for
+     checksum-valid PK6 whose OT is the trainer (the same
+     relocation-proof method the shiny hunt uses). No party_base /
+     offset hunting, no "run debug first".
+  3. Evaluates: species must be the chosen starter, then the target
+     filter (shiny / IVs / nature …).
+  4. Hit → stop + alert (it's in your party, go save). Miss → soft
+     reset (L+R+Start) and repeat.
 
-Required offsets:
-  - party_base (we read slot N, configurable; default 0 = first slot)
+config.yaml soft_reset.trainer_name MUST match your in-game OT (it's
+how the party is found). Default "Roman".
 """
-
 from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 
 from ..games import starter_species, starters_for
-from ..parser import decrypt_pkm, parse_pkm
 from ..platform_utils import focus_azahar
+from .observe import get_party, broadcast_party
 
 log = logging.getLogger(__name__)
 
 
-def _read_looks_garbage(pkm) -> bool:
-    """True if the parsed slot 0 has obviously-invalid field values
-    that imply the underlying buffer isn't actually a Pokémon record
-    (e.g. cached party_base is a checksum false-positive).
-    """
-    if not pkm.species or pkm.species > 1000:
-        return True
-    if isinstance(pkm.nature, str) and pkm.nature.startswith("?("):
-        return True
-    if pkm.party:
-        lvl = pkm.party.get("level")
-        if lvl is None or lvl < 1 or lvl > 100:
-            return True
-    if pkm.ability_num not in (0, 1, 2, 4):
-        return True
-    for stat, v in (pkm.ivs or {}).items():
-        if v < 0 or v > 31:
-            return True
-    return False
-
-
-def _slot_summary(pkm, slot: int) -> dict:
-    """Compact dict suitable for the 'party' broadcast.
-
-    Mirrors the shape produced by observe.py's _summary so the
-    launcher's _PartyStrip can consume both event sources.
-    """
-    return {
-        "slot":      slot,
-        "species":   pkm.species,
-        "nickname":  pkm.nickname,
-        "level":     pkm.party["level"] if pkm.party else None,
-        "shiny":     pkm.shiny,
-        "nature":    pkm.nature,
-        "gender":    pkm.gender,
-        "pid":       pkm.pid,
-        "ivs":       pkm.ivs,
-    }
-
-
 # ---------------------------------------------------------------------------
-# First-run offset auto-discovery
-# ---------------------------------------------------------------------------
-# Starter hunts begin with an empty party, so the user can't run the offset
-# finder up-front (no party data to find). We solve the chicken-and-egg by
-# running a memory scan after the FIRST starter pickup, when the party has
-# been written exactly once. The scan locates party_base, persists it to
-# config.yaml, and applies it to ctx.game.offsets so every subsequent reset
-# just reads from the known address.
-
-def _discover_offsets_inline(ctx) -> bool:
-    """Scan memory for the freshly-populated party block.
-
-    Returns True if party_base was found, applied, and saved. Logs and
-    returns False on failure (caller should reset and try again).
-
-    Two strategies:
-      1. Standard: 5-7 PK7 records spaced ~484 bytes = full party.
-      2. Starter-hunt fallback: a single PK7 record matching the
-         expected starter species. Starter hunts begin with one
-         Pokémon in the party, so the "5+ cluster" requirement of
-         ``derive_offsets_from_clusters`` never matches — that's why
-         the user kept seeing "scan failed" even after a successful
-         pickup.
-    """
-    # Imported lazily so importing soft_reset doesn't drag in find_offsets.
-    from .. import find_offsets as fo
-    from ..games import heap_range_for, starter_species
-
-    gen = getattr(ctx.game, "generation", 7) or 7
-    primary_start, primary_end = heap_range_for(gen)
-    span_mb = (primary_end - primary_start) // (1024 * 1024)
-
-    # ──────────────────────────────────────────────────────────────────
-    # Trainer-name anchored fast path
-    # ──────────────────────────────────────────────────────────────────
-    # If the user has set their in-game OT name in config and the
-    # game has been booted at least once before with a known offset,
-    # we can find party_base in seconds — search RAM for the unique
-    # UTF-16LE trainer name string, add the cached offset, done.
-    # Survives ASLR between Azahar sessions because we re-anchor on
-    # the trainer name every run.
-    cfg_section = ctx.config.get("soft_reset", {}) or {}
-    trainer_name = (cfg_section.get("trainer_name")
-                    or ctx.config.get("trainer_name") or "").strip()
-    cached_offset = cfg_section.get("trainer_to_party_offset")
-
-    if trainer_name and cached_offset is not None:
-        try:
-            cached_offset_int = (int(cached_offset, 0)
-                                 if isinstance(cached_offset, str)
-                                 else int(cached_offset))
-        except Exception:
-            cached_offset_int = None
-        if cached_offset_int is not None:
-            log.info(f"Trainer-name anchor: searching RAM for "
-                     f"{trainer_name!r} (UTF-16LE)…")
-            try:
-                pat = fo.trainer_name_pattern(trainer_name)
-                anchors = fo.find_pattern(
-                    ctx.rpc, pat, primary_start, primary_end)
-            except Exception as e:
-                log.warning(f"Trainer-name anchor scan failed: {e}")
-                anchors = []
-            log.info(f"Found {len(anchors)} occurrence(s) of trainer name.")
-            for a in anchors:
-                candidate = a + cached_offset_int
-                # Sanity-check by reading a PK6 there. If it's a valid
-                # record (or even a plausibly empty slot), accept it.
-                try:
-                    raw = ctx.rpc.read(candidate, 260)
-                except Exception:
-                    continue
-                # Empty slot 0 (encryption_key=0) is fine — game just
-                # hasn't received a starter yet, but the address is
-                # correct. If the slot is non-zero it must validate.
-                key = int.from_bytes(raw[:4], "little")
-                if key == 0:
-                    log.info(f"Anchor at {a:#010x} → party_base "
-                             f"{candidate:#010x} (slot 0 currently empty).")
-                else:
-                    ok, _info = fo.is_likely_pk7(raw)
-                    if not ok:
-                        continue
-                    log.info(f"Anchor at {a:#010x} → party_base "
-                             f"{candidate:#010x} (slot 0 valid PK6).")
-                ctx.game.offsets.party_base = candidate
-                ctx.game.offsets.party_stride = 484
-                return True
-
-    # No brute-force fallback here — that path is now its own mode
-    # (`pokebot.modes.debug`) the user runs deliberately once. Keeps
-    # the soft-reset hunt loop tight: trainer-name anchor or fail.
-    log.error(
-        "Couldn't find party_base via the trainer-name anchor. "
-        "Either trainer_name isn't set in config.yaml or "
-        "trainer_to_party_offset hasn't been cached yet.")
-    log.error(
-        "Run debug mode once first (Method dropdown → 'Debug — find "
-        "offsets' or `python run.py --mode debug`) with a Pokémon in "
-        "slot 0. That writes the anchor offset to config.yaml and "
-        "future runs will discover party_base in seconds.")
-    return False
-
-
-def _write_soft_reset_setting(cfg_path, key: str, value: int) -> None:
-    """Append/replace a single key under the soft_reset: block in
-    config.yaml. Hex-encoded for readability, signed for safety."""
-    text = cfg_path.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
-    # Find the soft_reset: block start and any existing key in it.
-    in_block = False
-    block_indent = "  "
-    out: list[str] = []
-    replaced = False
-    last_block_idx = -1
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "soft_reset:":
-            in_block = True
-            out.append(line)
-            continue
-        if in_block:
-            indent = line[: len(line) - len(line.lstrip())]
-            if stripped == "" or stripped.startswith("#"):
-                out.append(line)
-                last_block_idx = len(out) - 1
-                continue
-            if not indent.startswith(block_indent) \
-                    or len(indent) < len(block_indent):
-                # Block ended.
-                if not replaced:
-                    out.append(f"{block_indent}{key}: {value:#x}\n")
-                    replaced = True
-                in_block = False
-                out.append(line)
-                continue
-            block_indent = indent
-            k = stripped.split(":", 1)[0].strip()
-            if k == key:
-                out.append(f"{block_indent}{key}: {value:#x}\n")
-                replaced = True
-            else:
-                out.append(line)
-            last_block_idx = len(out) - 1
-        else:
-            out.append(line)
-    if in_block and not replaced:
-        out.append(f"{block_indent}{key}: {value:#x}\n")
-    cfg_path.write_text("".join(out), encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Per-game starter input sequences
+# Per-game starter input sequence
 # ---------------------------------------------------------------------------
 
 def _xy_starter_sequence(ctx, starter: str, gap: float,
                          pre_taps: int, post_taps: int,
-                         receive_gap: float | None = None) -> bool:
-    """Pokémon X / Y starter sequence — manually counted, fixed timing.
+                         receive_gap: float) -> bool:
+    """Pokémon X/Y starter sequence (fixed, manually-timed). Returns
+    False if a stop was requested mid-run.
 
-    The pre-menu and navigation phases use ``gap`` seconds between
-    presses (default 2.5s in config). The receive phase uses
-    ``receive_gap`` (default 1.0s) since the post-confirm dialogue
-    advances faster with B.
-
-    Sequence per attempt:
-
-        1× DpadLeft — kicks off Tierno's cutscene
-        25× A — clears Tierno's setup        (gap)
-        cursor + confirm:                    (gap)
-            Chespin   → 1× A, 2× DpadLeft, 2× A
-            Fennekin  → 3× A   (default cursor)
-            Froakie   → 1× A, 2× DpadRight, 2× A
-        40× B — receives starter             (receive_gap)
-                (B avoids opening nickname entry)
-
-    Returns True when complete; False if a stop was requested mid-run.
+      1× DpadLeft        — start Tierno's cutscene
+      pre_taps× A        — clear setup dialogue          (gap)
+      cursor + confirm:                                  (gap)
+        Chespin  → 1×A, 2×DpadLeft,  2×A
+        Fennekin → 3×A  (default cursor)
+        Froakie  → 1×A, 2×DpadRight, 2×A
+      post_taps× B       — receive (B avoids the nickname
+                            prompt)                       (receive_gap)
+    The main loop confirms the starter actually arrived via
+    get_party(), so post_taps is just a generous floor.
     """
     starter = (starter or "").lower()
-    if receive_gap is None:
-        receive_gap = gap
 
     def _tap(button: str, sleep_for: float) -> bool:
         if ctx.should_stop():
             return False
         ctx.input.tap(button, hold_s=0.05)
-        time.sleep(sleep_for)
-        return True
+        ctx._stop_evt.wait(sleep_for)
+        return not ctx.should_stop()
 
-    # Step 1 — DpadLeft kicks off Tierno's cutscene. Required even
-    # though there's no walking-to-table interaction afterwards.
     if not _tap("DpadLeft", gap):
         return False
-
-    # Step 2 — clear Tierno's setup dialogue.
-    log.info(f"X/Y: {pre_taps}× A to clear Tierno's dialogue (gap {gap}s)")
+    log.info(f"  X/Y: {pre_taps}× A (clear Tierno, gap {gap}s)")
     for _ in range(pre_taps):
         if not _tap("A", gap):
             return False
 
-    # Step 3 — cursor navigation + confirm.
-    # For Chespin/Froakie we press A once first to wake the cursor —
-    # the d-pad presses don't always register on the very first frame
-    # the menu opens. Fennekin doesn't need it because the cursor
-    # starts on it by default.
     if starter == "chespin":
-        log.info("X/Y: cursor → Chespin (1× A wake, 2× DpadLeft, 2× A)")
-        if not _tap("A", gap):
-            return False
-        for _ in range(2):
-            if not _tap("DpadLeft", gap):
-                return False
-        for _ in range(2):
-            if not _tap("A", gap):
-                return False
+        log.info("  X/Y: cursor → Chespin")
+        seq = [("A", gap), ("DpadLeft", gap), ("DpadLeft", gap),
+               ("A", gap), ("A", gap)]
     elif starter == "froakie":
-        log.info("X/Y: cursor → Froakie (1× A wake, 2× DpadRight, 2× A)")
-        if not _tap("A", gap):
-            return False
-        for _ in range(2):
-            if not _tap("DpadRight", gap):
-                return False
-        for _ in range(2):
-            if not _tap("A", gap):
-                return False
-    else:  # fennekin (default cursor)
-        log.info("X/Y: cursor on Fennekin (3× A)")
-        for _ in range(3):
-            if not _tap("A", gap):
-                return False
-
-    # Step 4 — receive starter. B (not A) so the 'Want to nickname?'
-    # prompt is auto-answered No instead of opening name entry.
-    #
-    # When party_base is known we poll slot 0 between presses and exit
-    # the moment a valid PK6 record appears. The game writes the slot
-    # during the 'received' animation — well before the nickname
-    # prompt — so most iterations exit at ~5-15 B presses instead of
-    # the full cap. The cap itself stays as a safety floor for the
-    # very first run where party_base hasn't been discovered yet.
-    log.info(f"X/Y: up to {post_taps}× B to receive starter "
-             f"(gap {receive_gap}s)")
-    party_base = ctx.game.offsets.party_base
-    if party_base:
-        from ..parser import decrypt_pkm, parse_pkm
-        for i in range(post_taps):
-            if not _tap("B", receive_gap):
-                return False
-            # Poll every press once a few have fired (skip the first
-            # 3 since slot 0 can't possibly be ready yet).
-            if i < 3:
-                continue
-            try:
-                raw = ctx.rpc.read(party_base, 260)
-                pkm = parse_pkm(decrypt_pkm(raw))
-                if pkm.checksum_valid and pkm.species:
-                    log.info(f"X/Y: slot 0 written after {i+1} B presses "
-                             f"(species #{pkm.species}) — done.")
-                    return True
-            except Exception:
-                pass
+        log.info("  X/Y: cursor → Froakie")
+        seq = [("A", gap), ("DpadRight", gap), ("DpadRight", gap),
+               ("A", gap), ("A", gap)]
     else:
-        for _ in range(post_taps):
-            if not _tap("B", receive_gap):
-                return False
+        log.info("  X/Y: cursor on Fennekin (default)")
+        seq = [("A", gap), ("A", gap), ("A", gap)]
+    for btn, g in seq:
+        if not _tap(btn, g):
+            return False
+
+    log.info(f"  X/Y: {post_taps}× B to receive (gap {receive_gap}s)")
+    for _ in range(post_taps):
+        if not _tap("B", receive_gap):
+            return False
     return True
 
 
-# game key -> sequence callable. Other games fall back to generic mash-A.
-_SEQUENCES = {
-    "X-USA": _xy_starter_sequence,
-    "Y-USA": _xy_starter_sequence,
-}
+_SEQUENCES = {"X-USA": _xy_starter_sequence, "Y-USA": _xy_starter_sequence}
+
+
+# ---------------------------------------------------------------------------
+# Reset
+# ---------------------------------------------------------------------------
+
+def _do_reset(ctx, post_wait: float, post_taps: int, post_gap: float):
+    """L+R+Start to the title, wait out the boot logos, then mash A
+    (title → Continue → save-data confirm → welcome dialog)."""
+    ctx.input.soft_reset()
+    ctx._stop_evt.wait(post_wait)
+    try:
+        focus_azahar()
+    except Exception:
+        pass
+    for _ in range(post_taps):
+        if ctx.should_stop():
+            return
+        ctx.input.tap("A", hold_s=0.05)
+        ctx._stop_evt.wait(post_gap)
 
 
 # ---------------------------------------------------------------------------
@@ -349,247 +118,123 @@ _SEQUENCES = {
 # ---------------------------------------------------------------------------
 
 def run(ctx):
-    log.info("Mode: soft_reset")
-    # Pull Azahar to the foreground from inside the bot subprocess so
-    # pynput's keystrokes (sent from this same process context) land
-    # in the right window.
+    log.info("Mode: soft_reset (starter)")
     try:
         if focus_azahar():
-            log.info("Azahar window focused.")
+            log.info("  Azahar window focused.")
     except Exception as e:
-        log.warning(f"Couldn't focus Azahar at startup: {e}")
-    cfg = ctx.config.get("soft_reset", {})
-    slot         = int(cfg.get("read_slot", 0))     # which party slot to read
-    advance_taps = int(cfg.get("advance_taps", 60)) # generic-mode mashes
-    advance_gap  = float(cfg.get("advance_gap", 1.0))
-    post_reset   = float(cfg.get("post_reset_wait", 12.0))
-    post_reset_taps = int(cfg.get("post_reset_taps", 6))
-    post_reset_gap  = float(cfg.get("post_reset_gap", 1.0))
-    starter_name = cfg.get("starter")
-    # X/Y tunables — manually counted on real hardware.
-    xy_pre_taps    = int(cfg.get("xy_pre_taps", 25))
-    xy_post_taps   = int(cfg.get("xy_post_taps", 40))
-    xy_receive_gap = float(cfg.get("xy_receive_gap", 1.0))
+        log.warning(f"  couldn't focus Azahar: {e}")
 
-    # No early-exit on missing offsets — starter hunts begin with an empty
-    # party, so we discover party_base AFTER the first pickup. Set a flag
-    # so the loop below knows to scan once.
-    needs_discovery = not ctx.game.offsets.party_base
-    if needs_discovery:
-        log.info("party_base not configured — will auto-discover after the "
-                 "first starter is in the party.")
+    cfg = ctx.config.get("soft_reset", {}) or {}
+    player_ot = cfg.get("trainer_name", "Roman")
+    advance_taps = int(cfg.get("advance_taps", 60))
+    advance_gap = float(cfg.get("advance_gap", 1.0))
+    post_reset = float(cfg.get("post_reset_wait", 12.0))
+    post_reset_taps = int(cfg.get("post_reset_taps", 6))
+    post_reset_gap = float(cfg.get("post_reset_gap", 1.0))
+    starter_name = cfg.get("starter")
+    xy_pre_taps = int(cfg.get("xy_pre_taps", 25))
+    xy_post_taps = int(cfg.get("xy_post_taps", 40))
+    xy_receive_gap = float(cfg.get("xy_receive_gap", 1.0))
+    # How long to wait for the starter to show up in the party after
+    # the input sequence before declaring the attempt a miss.
+    detect_tries = int(cfg.get("detect_tries", 12))
+    detect_gap = float(cfg.get("detect_gap", 1.5))
+    party_base = ctx.game.offsets.party_base
+    party_stride = ctx.game.offsets.party_stride or 484
 
     starter_id = None
     if starter_name:
         starter_id = starter_species(ctx.game.key, str(starter_name))
         if starter_id:
-            log.info(f"Hunting starter: {starter_name} (species #{starter_id})")
+            log.info(f"  hunting starter {starter_name} "
+                     f"(#{starter_id}); OT {player_ot!r}")
         else:
-            known = list(starters_for(ctx.game.key).keys())
-            log.warning(f"Unknown starter '{starter_name}' for {ctx.game.key}. "
-                        f"Known: {known or '(none registered)'}")
-
+            log.warning(f"  unknown starter {starter_name!r} for "
+                        f"{ctx.game.key}; known: "
+                        f"{list(starters_for(ctx.game.key))}")
     seq_fn = _SEQUENCES.get(ctx.game.key)
-    if seq_fn and starter_name:
-        log.info(f"Using {ctx.game.key} starter sequence for "
-                 f"{starter_name}.")
-    elif starter_name:
-        log.info(f"No game-specific sequence registered for {ctx.game.key}; "
-                 f"falling back to generic A-mash.")
+    if not (seq_fn and starter_name):
+        log.info("  no game-specific starter sequence — generic A-mash.")
 
     attempt = 0
     while not ctx.should_stop():
         attempt += 1
         log.info(f"Soft reset attempt #{attempt}")
         ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
-
-        # Re-assert focus at the start of each iteration in case the user
-        # alt-tabbed during the previous one.
         try:
             focus_azahar()
         except Exception:
             pass
 
-        # ------------------------------------------------------------------
-        # Phase 1 — drive the game from save screen to populated party slot.
-        # ------------------------------------------------------------------
+        # 1. Drive the game to "starter received".
         if seq_fn and starter_name:
             if not seq_fn(ctx, starter_name, advance_gap,
-                          xy_pre_taps, xy_post_taps,
-                          xy_receive_gap):
+                          xy_pre_taps, xy_post_taps, xy_receive_gap):
                 return
         else:
-            # Fallback: just mash A until the slot probably exists.
             for _ in range(advance_taps):
                 if ctx.should_stop():
                     return
                 ctx.input.tap("A", hold_s=0.05)
-                time.sleep(advance_gap)
+                ctx._stop_evt.wait(advance_gap)
 
-        # ------------------------------------------------------------------
-        # Phase 1b (one-time) — discover party_base after the very first
-        # starter pickup, when the party block has just been written.
-        # ------------------------------------------------------------------
-        if needs_discovery:
-            ctx.dashboard.broadcast("offset_scan",
-                                    state="started", attempt=attempt)
-            ok = _discover_offsets_inline(ctx)
-            ctx.dashboard.broadcast("offset_scan",
-                                    state=("ok" if ok else "fail"),
-                                    party_base=ctx.game.offsets.party_base)
-            if not ok:
-                log.warning(f"Attempt {attempt}: discovery failed — slot 0 "
-                            f"isn't populated yet. Likely the cursor never "
-                            f"activated and no starter was picked. Resetting.")
-                ctx.dashboard.broadcast(
-                    "read_failure",
-                    attempt=attempt,
-                    reason="party_base discovery failed; slot 0 empty.")
-                _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
-                continue
-            needs_discovery = False
+        # 2. Detect the received starter by content (relocation-proof;
+        #    no offsets needed). Poll until it lands in the party.
+        pkm = None
+        for _ in range(detect_tries):
+            if ctx.should_stop():
+                return
+            party = get_party(ctx, party_base, party_stride, player_ot)
+            if party:
+                broadcast_party(ctx, party)
+                lead = party[0]
+                if starter_id is None or lead.species == starter_id:
+                    pkm = lead
+                    break
+            ctx._stop_evt.wait(detect_gap)
 
-        # ------------------------------------------------------------------
-        # Phase 2 — read and parse the resulting party slot.
-        # ------------------------------------------------------------------
-        addr = (ctx.game.offsets.party_base
-                + slot * ctx.game.offsets.party_stride)
-        try:
-            raw = ctx.rpc.read(addr, 260)
-            pkm = parse_pkm(decrypt_pkm(raw))
-        except Exception as e:
-            log.warning(f"could not read/parse slot {slot}: {e}")
-            ctx.dashboard.broadcast(
-                "read_failure",
-                attempt=attempt,
-                reason=f"RPC read at {addr:#010x} failed: {e}")
-            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
-            continue
-
-        # Runtime sanity check: a cached party_base from a previous
-        # session might point at a buffer whose decrypted bytes pass
-        # the checksum but contain garbage values (level > 100 etc.).
-        # If the read looks bogus, drop the offset and re-discover.
-        if _read_looks_garbage(pkm):
-            log.warning(
-                f"Attempt {attempt}: slot 0 read at {addr:#010x} returned "
-                f"obviously invalid data (species={pkm.species}, "
-                f"level={pkm.party.get('level') if pkm.party else 'N/A'}, "
-                f"nature={pkm.nature}). Cached party_base is a false "
-                f"positive — clearing and rediscovering on next attempt.")
-            ctx.game.offsets.party_base = 0
-            needs_discovery = True
+        if pkm is None:
+            log.warning(f"  attempt {attempt}: starter never appeared "
+                        f"in the party (sequence likely missed the "
+                        f"cursor / save not in front of the table). "
+                        f"Resetting.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
-                reason=f"Cached party_base {addr:#010x} is bogus; "
-                       "rediscovering.")
+                reason="starter not found in party after sequence")
             _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
 
-        if not pkm.checksum_valid:
-            log.warning(f"Attempt {attempt}: slot 0 checksum invalid "
-                        f"(starter probably not in party yet). "
-                        f"Mashing more A's and retrying.")
-            for _ in range(25):
-                ctx.input.tap("A", hold_s=0.05)
-                time.sleep(0.2)
-            try:
-                raw = ctx.rpc.read(addr, 260)
-                pkm = parse_pkm(decrypt_pkm(raw))
-            except Exception:
-                _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
-                continue
-
+        # 3. Report + evaluate.
         ctx.dashboard.broadcast(
-            "candidate",
-            attempt=attempt,
+            "candidate", attempt=attempt,
             species=pkm.species, nickname=pkm.nickname,
             shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
-            ivs=pkm.ivs, pid=pkm.pid,
-            tsv=pkm.tsv, psv=pkm.psv,
+            ivs=pkm.ivs, pid=pkm.pid, tsv=pkm.tsv, psv=pkm.psv,
             ability_id=pkm.ability_id, ability_num=pkm.ability_num,
             level=pkm.party["level"] if pkm.party else None,
-            moves=pkm.moves,
-        )
+            moves=pkm.moves)
+        log.info(f"  starter: #{pkm.species} {pkm.nickname or ''} "
+                 f"{'★SHINY★ ' if pkm.shiny else ''}"
+                 f"nature={pkm.nature} IVs={pkm.ivs} "
+                 f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
 
-        # Read slots 1-5 too so the launcher's Party strip can show
-        # the full party. Mostly empty during a starter hunt, but
-        # populated for legendary / gift hunts on a played-through
-        # save.
-        party_data = [_slot_summary(pkm, 0)]
-        stride = ctx.game.offsets.party_stride
-        for i in range(1, 6):
-            saddr = ctx.game.offsets.party_base + i * stride
-            try:
-                sraw = ctx.rpc.read(saddr, 260)
-            except Exception:
-                continue
-            if int.from_bytes(sraw[:4], "little") == 0:
-                continue
-            try:
-                spkm = parse_pkm(decrypt_pkm(sraw))
-            except Exception:
-                continue
-            if spkm.checksum_valid:
-                party_data.append(_slot_summary(spkm, i))
-        ctx.dashboard.broadcast("party", slots=party_data)
-
-        # ------------------------------------------------------------------
-        # Phase 3 — evaluate. Hard gate on starter species, then target rules.
-        # ------------------------------------------------------------------
-        if starter_id is not None and pkm.species != starter_id:
-            log.info(f"wrong species (#{pkm.species}); resetting")
-            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
-            continue
-
-        target_has_rules = bool(ctx.target and ctx.target.rules)
-        is_hit = ctx.target.matches(pkm) if target_has_rules \
-                  else (starter_id is not None)
-        if is_hit:
-            reason = ctx.target.describe(pkm) if target_has_rules \
-                else f"starter #{pkm.species}"
-            log.info(f"TARGET! attempt {attempt}: {reason}")
+        has_rules = bool(ctx.target and ctx.target.rules)
+        hit = (ctx.target.matches(pkm) if has_rules
+               else starter_id is not None)
+        if hit:
+            reason = (ctx.target.describe(pkm) if has_rules
+                      else f"starter #{pkm.species}")
+            bar = "*" * 30
+            for line in (bar, f"  TARGET — attempt #{attempt}: {reason}",
+                         "  Bot STOPPED — it's in your party. Go SAVE!",
+                         bar):
+                log.info(line)
             ctx.dashboard.broadcast(
-                "target_hit",
-                attempt=attempt,
-                reason=reason,
-                species=pkm.species, shiny=pkm.shiny,
-                nature=pkm.nature, ivs=pkm.ivs,
-            )
+                "target_hit", attempt=attempt, count=attempt,
+                reason=reason, species=pkm.species, shiny=pkm.shiny,
+                nature=pkm.nature, ivs=pkm.ivs)
             ctx.request_stop("target hit")
             return
 
         _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
-
-
-def _do_reset(ctx, post_wait: float,
-              post_taps: int = 6, post_gap: float = 1.0):
-    """Soft-reset and walk the game back to the player-at-save state.
-
-    L+R+Start sends the 3DS to the title screen. From there we have
-    to drive the game through:
-        Title screen   → press A (or Start)
-        Continue menu  → press A on Continue (default cursor)
-        Save data flash → A
-        any post-load dialog
-    until the player sprite is standing on the save tile again. We
-    just mash A through everything, which works for X/Y where every
-    prompt accepts A.
-    """
-    ctx.input.soft_reset()
-    # Boot logos (Nintendo 3DS, Game Freak) — non-interruptible. About
-    # 12s on a typical Azahar config; user-tunable via post_reset_wait.
-    time.sleep(post_wait)
-    # Make sure Azahar still has focus before we start mashing again —
-    # the user may have clicked on the launcher or another window.
-    try:
-        focus_azahar()
-    except Exception:
-        pass
-    # Mash A: title → continue → save-data confirmation → "welcome
-    # back" dialog. Stops as soon as the user requests stop.
-    for _ in range(post_taps):
-        if ctx.should_stop():
-            return
-        ctx.input.tap("A", hold_s=0.05)
-        time.sleep(post_gap)
