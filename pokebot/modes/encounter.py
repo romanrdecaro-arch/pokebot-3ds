@@ -28,7 +28,7 @@ import logging
 import time
 
 from .observe import (scan_nonparty, pick_opponent, _read_party,
-                       _report_encounter, _level_from_exp)
+                       _report_encounter, _level_from_exp, _slot_dict)
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,21 @@ def _alert(ctx, pkm, addr: int, count: int) -> None:
 
 def _is_target(ctx, pkm) -> bool:
     return bool(pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
+
+
+def _refresh_party(ctx, party_base, party_stride):
+    """Read the live party, push it to the launcher's (always-visible)
+    party strip, and return the set of party encryption keys (used to
+    exclude the player's own mons from wild detection). Returns an
+    empty set when party_base isn't configured."""
+    if not party_base:
+        return set()
+    party = _read_party(ctx, party_base, party_stride)
+    if party:
+        ctx.dashboard.broadcast(
+            "party",
+            slots=[_slot_dict(p, i) for i, p in enumerate(party)])
+    return {p.encryption_key for p in party}
 
 
 def _run_fraction(layout, run_local, override):
@@ -140,9 +155,9 @@ def run(ctx) -> None:
         except Exception as e:
             log.warning(f"  focus_azahar failed: {e}")
 
-    party_keys = {p.encryption_key
-                  for p in _read_party(ctx, party_base, party_stride)} \
-        if party_base else set()
+    # Read + show the party up front so the strip is populated the
+    # moment the hunt starts.
+    party_keys = _refresh_party(ctx, party_base, party_stride)
 
     # Baseline: pre-existing non-party PK6 (stale pre-bot wild +
     # player's battle copy) are NOT new encounters.
@@ -157,9 +172,8 @@ def run(ctx) -> None:
     last_party = time.monotonic()
 
     while not ctx.should_stop():
-        if party_base and time.monotonic() - last_party > 30:
-            party_keys = {p.encryption_key for p in
-                          _read_party(ctx, party_base, party_stride)}
+        if party_base and time.monotonic() - last_party > 15:
+            party_keys = _refresh_party(ctx, party_base, party_stride)
             last_party = time.monotonic()
 
         cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
