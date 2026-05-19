@@ -201,6 +201,51 @@ class InputDriver:
             self._azahar_hwnd = 0
         return ok
 
+    def move_running(self, direction: str, hold_s: float = 0.35) -> str:
+        """Press ``direction`` while B is held down → the player RUNS
+        (Gen 6 Running Shoes). PostMessage path (no focus needed)
+        preferred; pynput fallback (Azahar must be focused)."""
+        if self.dry_run:
+            log.info(f"[DRY] run {direction} ({hold_s}s, B held)")
+            time.sleep(hold_s)
+            return "dry"
+
+        if sys.platform.startswith("win"):
+            try:
+                from .platform_utils import (
+                    find_azahar_hwnd, post_key_to_window,
+                    post_key_down, post_key_up, char_to_vk,
+                )
+                b_char = getattr(self.binds, "B", None)
+                d_char = getattr(self.binds, direction, None)
+                b_vk = char_to_vk(b_char) if b_char else None
+                d_vk = char_to_vk(d_char) if d_char else None
+                if not self._azahar_hwnd:
+                    self._azahar_hwnd = find_azahar_hwnd() or 0
+                if self._azahar_hwnd and b_vk and d_vk:
+                    post_key_down(self._azahar_hwnd, b_vk)
+                    try:
+                        post_key_to_window(self._azahar_hwnd, d_vk,
+                                           hold_s)
+                    finally:
+                        post_key_up(self._azahar_hwnd, b_vk)
+                    return "postmessage"
+            except Exception:
+                pass
+
+        # pynput fallback — needs Azahar focused.
+        if self._kb is None:
+            # Last resort: at least move (walk) so the bot isn't stuck.
+            return self.tap(direction, hold_s=hold_s)
+        bkey = self._key_for("B")
+        dkey = self._key_for(direction)
+        self._kb.press(bkey)
+        self._kb.press(dkey)
+        time.sleep(hold_s)
+        self._kb.release(dkey)
+        self._kb.release(bkey)
+        return "pynput"
+
     def hold(self, button: str):
         key = self._key_for(button)
         if self.dry_run:

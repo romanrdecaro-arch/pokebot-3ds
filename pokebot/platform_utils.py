@@ -198,6 +198,32 @@ def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:
     return True
 
 
+def post_key_down(hwnd: int, vk_code: int) -> bool:
+    """PostMessage a WM_KEYDOWN only (no release) — for holding a key
+    while other keys are pressed (e.g. B held to run)."""
+    if not hwnd or not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+    except Exception:
+        return False
+    ctypes.windll.user32.PostMessageW(hwnd, 0x0100, vk_code, 0x00000001)
+    return True
+
+
+def post_key_up(hwnd: int, vk_code: int) -> bool:
+    """PostMessage a WM_KEYUP only — release a key held by
+    ``post_key_down``."""
+    if not hwnd or not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+    except Exception:
+        return False
+    ctypes.windll.user32.PostMessageW(hwnd, 0x0101, vk_code, 0xC0000001)
+    return True
+
+
 _SPECIAL_VK = {
     "left":      0x25,    "up":         0x26,
     "right":     0x27,    "down":       0x28,

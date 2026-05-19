@@ -190,7 +190,10 @@ def run(ctx) -> None:
         if dry:
             ctx._stop_evt.wait(0.4)
             continue
-        ctx.input.tap(a if step % 2 == 0 else b, hold_s=walk_hold)
+        # Hold B while moving so the player RUNS (covers grass faster
+        # → more encounters per minute).
+        ctx.input.move_running(a if step % 2 == 0 else b,
+                               hold_s=walk_hold)
         step += 1
         ctx._stop_evt.wait(0.12)
 
