@@ -292,35 +292,35 @@ def _hex_to_rgb(c: str):
 
 
 def _prep_gif(path, max_w: int, max_h: int, bg: str = "#1c1c1e"):
-    """Animated GIF → list of ImageTk frames, scaled to fit and made
-    FULLY OPAQUE on ``bg``.
+    """Animated GIF → list of ImageTk frames, scaled to fit and fully
+    OPAQUE on ``bg``.
 
-    The flicker was transparency: Tk clears the label and the cell
-    background flashes between frames. We rebuild the GIF properly —
-    composite each frame cumulatively onto a running canvas (handles
-    GIF disposal/partial frames), crop every frame to ONE union bbox
-    (no bobbing), then flatten onto a solid ``bg`` so every frame is
-    identical-size and opaque → smooth playback. None on failure.
+    Two causes of flicker, both fixed here:
+      1. Transparency — Tk clears the label between frames and the
+         cell background flashes. We flatten every frame onto a solid
+         ``bg`` so each is opaque.
+      2. Ghosting/trails — Showdown 'ani' GIFs are INDEPENDENT full
+         frames; compositing them cumulatively (the previous attempt)
+         smeared every frame on top of the last. We now read each
+         frame standalone via `seek`, letting PIL apply that frame's
+         own transparency/disposal.
+    A single union bbox keeps the sprite from bobbing. None on failure.
     """
     try:
-        from PIL import Image, ImageSequence, ImageTk
+        from PIL import Image, ImageTk
     except Exception:
         return None
     try:
         im = Image.open(path)
-        base = None          # cumulative RGBA canvas (disposal-safe)
-        comp = []
-        for fr in ImageSequence.Iterator(im):
-            f = fr.convert("RGBA")
-            if base is None or base.size != f.size:
-                base = Image.new("RGBA", f.size, (0, 0, 0, 0))
-            base = base.copy()
-            base.alpha_composite(f)
-            comp.append(base.copy())
-        if not comp:
+        n = getattr(im, "n_frames", 1)
+        frames = []
+        for i in range(n):
+            im.seek(i)
+            frames.append(im.convert("RGBA"))
+        if not frames:
             return None
         union = None
-        for f in comp:
+        for f in frames:
             bb = f.getbbox()
             if bb is None:
                 continue
@@ -328,15 +328,15 @@ def _prep_gif(path, max_w: int, max_h: int, bg: str = "#1c1c1e"):
                 min(union[0], bb[0]), min(union[1], bb[1]),
                 max(union[2], bb[2]), max(union[3], bb[3]))
         if union:
-            comp = [f.crop(union) for f in comp]
-        w, h = comp[0].size
+            frames = [f.crop(union) for f in frames]
+        w, h = frames[0].size
         if not w or not h:
             return None
         scale = min(max_w / w, max_h / h)
         size = (max(1, round(w * scale)), max(1, round(h * scale)))
         rgb = _hex_to_rgb(bg)
         out = []
-        for f in comp:
+        for f in frames:
             f = f.resize(size, Image.NEAREST)
             flat = Image.new("RGB", size, rgb)
             flat.paste(f, (0, 0), f)          # opaque, on cell bg
@@ -389,67 +389,81 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
         return
     key = species_id * 2 + (1 if shiny else 0)
     cached = cache.get(key)
+    if cached is False:                       # negative cache: gave up
+        widget.config(text=f"#{species_id}", fg=_MUTED,
+                      font=("Consolas", 8))
+        return
     if cached is not None:
         _apply_sprite(widget, cached)
         return
     widget.config(text="…", fg=_MUTED, width=4, height=2,
                   font=("Segoe UI", 11))
 
-    def _worker():
-        path, is_gif = None, False
+    def _fail():
+        cache[key] = False                    # don't re-hit the network
         try:
-            # Animated Showdown sprite first (downloaded once and
-            # cached as a .gif file), static front PNG as fallback.
-            from pokebot.sprites import (get_animated_sprite_path,
-                                         get_sprite_path)
-            path = get_animated_sprite_path(species_id, shiny=shiny)
-            if path:
-                is_gif = True
-            else:
-                path = get_sprite_path(species_id, shiny=shiny)
+            widget.config(text=f"#{species_id}", fg=_MUTED,
+                           font=("Consolas", 8))
         except Exception:
-            path = None
-        if not path:
-            widget.after(0, lambda: widget.config(
-                text=f"#{species_id}", fg=_MUTED, font=("Consolas", 8)))
+            pass
+
+    def _worker():
+        # Resolve EVERY source we can, in priority order, so one
+        # failing (e.g. Showdown name lookup) just falls through:
+        #   animated GIF → static front PNG → menu icon.
+        sources = []
+        try:
+            from pokebot.sprites import (get_animated_sprite_path,
+                                         get_sprite_path,
+                                         get_menu_sprite_path)
+            for fn, kind in ((get_animated_sprite_path, "gif"),
+                             (get_sprite_path, "static"),
+                             (get_menu_sprite_path, "static")):
+                try:
+                    p = fn(species_id, shiny=shiny)
+                except Exception:
+                    p = None
+                if p:
+                    sources.append((kind, str(p)))
+        except Exception:
+            sources = []
+        if not sources:
+            widget.after(0, _fail)
             return
 
         def _install():
             try:
-                if is_gif:
-                    # Scale every frame to fit the cell (Pillow);
-                    # fall back to raw Tk gif-index frames if needed.
-                    try:
-                        _bg = widget.cget("bg")
-                    except Exception:
-                        _bg = "#1c1c1e"
-                    frames = _prep_gif(path, 68, 54, _bg)
-                    if not frames:
-                        frames = []
-                        i = 0
-                        while True:
-                            try:
-                                frames.append(tk.PhotoImage(
-                                    file=str(path),
-                                    format=f"gif -index {i}"))
-                            except tk.TclError:
-                                break
-                            i += 1
-                    if not frames:
-                        raise ValueError("no GIF frames decoded")
-                    cache[key] = frames
-                    _apply_sprite(widget, frames)
-                else:
-                    img = (_prep_icon(path, 68, 54)
-                           or tk.PhotoImage(file=str(path)))
-                    cache[key] = img
-                    _apply_sprite(widget, img)
+                _bg = widget.cget("bg")
             except Exception:
+                _bg = "#1c1c1e"
+            for kind, p in sources:
                 try:
-                    widget.config(text=f"#{species_id}", fg=_MUTED,
-                                  font=("Consolas", 8))
+                    if kind == "gif":
+                        frames = _prep_gif(p, 68, 54, _bg)
+                        if not frames:        # raw Tk frames fallback
+                            frames, i = [], 0
+                            while True:
+                                try:
+                                    frames.append(tk.PhotoImage(
+                                        file=p,
+                                        format=f"gif -index {i}"))
+                                except tk.TclError:
+                                    break
+                                i += 1
+                        if frames:
+                            cache[key] = frames
+                            _apply_sprite(widget, frames)
+                            return
+                    else:
+                        img = _prep_icon(p, 68, 54)
+                        if img is None:
+                            img = tk.PhotoImage(file=p)
+                        cache[key] = img
+                        _apply_sprite(widget, img)
+                        return
                 except Exception:
-                    pass
+                    continue
+            _fail()
 
         widget.after(0, _install)
 
@@ -537,7 +551,7 @@ class _PartyStrip(tk.Frame):
             cell.configure(bg=_PANEL2, highlightthickness=0)
         bg = cell.cget("bg")
         # Sprite.
-        sprite_lbl = tk.Label(cell, bg=bg)
+        sprite_lbl = tk.Label(cell, bg=bg, bd=0, highlightthickness=0)
         sprite_lbl.pack()
         self._load_sprite_async(species_id, shiny, sprite_lbl)
         # Level
@@ -769,7 +783,8 @@ class _RecentlySeen(tk.Frame):
         sp_box.grid(row=0, column=self._col(0), sticky="nsew")
         sp_box.grid_propagate(False)
         sp_box.pack_propagate(False)
-        sprite_lbl = tk.Label(sp_box, bg=bg)
+        sprite_lbl = tk.Label(sp_box, bg=bg, bd=0,
+                               highlightthickness=0)
         sprite_lbl.place(relx=0.5, rely=0.5, anchor="center")
         self._load_sprite_async(species_id, shiny, sprite_lbl)
 
