@@ -94,8 +94,21 @@ offsets:
   # region for a checksum-valid encrypted PK6 (PKMN-NTR ReadOpponent).
   foe_base: 0x08800000
   foe_stride: 484
-  foe_scan_len: 0x20000      # 0x1FFFF rounded; bytes to scan @ foe_base
+  # Live-verified: the wild sits ~0x3ecc into the window and the
+  # player's battle copies ~0x4a70/0x4e38, so 0x8000 (32 KB) covers
+  # everything and scans ~4x faster than 0x20000 → tighter poll loop,
+  # no missed encounters.
+  foe_scan_len: 0x8000
   in_battle_flag: 0x0        # TODO: not yet located (battle-state u8)
+
+# Random-encounter shiny hunt tuning.
+random_encounters:
+  movement: horizontal       # horizontal (Left/Right) | vertical (Up/Down)
+  walk_hold: 0.35            # seconds per step; short = tighter detection
+  # RUN button touch position as window fractions (X/Y wild battle,
+  # Azahar default vertical layout). Bottom screen ≈ lower window;
+  # nudge these if the flee misses the RUN button.
+  run_touch: [0.5, 0.92]
 
 # Target / filter is configured in the launcher (Hunt → Target filter).
 # Default is "Shiny only". To override from the CLI: pass --target shiny

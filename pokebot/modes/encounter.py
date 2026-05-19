@@ -1,24 +1,23 @@
 """
 Random-encounter shiny hunt.
 
-Walks back-and-forth in tall grass. On every NEW wild encounter it
-reads the opponent via the proven foe-window scan (the SAME detection
-manual mode uses — ``observe.find_wild`` / ``select_wild``), then:
+Walks back-and-forth in tall grass with SHORT alternating Left/Right
+steps. Detection is battle-presence gated: a wild is "an empty-OT,
+non-party, checksum-valid PK6 in the foe window" (shared with manual
+mode via ``observe.find_wild``). While any wild is present we are IN
+a battle and send ONLY flee inputs — never walk inputs (sending D-pad
+in the battle menu was what got the old loop stuck).
 
-  - shiny / target-filter match  → STOP + loud alert, battle left on
-    screen for you to catch it manually.
-  - anything else                → flee and resume walking.
+  - new wild (unique enc key): report it.
+      shiny / target match → STOP + loud alert (battle left on screen).
+      otherwise             → flee, then keep retrying flee until the
+                              foe slot clears (battle over) → walk.
+  - no wild: overworld → one short walk step, poll again.
 
-No ``in_battle_flag`` and no offset auto-discovery needed: a wild is
-simply "an empty-OT, non-party, checksum-valid PK6 in the foe
-window" (X/Y WildOffset1 0x08800000). Each distinct encounter has a
-unique encryption key, so a freshly-spawned wild is detected even
-though the engine reuses the same RAM slot.
-
-Movement axis: config["random_encounters"]["movement"] ("horizontal"
-| "vertical", default horizontal). Active inputs need the input
-driver; without it the loop still detects/logs but can't walk or
-flee (it degrades to manual mode).
+X/Y has no clean D-pad battle-menu grid, so fleeing TOUCHES the RUN
+button (Azahar bottom screen) at config ``random_encounters.run_touch``
+fractions — tune those live if the flee misses. Text is cleared with
+B taps before/after so the command menu is actually up when we touch.
 """
 from __future__ import annotations
 
@@ -30,41 +29,23 @@ from .observe import (find_wild, _read_party, _report_encounter,
 
 log = logging.getLogger(__name__)
 
-
-def _alternating_dirs(axis: str):
-    """(button, hold_seconds) for the walking loop: a 2 s kick then
-    alternating 3 s holds so the player crosses several grass tiles
-    per turn (that's what rolls encounters)."""
-    a, b = (("DpadUp", "DpadDown") if axis == "vertical"
-            else ("DpadLeft", "DpadRight"))
-    yield (a, 2.0)
-    while True:
-        yield (b, 3.0)
-        yield (a, 3.0)
+_BTN = {"horizontal": ("DpadLeft", "DpadRight"),
+        "vertical":   ("DpadUp", "DpadDown")}
 
 
-def _flee(ctx) -> None:
-    """X/Y battle menu: Left→Right→A reaches RUN from the FIGHT
-    cursor; then mash B to clear the got-away dialogue."""
-    log.info("  not a target — fleeing.")
-    for button in ("DpadLeft", "DpadRight", "A"):
-        ctx.input.tap(button, hold_s=0.05)
-        time.sleep(0.5)
-    for _ in range(6):
-        ctx.input.tap("B", hold_s=0.05)
-        time.sleep(0.25)
-
-
-def _alert_shiny(ctx, pkm, addr: int, count: int) -> None:
-    lvl = _level_from_exp(pkm.exp)
-    bar = "★" * 28
-    log.info(bar)
-    log.info(f"  SHINY / TARGET FOUND  —  encounter #{count}")
-    log.info(f"  #{pkm.species} {pkm.nickname or ''} ~Lv{lvl} "
-             f"{pkm.gender}  PID={pkm.pid:08X}  nature={pkm.nature}")
-    log.info(f"  IVs {pkm.ivs}  @ {addr:#010x}")
-    log.info("  Bot STOPPED — battle left on screen. Catch it!")
-    log.info(bar)
+def _alert(ctx, pkm, addr: int, count: int) -> None:
+    bar = "*" * 30
+    for line in (
+        bar,
+        f"  SHINY / TARGET FOUND  —  encounter #{count}",
+        f"  #{pkm.species} {pkm.nickname or ''} "
+        f"~Lv{_level_from_exp(pkm.exp)} {pkm.gender}  "
+        f"PID={pkm.pid:08X}  nature={pkm.nature}",
+        f"  IVs {pkm.ivs}  @ {addr:#010x}",
+        "  Bot STOPPED — battle left on screen. Catch it!",
+        bar,
+    ):
+        log.info(line)
     ctx.dashboard.broadcast(
         "target_hit", count=count,
         reason=(ctx.target.describe(pkm) if ctx.target else "shiny"),
@@ -73,38 +54,53 @@ def _alert_shiny(ctx, pkm, addr: int, count: int) -> None:
 
 
 def _is_target(ctx, pkm) -> bool:
-    if pkm.shiny:
-        return True
-    return bool(ctx.target and ctx.target.matches(pkm))
+    return bool(pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
+
+
+def _flee(ctx, run_xy) -> None:
+    """One flee attempt: clear the appearance text so the command
+    menu is up, touch RUN, then clear the got-away text."""
+    for _ in range(5):                       # "Wild X appeared!" / send-out
+        ctx.input.tap("B", hold_s=0.05)
+        ctx._stop_evt.wait(0.35)
+    ok = ctx.input.tap_touch(run_xy[0], run_xy[1], hold_s=0.08)
+    log.info(f"  flee: touch RUN @ ({run_xy[0]:.2f},{run_xy[1]:.2f}) "
+             f"-> {'sent' if ok else 'FAILED (touch path unavailable)'}")
+    ctx._stop_evt.wait(0.6)
+    for _ in range(5):                       # "Got away safely!" etc.
+        ctx.input.tap("B", hold_s=0.05)
+        ctx._stop_evt.wait(0.3)
 
 
 def run(ctx) -> None:
     o = ctx.game.offsets
     foe_base = o.foe_base
-    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
+    foe_len = getattr(o, "foe_scan_len", 0) or 0x8000
     party_base = o.party_base
     party_stride = o.party_stride or 484
+    rcfg = ctx.config.get("random_encounters") or {}
     player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
         "trainer_name", "Roman")
-    movement = (ctx.config.get("random_encounters") or {}).get(
-        "movement", "horizontal").lower()
-    if movement not in ("horizontal", "vertical"):
+    movement = str(rcfg.get("movement", "horizontal")).lower()
+    if movement not in _BTN:
         movement = "horizontal"
+    walk_hold = float(rcfg.get("walk_hold", 0.35))
+    run_xy = rcfg.get("run_touch") or [0.5, 0.92]
 
-    log.info(f"Mode: shiny hunt — random encounters ({movement})")
+    log.info(f"Mode: shiny hunt — random encounters ({movement}, "
+             f"{walk_hold:.2f}s steps)")
     log.info(f"  foe window=[{foe_base:#010x},"
-             f"{foe_base + foe_len:#010x})  player OT {player_ot!r}")
+             f"{foe_base + foe_len:#010x})  player OT {player_ot!r}  "
+             f"RUN touch ({run_xy[0]:.2f},{run_xy[1]:.2f})")
     if not foe_base:
-        log.error("foe_base not configured (X/Y: 0x08800000). Set it "
-                  "in config.yaml [offsets:].")
+        log.error("foe_base not configured (X/Y: 0x08800000).")
         return
 
     diag = ctx.input.diagnose()
     log.info(f"  input driver: {diag}")
     dry = bool(diag.get("dry_run"))
     if dry:
-        log.warning("  input driver DRY-RUN — cannot walk/flee; this "
-                    "will only detect & log (like manual mode).")
+        log.warning("  input DRY-RUN — detect/log only (no walk/flee).")
     else:
         try:
             from ..platform_utils import focus_azahar
@@ -112,63 +108,58 @@ def run(ctx) -> None:
         except Exception as e:
             log.warning(f"  focus_azahar failed: {e}")
 
-    # Party keys exclude the player's own mons from the wild scan.
     party_keys = {p.encryption_key
                   for p in _read_party(ctx, party_base, party_stride)} \
         if party_base else set()
 
-    handled: set[int] = set()       # enc_keys already evaluated
-    walk = _alternating_dirs(movement)
+    handled: set[int] = set()
+    a, b = _BTN[movement]
+    step_left = True
     encounters = 0
-    last_party_refresh = time.monotonic()
+    last_party = time.monotonic()
 
     while not ctx.should_stop():
-        # Refresh party occasionally (cheap insurance if it changes).
-        if party_base and time.monotonic() - last_party_refresh > 30:
+        if party_base and time.monotonic() - last_party > 30:
             party_keys = {p.encryption_key for p in
                           _read_party(ctx, party_base, party_stride)}
-            last_party_refresh = time.monotonic()
+            last_party = time.monotonic()
 
         wild = find_wild(ctx, foe_base, foe_len, party_keys, player_ot)
 
+        # -- Overworld: no wild present → take ONE short walk step. ----
         if wild is None:
-            # Overworld — take a walking step (skip if no input driver).
             if dry:
-                ctx._stop_evt.wait(0.8)
+                ctx._stop_evt.wait(0.4)
             else:
-                button, hold_s = next(walk)
-                ctx.input.tap(button, hold_s=hold_s)
-                ctx._stop_evt.wait(0.15)
+                ctx.input.tap(a if step_left else b, hold_s=walk_hold)
+                step_left = not step_left
+                ctx._stop_evt.wait(0.12)
             continue
 
         addr, pkm = wild
-        if pkm.encryption_key in handled:
-            # Same battle we already dealt with (mid-flee / lingering
-            # stale record). Nudge forward to clear dialogue and roll
-            # the next encounter; don't re-evaluate it.
-            if not dry:
-                button, _ = next(walk)
-                ctx.input.tap(button, hold_s=0.1)
-            ctx._stop_evt.wait(0.25)
-            continue
 
-        handled.add(pkm.encryption_key)
-        if len(handled) > 256:
-            handled = {pkm.encryption_key}
-        encounters += 1
-        _report_encounter(ctx, pkm, addr, encounters, "hunt")
-
-        if _is_target(ctx, pkm):
-            _alert_shiny(ctx, pkm, addr, encounters)
-            ctx.request_stop("shiny / target found")
-            return
-
-        if dry:
-            continue                # can't flee without inputs
-
-        # Let the battle intro animation finish and the FIGHT/BAG/
-        # POKéMON/RUN menu render before mashing the flee inputs.
-        ctx._stop_evt.wait(2.0)
-        _flee(ctx)
+        # -- In battle. Never walk here. -----------------------------
+        if pkm.encryption_key not in handled:
+            handled.add(pkm.encryption_key)
+            if len(handled) > 256:
+                handled = {pkm.encryption_key}
+            encounters += 1
+            _report_encounter(ctx, pkm, addr, encounters, "hunt")
+            if _is_target(ctx, pkm):
+                _alert(ctx, pkm, addr, encounters)
+                ctx.request_stop("shiny / target found")
+                return
+            if dry:
+                ctx._stop_evt.wait(0.4)
+                continue
+            ctx._stop_evt.wait(1.8)        # let the battle UI render
+            _flee(ctx, run_xy)
+        else:
+            # Already evaluated this battle — flee didn't take yet.
+            # Retry the flee; do NOT send walk inputs.
+            if dry:
+                ctx._stop_evt.wait(0.4)
+            else:
+                _flee(ctx, run_xy)
 
     log.info(f"Shiny hunt stopped after {encounters} encounter(s).")

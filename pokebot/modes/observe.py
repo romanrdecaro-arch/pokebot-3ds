@@ -31,7 +31,7 @@ from ..parser import calc_checksum, decrypt_pkm, encounter_payload, parse_pkm
 
 log = logging.getLogger(__name__)
 
-_POLL_INTERVAL_S = 0.8
+_POLL_INTERVAL_S = 0.4      # tight enough to catch every wild battle
 _PARTY_SLOTS = 6
 _PK6 = 260                  # bytes read/parsed per party record
 _OPP_PK6 = 232              # min bytes needed to decode a record
@@ -234,7 +234,7 @@ def run(ctx) -> None:
     party_base = o.party_base
     party_stride = o.party_stride or 484
     foe_base = o.foe_base
-    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
+    foe_len = getattr(o, "foe_scan_len", 0) or 0x8000
     player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
         "trainer_name", "Roman")
 
