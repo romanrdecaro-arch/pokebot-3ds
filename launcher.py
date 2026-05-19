@@ -454,23 +454,26 @@ class _RecentlySeen(tk.Frame):
     # Column layout: (label, fixed_width_px, anchor). Fixed widths +
     # a shared uniform group make the header and EVERY row use
     # identical column geometry, so nothing looks disjointed.
+    # Fixed pixel widths; NO uniform group (a shared uniform forces
+    # every column to the widest one's size — that overflowed the
+    # panel). minsize + weight 0 keeps each column its own width and
+    # identical between the header and every row, so they line up.
     _HEADERS = (
-        ("Species",      64, "center"),
-        ("Gender",       60, "center"),
-        ("Level",        60, "center"),
-        ("PID",          92, "center"),
-        ("Shiny Value",  96, "center"),
-        ("Ability",     150, "center"),
-        ("Nature",       92, "center"),
-        ("IVs",         224, "center"),
-        ("Hidden Power",112, "center"),
+        ("Species",      66, "center"),
+        ("Gender",       52, "center"),
+        ("Level",        56, "center"),
+        ("PID",          82, "center"),
+        ("Shiny Value",  86, "center"),
+        ("Ability",     122, "center"),
+        ("Nature",       76, "center"),
+        ("IVs",         178, "center"),
+        ("Hidden Power", 96, "center"),
     )
 
     @classmethod
     def _config_cols(cls, frame) -> None:
         for i, (_, w, _) in enumerate(cls._HEADERS):
-            frame.grid_columnconfigure(i, minsize=w, weight=0,
-                                       uniform="rs")
+            frame.grid_columnconfigure(i, minsize=w, weight=0)
 
     def __init__(self, parent):
         super().__init__(parent, bg=_PANEL)
@@ -492,14 +495,14 @@ class _RecentlySeen(tk.Frame):
 
         # Header row
         header = tk.Frame(self, bg=_PANEL)
-        header.pack(fill="x", padx=14)
+        header.pack(fill="x", padx=8)
         self._config_cols(header)
         for i, (text, _, anchor) in enumerate(self._HEADERS):
             tk.Label(header, text=text, bg=_PANEL, fg=_MUTED,
                      font=("Segoe UI", 9, "bold"),
                      anchor=anchor).grid(row=0, column=i,
                                          pady=(0, 6), sticky="nsew")
-        tk.Frame(self, bg=_BORDER, height=1).pack(fill="x", padx=14)
+        tk.Frame(self, bg=_BORDER, height=1).pack(fill="x", padx=8)
 
         # Scrollable rows area
         scroll_frame = tk.Frame(self, bg=_PANEL)
@@ -562,13 +565,13 @@ class _RecentlySeen(tk.Frame):
             fg=_ACCENT, font=("Segoe UI", 9, "bold"))
 
         row = self._build_row(evt)
-        row.pack(fill="x", padx=4, pady=2)
+        row.pack(fill="x", padx=0, pady=2)
         self._rows.insert(0, row)
         # Move newest row to top
         for r in self._rows:
             r.pack_forget()
         for r in self._rows[: self.MAX_ROWS]:
-            r.pack(fill="x", padx=4, pady=2)
+            r.pack(fill="x", padx=0, pady=2)
         # Trim
         for r in self._rows[self.MAX_ROWS :]:
             r.destroy()
@@ -593,14 +596,21 @@ class _RecentlySeen(tk.Frame):
         hp_type, hp_power = _hidden_power(ivs)
 
         bg = _PANEL2 if not shiny else "#2a230a"  # warm tint for shiny rows
-        row = tk.Frame(self._rows_frame, bg=bg, padx=6, pady=4,
+        row = tk.Frame(self._rows_frame, bg=bg, padx=0, pady=4,
                        highlightthickness=1,
                        highlightbackground="#ffd86b" if shiny else _BORDER)
         self._config_cols(row)
 
-        # Sprite (Species)
-        sprite_lbl = tk.Label(row, bg=bg)
-        sprite_lbl.grid(row=0, column=0, pady=2, sticky="nsew")
+        # Sprite (Species) — locked in a fixed box so an odd-sized
+        # menu icon can't widen column 0 and shove the row out of
+        # alignment; the icon is centred inside the box.
+        sp_w = self._HEADERS[0][1]
+        sp_box = tk.Frame(row, bg=bg, width=sp_w, height=46)
+        sp_box.grid(row=0, column=0, sticky="nsew")
+        sp_box.grid_propagate(False)
+        sp_box.pack_propagate(False)
+        sprite_lbl = tk.Label(sp_box, bg=bg)
+        sprite_lbl.place(relx=0.5, rely=0.5, anchor="center")
         self._load_sprite_async(species_id, shiny, sprite_lbl)
 
         # Gender
