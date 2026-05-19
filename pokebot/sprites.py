@@ -30,6 +30,17 @@ _FALLBACK_URL_TMPL = (
     "pokemon/{sid}.png"
 )
 
+# Menu / box "party" icons — the small flat sprites the games use on
+# the party & box screens (what the user asked for, vs the big battle
+# render). PokeAPI's generation-viii/icons set is the cleanest
+# per-dex-id source in that exact style and covers every Gen 6/7
+# species. (Bulbagarden hosts the Gen VI menu sprites but blocks
+# hotlinking; these match the style and are reliably fetchable.)
+_MENU_URL_TMPL = (
+    "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/"
+    "pokemon/versions/generation-viii/icons/{sid}.png"
+)
+
 _CACHE_DIR = Path.home() / ".pokebot-3ds-sprites"
 
 
@@ -73,6 +84,35 @@ def get_sprite_path(species_id: int, shiny: bool = False) -> Optional[Path]:
             log.debug(f"sprite download failed for #{species_id} ({url}): {e}")
             continue
     return None
+
+
+def get_menu_sprite_path(species_id: int,
+                         shiny: bool = False) -> Optional[Path]:
+    """Local PNG path for the small MENU / party-screen icon (the flat
+    box sprite), downloading on first use. ``None`` if unavailable so
+    callers fall back to the front sprite. Menu icons have no shiny
+    variant — the species icon is the same — so ``shiny`` is ignored.
+    """
+    if not species_id or species_id < 1:
+        return None
+    target = cache_dir() / f"{species_id}_menu.png"
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    url = _MENU_URL_TMPL.format(sid=species_id)
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "pokebot-3ds/0.1"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status != 200:
+                return None
+            data = resp.read()
+        if not data:
+            return None
+        target.write_bytes(data)
+        return target
+    except Exception as e:
+        log.debug(f"menu sprite download failed for #{species_id}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------

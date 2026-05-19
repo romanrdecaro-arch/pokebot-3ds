@@ -22,6 +22,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 
+# Encounter stats persisted between sessions:
+#   total = every wild ever seen by this install
+#   phase = encounters since the last shiny/target (a "phase" in
+#           shiny-hunting parlance); resets to 0 on a target hit.
+_STATS_FILE = ROOT / ".pokebot_stats.json"
+
+
+def _load_stats() -> dict:
+    try:
+        import json as _j
+        d = _j.loads(_STATS_FILE.read_text())
+        return {"total": int(d.get("total", 0)),
+                "phase": int(d.get("phase", 0))}
+    except Exception:
+        return {"total": 0, "phase": 0}
+
+
+def _save_stats(stats: dict) -> None:
+    try:
+        import json as _j
+        _STATS_FILE.write_text(_j.dumps(stats))
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Step 1 — Python version gate (before anything else)
@@ -164,26 +188,25 @@ _DANGER = "#ff453a"   # iOS systemRed
 
 
 def _draw_pokeball(canvas: tk.Canvas, size: int = 32) -> None:
-    """Render a Pokéball glyph on a square Tk canvas."""
-    pad = 2
+    """Clean monoline Pokéball mark — flat, two-tone, no skeuomorphism.
+
+    A single accent-coloured ring, an equator line, and a hollow
+    centre dot. Reads instantly at any size and matches the dark UI.
+    """
+    bg = canvas.cget("bg")
+    lw = max(2, size // 16)
+    pad = lw
     a, b = pad, size - pad
-    mid_y_top    = (size // 2) - 2
-    mid_y_bottom = (size // 2) + 2
-    # Top red half + bottom white half. We use create_arc so each half
-    # gets the proper rounded shape.
-    canvas.create_arc(a, a, b, b, start=0,   extent=180,
-                      fill=_ACCENT, outline="#0d0d0d", width=2)
-    canvas.create_arc(a, a, b, b, start=180, extent=180,
-                      fill="#f4f4f4", outline="#0d0d0d", width=2)
-    # Equator band (covers the seam between the two halves).
-    canvas.create_rectangle(a + 1, mid_y_top, b - 1, mid_y_bottom,
-                            fill="#0d0d0d", outline="")
-    # Center button: outer black, inner white.
-    cx, cy = size // 2, size // 2
-    canvas.create_oval(cx - 5, cy - 5, cx + 5, cy + 5,
-                       fill="#0d0d0d", outline="")
-    canvas.create_oval(cx - 3, cy - 3, cx + 3, cy + 3,
-                       fill="#f4f4f4", outline="")
+    cx = cy = size / 2
+    r_in = size * 0.17
+    # Outer ring.
+    canvas.create_oval(a, a, b, b, outline=_ACCENT, width=lw, fill=bg)
+    # Equator (stop short of the centre dot on each side).
+    canvas.create_line(a, cy, cx - r_in, cy, fill=_ACCENT, width=lw)
+    canvas.create_line(cx + r_in, cy, b, cy, fill=_ACCENT, width=lw)
+    # Hollow centre button.
+    canvas.create_oval(cx - r_in, cy - r_in, cx + r_in, cy + r_in,
+                       outline=_ACCENT, width=lw, fill=bg)
 
 
 _TYPE_COLORS = {
@@ -270,13 +293,13 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
     def _worker():
         path, is_gif = None, False
         try:
-            from pokebot.sprites import (get_animated_sprite_path,
+            # Menu / party icon first (what the user wants), then the
+            # static front sprite as a fallback. No animated battle
+            # sprite — that's the "in-game" look we're moving away from.
+            from pokebot.sprites import (get_menu_sprite_path,
                                          get_sprite_path)
-            path = get_animated_sprite_path(species_id, shiny=shiny)
-            if path:
-                is_gif = True
-            else:
-                path = get_sprite_path(species_id, shiny=shiny)
+            path = (get_menu_sprite_path(species_id, shiny=shiny)
+                    or get_sprite_path(species_id, shiny=shiny))
         except Exception:
             path = None
         if not path:
@@ -428,18 +451,26 @@ class _RecentlySeen(tk.Frame):
 
     MAX_ROWS = 100  # how many recent encounters to keep on screen
 
-    # Column layout: (label, weight, anchor, monospace?)
+    # Column layout: (label, fixed_width_px, anchor). Fixed widths +
+    # a shared uniform group make the header and EVERY row use
+    # identical column geometry, so nothing looks disjointed.
     _HEADERS = (
-        ("",            0, "w", False),  # sprite
-        ("",            0, "center", False),  # sex
-        ("",            0, "center", False),  # level
-        ("PID",         0, "center", True),
-        ("Shiny Value", 0, "center", True),
-        ("Ability",     1, "w", False),
-        ("Nature",      0, "center", False),
-        ("IVs",         1, "w", True),
-        ("Hidden Power", 0, "w", False),
+        ("Species",      64, "center"),
+        ("Gender",       60, "center"),
+        ("Level",        60, "center"),
+        ("PID",          92, "center"),
+        ("Shiny Value",  96, "center"),
+        ("Ability",     150, "center"),
+        ("Nature",       92, "center"),
+        ("IVs",         224, "center"),
+        ("Hidden Power",112, "center"),
     )
+
+    @classmethod
+    def _config_cols(cls, frame) -> None:
+        for i, (_, w, _) in enumerate(cls._HEADERS):
+            frame.grid_columnconfigure(i, minsize=w, weight=0,
+                                       uniform="rs")
 
     def __init__(self, parent):
         super().__init__(parent, bg=_PANEL)
@@ -453,21 +484,21 @@ class _RecentlySeen(tk.Frame):
         tk.Label(title_bar, text="Recently Seen",
                  bg=_PANEL, fg=_TEXT,
                  font=("Segoe UI", 13, "bold")).pack(side="left")
-        self._counter_lbl = tk.Label(title_bar, text="0 encounters",
-                                     bg=_PANEL, fg=_MUTED,
-                                     font=("Segoe UI", 9))
+        self._stats = _load_stats()
+        self._counter_lbl = tk.Label(
+            title_bar, text=self._counter_text(),
+            bg=_PANEL, fg=_MUTED, font=("Segoe UI", 9))
         self._counter_lbl.pack(side="right")
 
         # Header row
         header = tk.Frame(self, bg=_PANEL)
         header.pack(fill="x", padx=14)
-        for i, (text, w, anchor, _) in enumerate(self._HEADERS):
-            header.grid_columnconfigure(i, weight=w)
+        self._config_cols(header)
+        for i, (text, _, anchor) in enumerate(self._HEADERS):
             tk.Label(header, text=text, bg=_PANEL, fg=_MUTED,
                      font=("Segoe UI", 9, "bold"),
                      anchor=anchor).grid(row=0, column=i,
-                                         padx=8, pady=(0, 6),
-                                         sticky="ew")
+                                         pady=(0, 6), sticky="nsew")
         tk.Frame(self, bg=_BORDER, height=1).pack(fill="x", padx=14)
 
         # Scrollable rows area
@@ -499,7 +530,6 @@ class _RecentlySeen(tk.Frame):
 
         self._rows: list[tk.Frame] = []
         self._sprites: dict[int, tk.PhotoImage] = {}  # keep refs alive
-        self._count = 0
 
         # Empty placeholder
         self._empty = tk.Label(self._rows_frame,
@@ -510,13 +540,25 @@ class _RecentlySeen(tk.Frame):
 
     # ---- public API --------------------------------------------------------
 
+    def _counter_text(self) -> str:
+        return (f"Phase {self._stats['phase']}  ·  "
+                f"Total {self._stats['total']}")
+
     def add_pokemon(self, evt: dict):
         if self._empty:
             self._empty.destroy()
             self._empty = None
-        self._count += 1
+        # A shiny/target emits a separate 'target_hit' after its
+        # 'encounter' — that encounter already bumped the counters, so
+        # target_hit only CLOSES the phase (resets it), no double count.
+        if evt.get("type") == "target_hit":
+            self._stats["phase"] = 0
+        else:
+            self._stats["total"] += 1
+            self._stats["phase"] += 1
+        _save_stats(self._stats)
         self._counter_lbl.config(
-            text=f"{self._count} encounters",
+            text=self._counter_text(),
             fg=_ACCENT, font=("Segoe UI", 9, "bold"))
 
         row = self._build_row(evt)
@@ -554,30 +596,32 @@ class _RecentlySeen(tk.Frame):
         row = tk.Frame(self._rows_frame, bg=bg, padx=6, pady=4,
                        highlightthickness=1,
                        highlightbackground="#ffd86b" if shiny else _BORDER)
-        for i, (_, w, _, _) in enumerate(self._HEADERS):
-            row.grid_columnconfigure(i, weight=w)
+        self._config_cols(row)
 
-        # Sprite
+        # Sprite (Species)
         sprite_lbl = tk.Label(row, bg=bg)
-        sprite_lbl.grid(row=0, column=0, padx=4, pady=2, sticky="w")
+        sprite_lbl.grid(row=0, column=0, pady=2, sticky="nsew")
         self._load_sprite_async(species_id, shiny, sprite_lbl)
 
-        # Sex
+        # Gender
         sex_color = {"M": "#5fa9ff", "F": "#ff7eb6", "G": _MUTED}.get(gender, _MUTED)
         sex_glyph = {"M": "♂", "F": "♀", "G": "—"}.get(gender, "—")
         tk.Label(row, text=sex_glyph, bg=bg, fg=sex_color,
-                 font=("Segoe UI", 11, "bold")).grid(row=0, column=1, padx=4)
+                 font=("Segoe UI", 12, "bold")).grid(
+                     row=0, column=1, sticky="nsew")
 
         # Level
         lvl = f"Lv {level}" if level is not None else "Lv ?"
         tk.Label(row, text=lvl, bg=bg, fg=_TEXT,
-                 font=("Segoe UI", 10, "bold")).grid(row=0, column=2, padx=8)
+                 font=("Segoe UI", 10, "bold")).grid(
+                     row=0, column=2, sticky="nsew")
 
         # PID
         tk.Label(row, text=f"{pid:08X}", bg=bg, fg=_TEXT,
-                 font=("Consolas", 10)).grid(row=0, column=3, padx=8)
+                 font=("Consolas", 10)).grid(
+                     row=0, column=3, sticky="nsew")
 
-        # Shiny Value (PSV) — gold pill if shiny, plain text otherwise
+        # Shiny Value (PSV) — gold if shiny, muted otherwise
         psv_text = f"{int(psv):05d}" if psv is not None else "—"
         if shiny:
             sv_lbl = tk.Label(row, text=f"★ {psv_text}", bg=bg,
@@ -585,24 +629,28 @@ class _RecentlySeen(tk.Frame):
         else:
             sv_lbl = tk.Label(row, text=f"— {psv_text}", bg=bg,
                               fg=_MUTED, font=("Consolas", 10))
-        sv_lbl.grid(row=0, column=4, padx=8)
+        sv_lbl.grid(row=0, column=4, sticky="nsew")
 
         # Ability
         ab_text = self._ability_text(ability_id, ability_num)
         tk.Label(row, text=ab_text, bg=bg, fg=_TEXT,
-                 font=("Segoe UI", 10), anchor="w").grid(row=0, column=5,
-                                                         padx=8, sticky="w")
+                 font=("Segoe UI", 10)).grid(
+                     row=0, column=5, sticky="nsew")
 
         # Nature
         nat_text = nature if isinstance(nature, str) and nature else \
             (_NATURE_NAMES[int(nature)] if isinstance(nature, int)
              and 0 <= int(nature) < 25 else "?")
         tk.Label(row, text=nat_text, bg=bg, fg=_TEXT,
-                 font=("Segoe UI", 10)).grid(row=0, column=6, padx=8)
+                 font=("Segoe UI", 10)).grid(
+                     row=0, column=6, sticky="nsew")
 
-        # IVs — per-stat coloured (red=31, blue=0, white otherwise)
-        iv_frame = tk.Frame(row, bg=bg)
-        iv_frame.grid(row=0, column=7, padx=8, sticky="w")
+        # IVs — per-stat coloured (red=31, blue=0, white otherwise),
+        # centred in the column.
+        iv_outer = tk.Frame(row, bg=bg)
+        iv_outer.grid(row=0, column=7, sticky="nsew")
+        iv_frame = tk.Frame(iv_outer, bg=bg)
+        iv_frame.place(relx=0.5, rely=0.5, anchor="center")
         order = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
         for i, stat in enumerate(order):
             v = int(ivs.get(stat, 0))
@@ -610,14 +658,16 @@ class _RecentlySeen(tk.Frame):
             weight = "bold" if v in (0, 31) else "normal"
             tk.Label(iv_frame, text=str(v), bg=bg, fg=color,
                      font=("Consolas", 10, weight),
-                     width=3, anchor="center").pack(side="left", padx=1)
+                     width=2, anchor="center").pack(side="left", padx=1)
         iv_sum = sum(int(ivs.get(s, 0)) for s in order)
         tk.Label(iv_frame, text=f"({iv_sum})", bg=bg, fg=_MUTED,
                  font=("Consolas", 10)).pack(side="left", padx=(6, 0))
 
-        # Hidden Power (type pill + power)
-        hp_frame = tk.Frame(row, bg=bg)
-        hp_frame.grid(row=0, column=8, padx=8, sticky="w")
+        # Hidden Power (type pill + power), centred in the column
+        hp_outer = tk.Frame(row, bg=bg)
+        hp_outer.grid(row=0, column=8, sticky="nsew")
+        hp_frame = tk.Frame(hp_outer, bg=bg)
+        hp_frame.place(relx=0.5, rely=0.5, anchor="center")
         hp_color = _TYPE_COLORS.get(hp_type, "#888")
         pill = tk.Label(hp_frame, text=hp_type.upper(),
                         bg=hp_color, fg="#000",
@@ -713,25 +763,12 @@ class _App(tk.Tk):
         # ── Header ──────────────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=_PANEL, padx=18, pady=12)
         hdr.pack(fill="x")
-        # Logo: PNG is pre-rendered at the exact display size by
-        # scripts/generate_logo.py — Tk's PhotoImage.subsample is
-        # nearest-neighbour, so any runtime scaling looks crunchy. We
-        # fall back to the Tk-canvas Pokéball if the PNG is missing.
-        logo_path = ROOT / "assets" / "pokeball.png"
-        self._logo_img: tk.PhotoImage | None = None
-        if logo_path.exists():
-            try:
-                self._logo_img = tk.PhotoImage(file=str(logo_path))
-            except Exception:
-                self._logo_img = None
-        if self._logo_img is not None:
-            tk.Label(hdr, image=self._logo_img, bg=_PANEL,
-                     bd=0).pack(side="left", padx=(0, 14))
-        else:
-            logo = tk.Canvas(hdr, width=64, height=64,
-                             bg=_PANEL, highlightthickness=0)
-            logo.pack(side="left", padx=(0, 14))
-            _draw_pokeball(logo, 64)
+        # Clean monoline mark drawn straight onto a Tk canvas — no
+        # bitmap asset (the old pre-rendered PNG looked crunchy).
+        logo = tk.Canvas(hdr, width=40, height=40,
+                         bg=_PANEL, highlightthickness=0)
+        logo.pack(side="left", padx=(0, 14))
+        _draw_pokeball(logo, 40)
         # Wordmark
         tk.Label(hdr, text="pokebot-3ds", bg=_PANEL, fg=_TEXT,
                  font=("Segoe UI", 16, "bold")).pack(side="left")
@@ -1106,13 +1143,11 @@ class _App(tk.Tk):
 
     def _on_method_change(self, *_):
         m = self._selected_method()
-        warn_parts = []
-        if m and m.shiny_locked:
-            warn_parts.append("⚠ Shiny-locked: this Pokémon cannot be "
-                              "shiny in this game (see README).")
-        if m and m.notes:
-            warn_parts.append(m.notes)
-        self._method_warn.config(text="\n".join(warn_parts))
+        # Method descriptions removed by request — keep only the
+        # critical shiny-locked safety warning (rarely shown).
+        warn = ("⚠ Shiny-locked: this Pokémon cannot be shiny in this "
+                "game (see README)." if (m and m.shiny_locked) else "")
+        self._method_warn.config(text=warn)
 
         # Show / hide the method-specific sub-dropdowns. Pack them
         # BEFORE the target divider so the layout inside Hunt card is
