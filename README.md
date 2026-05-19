@@ -40,6 +40,49 @@ but adapted to Azahar's UDP RPC instead of an in-emulator Lua console.
 > reliable workflow — install PKHeX-Plugins LiveHeX, connect to
 > Azahar, copy the address it uses into the bot's config.
 
+## Status — what works
+
+Detection no longer relies on fragile pointer chains: it scans the
+PKMN-NTR `WildOffset1` region for the live opponent and reads the
+party at `PartyOffset`, decrypting PK6 in-place. **Pokémon Y has been
+verified end-to-end on Azahar** (every wild encounter caught, correct
+species/level/IVs/nature/ability, shiny math live, auto-flee, stop +
+alert on a target). The other Gen 6/7 titles use the same code path
+with their published offsets but haven't been user-tested yet.
+
+Legend: ✅ verified live · 🟡 wired, not yet user-tested · ⬜ planned
+
+| Capability | X / Y | OR / AS | S / M | US / UM |
+|---|:---:|:---:|:---:|:---:|
+| Live wild detection (species · PID · IVs · nature · ability) | ✅ | 🟡¹ | 🟡² | 🟡² |
+| Shiny detection (PSV vs player TSV) | ✅ | 🟡 | 🟡 | 🟡 |
+| Random-encounter shiny hunt (walk → flee → stop on shiny) | ✅ | 🟡¹ | 🟡² | 🟡² |
+| Manual / observe (read-only, no inputs) | ✅ | 🟡 | 🟡 | 🟡 |
+| Live party read (Recently Seen + Party strip) | ✅ | 🟡 | 🟡 | 🟡 |
+| Persistent Phase / Total / best SV / best IVs | ✅ | ✅ | ✅ | ✅ |
+| Soft-reset (starters · gifts · legendaries) | 🟡 | 🟡 | 🟡 | 🟡 |
+| PKHeX LiveHeX bridge (box / trainer editing) | ✅ | 🟡 | ⬜³ | ⬜³ |
+
+| Additional features | Status |
+|---|:---:|
+| Auto-flee non-targets | ✅ |
+| Stop + loud alert on shiny / target | ✅ |
+| Ability names (not IDs) | ✅ |
+| Animated species sprites in the launcher | ✅ |
+| Target filter (shiny / IVs / nature / gender / species / ability) | ✅ |
+| Auto-catch on target | ⬜ |
+| Fishing / egg-hatching / SOS chains | ⬜ |
+
+¹ OR/AS shares X/Y's `WildOffset1 = 0x08800000`; same code path,
+not yet user-tested. ² S/M & US/UM offsets are taken from PKMN-NTR's
+`LookupTable.cs` and wired in but unverified on Azahar. ³ The
+NTR↔Azahar LiveHeX bridge is implemented for Gen 6; Gen 7 untested.
+
+**Good to run today:** Pokémon X/Y random-encounter shiny hunting —
+start it in tall grass and it walks, detects every encounter, flees
+non-targets, and stops with an alert (battle left on screen) when a
+shiny appears, tracking your phase/total across sessions.
+
 ## Download
 
 Every push to `main` rebuilds a rolling "latest" release. The download
@@ -264,11 +307,33 @@ pokebot-3ds/
 
 ## Credits & references
 
+**Detection (the core of this project) is built directly on prior
+reverse-engineering work — credit to those authors:**
+
+- **[PKMN-NTR](https://github.com/drgoku282/PKMN-NTR) by drgoku282**
+  (and the earlier **[fa-dx/PKMN-NTR](https://github.com/fa-dx/PKMN-NTR)**)
+  — its `Helpers/LookupTable.cs` (`WildOffset1`, `PartyOffset`,
+  `TrainerCardOffset`, `BoxOffset` per game) and the
+  `ReadOpponent`/`HandleOpponentData` strategy ARE the basis for this
+  project's live Gen 6/7 RAM detection. Without this map the live
+  detection would not exist.
+- **[PKHeX-Plugins](https://github.com/architdate/PKHeX-Plugins)** by
+  architdate & the Project Pokémon team — LiveHeX `RamOffsets` and the
+  NTR protocol, the reference for the NTR↔Azahar bridge and the X/Y
+  save-block addresses.
+- **[PKHeX](https://github.com/kwsch/PKHeX) by Kurt (kwsch)** — the
+  PK6 format, the `G6PKM` shiny/validity rules (`Sanity == 0 &&
+  checksum`, PSV/TSV), and the `Ability` enum used for ability names.
+- [Project Pokémon](https://projectpokemon.org/) — Gen 6/7 PKM
+  structure docs, the X/Y RAM threads, and the cheat/AR-code research
+  that pointed at the right regions.
+
+**Project lineage & tooling:**
+
 - [pokebot-nds](https://github.com/wyanido/pokebot-nds) by wyanido — the architectural template this project follows.
 - [pokebot-gen3](https://github.com/40Cakes/pokebot-gen3) by 40Cakes — the inspiration for this project.
 - [Azahar](https://github.com/azahar-emu/azahar) — the emulator and the bundled `dist/scripting/citra.py` that this project's RPC client is modeled on.
-- [PKHeX](https://github.com/kwsch/PKHeX) — canonical reference for any Pokémon-data-structure question.
-- [Project Pokémon](https://projectpokemon.org/) for the Gen 6/7 PKM structure documentation and Gen 7 RAM map.
+- [PokeAPI/sprites](https://github.com/PokeAPI/sprites) and [Pokémon Showdown](https://play.pokemonshowdown.com/) — the species sprites shown in the launcher.
 
 ## License
 
