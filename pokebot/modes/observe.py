@@ -185,6 +185,23 @@ def _scan_owned(ctx, lo, hi, player_ot):
     return out
 
 
+def _refine_party(ctx, owned):
+    """The owned cluster is found via the 232-byte box decode (no
+    level field), so the strip fell back to an EXP estimate — wrong
+    for non-Medium-Fast species (Fennekin Lv8 → showed 6). Re-read
+    each member as a 260-byte PARTY record so the REAL level (byte
+    0xEC) is parsed; keep the box copy only if that fails."""
+    out = []
+    for addr, pkm in owned[:_PARTY_SLOTS]:
+        try:
+            rec = ctx.rpc.read(addr, _PK6)        # 260 = party fmt
+            pp = _decode(rec, party=True)
+        except Exception:
+            pp = None
+        out.append(pp if (pp is not None and pp.party) else pkm)
+    return out
+
+
 def get_party(ctx, party_base_cfg, party_stride, player_ot):
     """The live party as a list of ParsedPokemon.
 
@@ -198,7 +215,7 @@ def get_party(ctx, party_base_cfg, party_stride, player_ot):
     if win:
         owned = _scan_owned(ctx, win[0], win[1], player_ot)
         if owned:
-            return [p for _, p in owned[:_PARTY_SLOTS]]
+            return _refine_party(ctx, owned)
         ctx._party_win = None                 # moved → relocate below
 
     for lo, hi in _PARTY_SCAN_RANGES:
@@ -214,7 +231,7 @@ def get_party(ctx, party_base_cfg, party_stride, player_ot):
                      f"({len(owned)} owned PK6, OT {player_ot!r}); "
                      f"window {ctx._party_win[0]:#x}-"
                      f"{ctx._party_win[1]:#x}")
-            return [p for _, p in owned[:_PARTY_SLOTS]]
+            return _refine_party(ctx, owned)
     return []
 
 
