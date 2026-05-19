@@ -92,10 +92,10 @@ def _flee(ctx, layout, run_local, override, run_settle: float) -> None:
     log.info(f"  flee: touch RUN @ ({fx:.3f},{fy:.3f}) [{how}] "
              f"after {run_settle:.1f}s settle "
              f"-> {'sent' if ok else 'FAILED (touch unavailable)'}")
-    ctx._stop_evt.wait(0.6)
-    for _ in range(5):
+    ctx._stop_evt.wait(0.3)
+    for _ in range(3):                       # clear "Got away!" fast
         ctx.input.tap("B", hold_s=0.05)
-        ctx._stop_evt.wait(0.3)
+        ctx._stop_evt.wait(0.12)
 
 
 def run(ctx) -> None:

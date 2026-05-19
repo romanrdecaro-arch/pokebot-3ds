@@ -104,7 +104,7 @@ offsets:
 # Random-encounter shiny hunt tuning.
 random_encounters:
   movement: horizontal       # horizontal (Left/Right) | vertical (Up/Down)
-  walk_hold: 0.35            # seconds per step; short = tighter detection
+  walk_hold: 0.20            # seconds per step (short = quick back-and-forth)
   # Seconds to wait AFTER detecting a wild before fleeing — lets the
   # battle intro/animation finish so the RUN button is actually
   # touchable. Raise if the flee fires before the menu appears.

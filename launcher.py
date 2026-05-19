@@ -295,16 +295,17 @@ def _prep_gif(path, max_w: int, max_h: int, bg: str = "#1c1c1e"):
     """Animated GIF → list of ImageTk frames, scaled to fit and fully
     OPAQUE on ``bg``.
 
-    Two causes of flicker, both fixed here:
-      1. Transparency — Tk clears the label between frames and the
-         cell background flashes. We flatten every frame onto a solid
-         ``bg`` so each is opaque.
-      2. Ghosting/trails — Showdown 'ani' GIFs are INDEPENDENT full
-         frames; compositing them cumulatively (the previous attempt)
-         smeared every frame on top of the last. We now read each
-         frame standalone via `seek`, letting PIL apply that frame's
-         own transparency/disposal.
-    A single union bbox keeps the sprite from bobbing. None on failure.
+    The flicker (e.g. Pidgey) was wrong GIF compositing. Showdown
+    'ani' GIFs MIX disposal methods: some frames are full, others are
+    partial deltas. Reading each frame standalone mangles the partial
+    ones (you see only the changed sliver → flicker); compositing all
+    cumulatively ghosts the full ones. The correct general fix is the
+    GIF disposal algorithm: keep a running canvas, composite each
+    frame, emit it, then dispose per that frame's method (2 = clear
+    to background, 3 = restore previous, else keep). This renders
+    Pidgey — and every other sprite — correctly. Then flatten opaque
+    on ``bg`` (no transparency flash) and crop to one union bbox (no
+    bob). None on failure.
     """
     try:
         from PIL import Image, ImageTk
@@ -313,10 +314,26 @@ def _prep_gif(path, max_w: int, max_h: int, bg: str = "#1c1c1e"):
     try:
         im = Image.open(path)
         n = getattr(im, "n_frames", 1)
+        size0 = im.size
+        canvas = Image.new("RGBA", size0, (0, 0, 0, 0))
         frames = []
         for i in range(n):
             im.seek(i)
-            frames.append(im.convert("RGBA"))
+            disp = getattr(im, "disposal_method",
+                           im.info.get("disposal", 0))
+            fr = im.convert("RGBA")
+            if fr.size != size0:              # pad odd-sized frames
+                pad = Image.new("RGBA", size0, (0, 0, 0, 0))
+                pad.paste(fr, (0, 0))
+                fr = pad
+            backup = canvas.copy()
+            canvas.alpha_composite(fr)
+            frames.append(canvas.copy())
+            if disp == 2:                     # restore to background
+                canvas = Image.new("RGBA", size0, (0, 0, 0, 0))
+            elif disp == 3:                   # restore to previous
+                canvas = backup
+            # disp 0/1: leave canvas as-is (do not dispose)
         if not frames:
             return None
         union = None
@@ -1159,7 +1176,7 @@ class _App(tk.Tk):
             fd_head, text="5.0 s", bg=_PANEL2, fg=_ACCENT,
             font=("Segoe UI", 9, "bold"))
         self._flee_val_lbl.pack(side="right")
-        tk.Scale(self._movement_frame, from_=1.0, to=12.0,
+        tk.Scale(self._movement_frame, from_=0.5, to=12.0,
                  resolution=0.5, orient="horizontal",
                  variable=self._flee_var, showvalue=False,
                  bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
