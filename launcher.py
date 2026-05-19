@@ -642,6 +642,10 @@ class _RecentlySeen(tk.Frame):
     def _ability_text(ability_id, ability_num) -> str:
         if ability_id is None:
             return "?"
+        try:
+            from pokebot.abilities import ability_name
+        except Exception:
+            ability_name = lambda i: f"#{i}"   # noqa: E731
         suffix = ""
         if ability_num == 4:
             suffix = " (HA)"
@@ -649,7 +653,7 @@ class _RecentlySeen(tk.Frame):
             suffix = " (1)"
         elif ability_num == 2:
             suffix = " (2)"
-        return f"#{ability_id}{suffix}"
+        return f"{ability_name(ability_id)}{suffix}"
 
 
 class _App(tk.Tk):

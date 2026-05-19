@@ -59,9 +59,14 @@ def _format_encounter(f: dict) -> str:
         extras.append(f"OT-game={ot_game}")
     extras_line = ("  " + "  ".join(extras)) if extras else ""
 
+    try:
+        from .abilities import ability_name
+        ab = ability_name(f.get("ability_id"))
+    except Exception:
+        ab = f"#{f.get('ability_id', '?')}"
     return (f"  [enc #{f.get('count', '?')}] {nick} {lvl_str} {gender}{shiny}\n"
             f"             nature={nature}  IVs {iv_str} ({iv_sum})  "
-            f"PID={pid:08X}  ability#{f.get('ability_id', '?')}"
+            f"PID={pid:08X}  ability={ab}"
             + (f"\n             {extras_line.strip()}" if extras_line else ""))
 
 
