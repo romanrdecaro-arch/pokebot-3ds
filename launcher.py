@@ -201,6 +201,34 @@ _WARN   = "#ffd60a"   # iOS systemYellow
 _DANGER = "#ff453a"   # iOS systemRed
 
 
+def _pokeball_photo(size: int, bg: str):
+    """Anti-aliased monoline Pokéball as a PhotoImage. Tk Canvas
+    shapes aren't smoothed, so draw at 4x with Pillow and downscale
+    LANCZOS for clean edges. None if Pillow is unavailable."""
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+    except Exception:
+        return None
+    try:
+        S = size * 4
+        lw = max(6, S // 16)
+        rgb = _hex_to_rgb(bg)
+        ac = _hex_to_rgb(_ACCENT)
+        im = Image.new("RGB", (S, S), rgb)
+        d = ImageDraw.Draw(im)
+        a, b = lw, S - lw
+        c = S / 2
+        r = S * 0.17
+        d.ellipse([a, a, b, b], outline=ac, width=lw)
+        d.line([a, c, c - r, c], fill=ac, width=lw)
+        d.line([c + r, c, b, c], fill=ac, width=lw)
+        d.ellipse([c - r, c - r, c + r, c + r], outline=ac, width=lw)
+        im = im.resize((size, size), Image.LANCZOS)
+        return ImageTk.PhotoImage(im)
+    except Exception:
+        return None
+
+
 def _draw_pokeball(canvas: tk.Canvas, size: int = 32) -> None:
     """Clean monoline Pokéball mark — flat, two-tone, no skeuomorphism.
 
@@ -652,6 +680,8 @@ class _RecentlySeen(tk.Frame):
                  bg=_PANEL, fg=_TEXT,
                  font=("Segoe UI", 13, "bold")).pack(side="left")
         self._stats = _load_stats()
+        self._sess_start = time.time()   # this run only (rate)
+        self._sess_n = 0
         self._counter_lbl = tk.Label(
             title_bar, text=self._counter_text(),
             bg=_PANEL, fg=_MUTED, font=("Segoe UI", 9))
@@ -711,9 +741,16 @@ class _RecentlySeen(tk.Frame):
         s = self._stats
         bsv = s["phase_best_sv"]
         biv = s["phase_best_iv"]
+        el = time.time() - getattr(self, "_sess_start", time.time())
+        n = getattr(self, "_sess_n", 0)
+        if el >= 45 and n > 0:               # avoid wild early numbers
+            rate = f"{round(n / (el / 3600.0))}/hr"
+        else:
+            rate = "…/hr"
         return (f"Phase {s['phase']}  ·  Total {s['total']}  ·  "
                 f"Best SV {bsv if bsv is not None else '—'}  ·  "
-                f"Best IVs {biv if biv is not None else '—'}")
+                f"Best IVs {biv if biv is not None else '—'}  ·  "
+                f"{rate}")
 
     @staticmethod
     def _evt_psv(evt: dict):
@@ -746,6 +783,7 @@ class _RecentlySeen(tk.Frame):
         else:
             self._stats["total"] += 1
             self._stats["phase"] += 1
+            self._sess_n += 1                 # this run → encounters/hr
             psv = self._evt_psv(evt)
             if psv is not None:
                 cur = self._stats["phase_best_sv"]
@@ -974,12 +1012,17 @@ class _App(tk.Tk):
         # ── Header ──────────────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=_PANEL, padx=18, pady=12)
         hdr.pack(fill="x")
-        # Clean monoline mark drawn straight onto a Tk canvas — no
-        # bitmap asset (the old pre-rendered PNG looked crunchy).
-        logo = tk.Canvas(hdr, width=40, height=40,
-                         bg=_PANEL, highlightthickness=0)
-        logo.pack(side="left", padx=(0, 14))
-        _draw_pokeball(logo, 40)
+        # Clean monoline mark. Prefer the anti-aliased Pillow render
+        # (smooth edges); fall back to the Tk-canvas drawing.
+        self._logo_img = _pokeball_photo(40, _PANEL)
+        if self._logo_img is not None:
+            tk.Label(hdr, image=self._logo_img, bg=_PANEL,
+                     bd=0).pack(side="left", padx=(0, 14))
+        else:
+            logo = tk.Canvas(hdr, width=40, height=40,
+                             bg=_PANEL, highlightthickness=0)
+            logo.pack(side="left", padx=(0, 14))
+            _draw_pokeball(logo, 40)
         # Wordmark
         tk.Label(hdr, text="pokebot-3ds", bg=_PANEL, fg=_TEXT,
                  font=("Segoe UI", 16, "bold")).pack(side="left")
