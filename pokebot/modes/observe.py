@@ -68,20 +68,29 @@ def _parse_valid(pt: bytes):
     return pkm
 
 
-def _decode(rec: bytes):
+def _decode(rec: bytes, party: bool = False):
     """Decode a record as encrypted ekx (decrypt) or plaintext. Cheap
     pre-filter on the unencrypted header (Sanity@0x04==0, key!=0 —
-    PKHeX's own Valid gate) so the window sweep stays fast."""
-    if len(rec) < _OPP_PK6:
+    PKHeX's own Valid gate) so the window sweep stays fast.
+
+    ``party=False`` (foe window) decodes 232 bytes — BOX format, no
+    party stats. Critical: a wild battle record is box-format, so
+    byte 0xEC is NOT a level; parsing 260 made _parse_valid reject
+    the encounter whenever that garbage byte fell outside 1..100
+    (random per record → "misses some encounters"). ``party=True``
+    keeps 260 so the real party slots show their true level.
+    """
+    n = 260 if party else 232
+    if len(rec) < n:
         return None
     if rec[4] or rec[5]:
         return None
     if not (rec[0] or rec[1] or rec[2] or rec[3]):
         return None
+    rec = rec[:n]
     for plaintext in (False, True):
         try:
-            pt = rec if plaintext else decrypt_pkm(
-                rec if len(rec) in (232, 260) else rec[:232])
+            pt = rec if plaintext else decrypt_pkm(rec)
         except Exception:
             continue
         pkm = _parse_valid(pt)
@@ -101,7 +110,7 @@ def _read_party(ctx, base: int, stride: int) -> list:
             rec = ctx.rpc.read(base + i * stride, _PK6)
         except Exception:
             break
-        pkm = _decode(rec)
+        pkm = _decode(rec, party=True)
         if pkm is None:
             break
         out.append(pkm)
@@ -135,8 +144,7 @@ def _all_valid(buf: bytes, base: int):
             continue
         if not (buf[off] or buf[off + 1] or buf[off + 2] or buf[off + 3]):
             continue
-        pkm = _decode(buf[off:off + _PK6] if off + _PK6 <= len(buf)
-                       else buf[off:off + _OPP_PK6])
+        pkm = _decode(buf[off:off + _OPP_PK6], party=False)
         if pkm is None or pkm.encryption_key in seen:
             continue
         seen.add(pkm.encryption_key)
@@ -213,8 +221,9 @@ def _level_from_exp(exp: int) -> int:
 def _desc(pkm, addr: int) -> str:
     return (f"@{addr:#010x} #{pkm.species} {pkm.nickname or ''} "
             f"~Lv{_level_from_exp(pkm.exp)} {pkm.gender} "
-            f"{'★ ' if pkm.shiny else ''}PID={pkm.pid:08X} "
-            f"OT={pkm.ot_name!r} TID={pkm.ot_tid} SID={pkm.ot_sid}")
+            f"{'★ ' if pkm.shiny else ''}key={pkm.encryption_key:08X} "
+            f"PID={pkm.pid:08X} OT={pkm.ot_name!r} "
+            f"TID={pkm.ot_tid} SID={pkm.ot_sid}")
 
 
 def _report_encounter(ctx, pkm, addr: int, count: int, via: str) -> None:

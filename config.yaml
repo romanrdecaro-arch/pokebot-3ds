@@ -109,6 +109,9 @@ random_encounters:
   # battle intro/animation finish so the RUN button is actually
   # touchable. Raise if the flee fires before the menu appears.
   flee_delay: 5.0
+  # Extra wait after clearing the intro text, before touching RUN —
+  # lets the command menu finish drawing so the touch lands.
+  run_settle: 1.5
   # RUN button touch position as window fractions (X/Y wild battle,
   # Azahar default vertical layout). Bottom screen ≈ lower window;
   # nudge these if the flee misses the RUN button.

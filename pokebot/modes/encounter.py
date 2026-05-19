@@ -60,14 +60,16 @@ def _is_target(ctx, pkm) -> bool:
     return bool(pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
 
 
-def _flee(ctx, run_xy) -> None:
-    """Clear the appearance text so the command menu is up, touch
-    RUN, then clear the got-away text."""
+def _flee(ctx, run_xy, run_settle: float) -> None:
+    """Clear the appearance text so the command menu is up, wait for
+    it to render, touch RUN, then clear the got-away text."""
     for _ in range(4):
         ctx.input.tap("B", hold_s=0.05)
         ctx._stop_evt.wait(0.35)
+    ctx._stop_evt.wait(run_settle)            # let the menu draw
     ok = ctx.input.tap_touch(run_xy[0], run_xy[1], hold_s=0.08)
     log.info(f"  flee: touch RUN @ ({run_xy[0]:.2f},{run_xy[1]:.2f}) "
+             f"after {run_settle:.1f}s settle "
              f"-> {'sent' if ok else 'FAILED (touch unavailable)'}")
     ctx._stop_evt.wait(0.6)
     for _ in range(5):
@@ -87,10 +89,12 @@ def run(ctx) -> None:
         movement = "horizontal"
     walk_hold = float(rcfg.get("walk_hold", 0.35))
     flee_delay = float(rcfg.get("flee_delay", 5.0))
+    run_settle = float(rcfg.get("run_settle", 1.5))
     run_xy = rcfg.get("run_touch") or [0.5, 0.92]
 
     log.info(f"Mode: shiny hunt — random encounters ({movement}, "
-             f"{walk_hold:.2f}s steps, flee_delay {flee_delay:.1f}s)")
+             f"{walk_hold:.2f}s steps, flee_delay {flee_delay:.1f}s, "
+             f"run_settle {run_settle:.1f}s)")
     log.info(f"  foe window=[{foe_base:#010x},"
              f"{foe_base + foe_len:#010x})  "
              f"RUN touch ({run_xy[0]:.2f},{run_xy[1]:.2f})")
@@ -152,7 +156,7 @@ def run(ctx) -> None:
                 # Wait out the battle intro/animation so the command
                 # menu (and the RUN button) is actually on screen.
                 ctx._stop_evt.wait(flee_delay)
-                _flee(ctx, run_xy)
+                _flee(ctx, run_xy, run_settle)
             continue                          # don't walk this iter
 
         # No new wild → overworld / stale lingering → roam.
