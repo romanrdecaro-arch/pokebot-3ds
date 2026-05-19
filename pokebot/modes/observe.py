@@ -144,6 +144,32 @@ def _all_valid(buf: bytes, base: int):
     return out
 
 
+def select_wild(valids, party_keys, player_ot):
+    """From ``valids`` [(addr, pkm), …] return the wild candidates,
+    lowest address first. A WILD opponent has an EMPTY OT name (not
+    owned yet); everything the player owns carries OT = player_ot.
+    Verified live (Zigzagoon/Bunnelby OT='' vs Fennekin OT='Roman').
+    Single source of truth — used by manual mode and the hunt loop.
+    """
+    out = []
+    for a, p in valids:
+        if p.encryption_key in party_keys:
+            continue
+        ot = p.ot_name or ""
+        if ot == "" or ot != player_ot:
+            out.append((a, p))
+    out.sort(key=lambda ap: ap[0])
+    return out
+
+
+def find_wild(ctx, foe_base, foe_len, party_keys, player_ot):
+    """Scan the foe window once and return the live wild opponent as
+    ``(addr, pkm)`` or None. The hunt loop's detection entry point."""
+    buf = _read_window(ctx, foe_base, foe_len)
+    wilds = select_wild(_all_valid(buf, foe_base), party_keys, player_ot)
+    return wilds[0] if wilds else None
+
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
@@ -250,22 +276,11 @@ def run(ctx) -> None:
         buf = _read_window(ctx, foe_base, foe_len)
         valids = _all_valid(buf, foe_base)
 
-        # The PKMN-NTR pointer anchor does not exist in Azahar (it
-        # relocates that region non-uniformly — confirmed 0 hits across
-        # many encounters). The live data instead gives a clean,
-        # session-proof discriminator: a WILD opponent has an EMPTY OT
-        # name (it isn't owned yet), while every record the player owns
-        # carries OT = player_ot ('Roman'). Verified across Zigzagoon /
-        # Bunnelby / Fennekin samples. Wild = not-in-party AND
-        # (OT == '' OR OT != player_ot); lowest address = enemy slot 1.
-        def _is_wild(p) -> bool:
-            if p.encryption_key in party_keys:
-                return False
-            ot = p.ot_name or ""
-            return ot == "" or ot != player_ot
-
-        wilds = [(a, p) for a, p in valids if _is_wild(p)]
-        wilds.sort(key=lambda ap: ap[0])
+        # Wild = the empty-OT non-party record (see select_wild —
+        # shared with the hunt loop). The PKMN-NTR pointer anchor does
+        # not exist in Azahar; OT is the reliable, session-proof
+        # discriminator.
+        wilds = select_wild(valids, party_keys, player_ot)
 
         # Diagnostic dump — only when window contents change.
         sig = frozenset(p.encryption_key for _, p in valids)

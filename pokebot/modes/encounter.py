@@ -1,351 +1,174 @@
 """
-Encounter mode (random encounters).
+Random-encounter shiny hunt.
 
-Walks back-and-forth on a chosen axis (horizontal or vertical), watches
-for the in-battle flag to flip, reads the foe Pokémon, broadcasts the
-full encounter record, then flees (unless it's a target hit) and
-resumes walking.
+Walks back-and-forth in tall grass. On every NEW wild encounter it
+reads the opponent via the proven foe-window scan (the SAME detection
+manual mode uses — ``observe.find_wild`` / ``select_wild``), then:
 
-The movement axis comes from config["random_encounters"]["movement"]
-(or the --movement CLI flag) and defaults to "horizontal":
+  - shiny / target-filter match  → STOP + loud alert, battle left on
+    screen for you to catch it manually.
+  - anything else                → flee and resume walking.
 
-  horizontal  → DpadLeft / DpadRight
-  vertical    → DpadUp   / DpadDown
+No ``in_battle_flag`` and no offset auto-discovery needed: a wild is
+simply "an empty-OT, non-party, checksum-valid PK6 in the foe
+window" (X/Y WildOffset1 0x08800000). Each distinct encounter has a
+unique encryption key, so a freshly-spawned wild is detected even
+though the engine reuses the same RAM slot.
 
-Active inputs require the input_driver (pynput); without it the mode
-will run in dry-run and only ever observe (won't actually walk).
-
-Required offsets:
-  - foe_base
-  - in_battle_flag
+Movement axis: config["random_encounters"]["movement"] ("horizontal"
+| "vertical", default horizontal). Active inputs need the input
+driver; without it the loop still detects/logs but can't walk or
+flee (it degrades to manual mode).
 """
-
 from __future__ import annotations
 
 import logging
-import re
 import time
-from pathlib import Path
 
-from ..parser import decrypt_pkm, parse_pkm
+from .observe import (find_wild, _read_party, _report_encounter,
+                       _level_from_exp)
 
 log = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-
-
-def run(ctx):
-    movement = (ctx.config.get("random_encounters") or {}).get(
-        "movement", "horizontal").lower()
-    if movement not in ("horizontal", "vertical"):
-        log.warning(f"Unknown movement {movement!r}; defaulting to horizontal.")
-        movement = "horizontal"
-    log.info(f"Mode: encounter ({movement})")
-
-    # Auto-discover foe_base on first run (X/Y / OR/AS / SM/USUM all need
-    # a per-version address that PKHeX-Plugins doesn't ship). Caches to
-    # config.yaml so subsequent runs skip this entirely.
-    if not ctx.game.offsets.foe_base:
-        if not _autodiscover_foe_base(ctx, movement):
-            log.error("foe_base auto-discovery did not complete. "
-                      "Stop, walk somewhere with tall grass, and try again.")
-            return
-
-    if not ctx.game.offsets.in_battle_flag:
-        log.warning("in_battle_flag is 0 -- falling back to "
-                    "polling foe block for changes (less reliable).")
-
-    encounters = 0
-    walking = True
-    last_foe_key = None
-
-    # primitive walking loop — alternates the two dpad keys for the
-    # chosen axis while not in battle.
-    walk_dir_iter = _alternating_dirs(movement)
-
-    while not ctx.should_stop():
-        in_battle = _check_in_battle(ctx)
-
-        if not in_battle:
-            if walking:
-                button, hold_s = next(walk_dir_iter)
-                ctx.input.tap(button, hold_s=hold_s)
-                time.sleep(0.15)            # brief gap before next hold
-            else:
-                time.sleep(0.05)
-            continue
-
-        # In battle: stop walking, read the foe.
-        try:
-            raw = ctx.rpc.read(ctx.game.offsets.foe_base, 260)
-        except Exception as e:
-            log.warning(f"foe read failed: {e}")
-            time.sleep(0.5)
-            continue
-        if int.from_bytes(raw[:4], "little") == 0:
-            # The flag flipped but the foe block isn't populated yet.
-            time.sleep(0.1)
-            continue
-        try:
-            pkm = parse_pkm(decrypt_pkm(raw))
-        except Exception as e:
-            log.debug(f"foe parse failed: {e}")
-            time.sleep(0.2)
-            continue
-        if not pkm.checksum_valid:
-            time.sleep(0.1)
-            continue
-
-        key = (pkm.encryption_key, pkm.pid)
-        if key == last_foe_key:
-            # Same encounter we already evaluated; wait for it to end.
-            time.sleep(0.2)
-            continue
-        last_foe_key = key
-        encounters += 1
-        from ..parser import encounter_payload
-        ctx.dashboard.broadcast(
-            "encounter", count=encounters, **encounter_payload(pkm))
-
-        if ctx.target and ctx.target.matches(pkm):
-            log.info(f"TARGET! enc#{encounters}: {ctx.target.describe(pkm)}")
-            ctx.dashboard.broadcast(
-                "target_hit",
-                count=encounters,
-                reason=ctx.target.describe(pkm),
-                species=pkm.species, shiny=pkm.shiny,
-                nature=pkm.nature, ivs=pkm.ivs,
-            )
-            walking = False
-            ctx.request_stop("target hit")
-            return
-
-        # Pause briefly after the encounter is recorded so the battle
-        # animation finishes and the FIGHT/BAG/RUN/POKEMON menu is
-        # actually rendered before we start mashing direction keys.
-        time.sleep(2.0)
-
-        # Not a hit: flee. Left → Right → A reaches RUN from the
-        # FIGHT cursor in X/Y's battle menu; 0.5 s between presses
-        # gives the menu time to redraw.
-        log.info(f"  enc#{encounters}: not a target — fleeing "
-                 f"(Left, Right, A).")
-        for button in ("DpadLeft", "DpadRight", "A"):
-            ctx.input.tap(button, hold_s=0.05)
-            time.sleep(0.5)
-        # Dismiss "Got away safely!" / "Couldn't escape!" dialogue.
-        for _ in range(6):
-            ctx.input.tap("B", 0.05)
-            time.sleep(0.25)
-        # Wait for battle flag to clear (max ~10 s).
-        for _ in range(100):
-            if not _check_in_battle(ctx):
-                break
-            time.sleep(0.1)
-
-
-def _check_in_battle(ctx) -> bool:
-    addr = ctx.game.offsets.in_battle_flag
-    if not addr:
-        # fallback: presence of a non-zero foe encryption key
-        try:
-            return ctx.rpc.read_u32(ctx.game.offsets.foe_base) != 0
-        except Exception:
-            return False
-    try:
-        # read a u8 by default; some games use u32 -- adjust per-game later
-        return ctx.rpc.read_u8(addr) != 0
-    except Exception:
-        return False
-
 
 def _alternating_dirs(axis: str):
-    """Yield (button, hold_seconds) tuples for the walking loop.
-
-    Pattern: 2.0 s in direction A to kick things off, then alternate
-    3.0 s holds in B, A, B, A, … forever. Long holds mean the bot
-    walks several tiles per direction-change instead of just turning
-    in place, which is what triggers wild-grass encounters.
-    """
-    if axis == "vertical":
-        a, b = "DpadUp", "DpadDown"
-    else:
-        a, b = "DpadLeft", "DpadRight"
+    """(button, hold_seconds) for the walking loop: a 2 s kick then
+    alternating 3 s holds so the player crosses several grass tiles
+    per turn (that's what rolls encounters)."""
+    a, b = (("DpadUp", "DpadDown") if axis == "vertical"
+            else ("DpadLeft", "DpadRight"))
     yield (a, 2.0)
     while True:
         yield (b, 3.0)
         yield (a, 3.0)
 
 
-# ---------------------------------------------------------------------------
-# foe_base auto-discovery
-# ---------------------------------------------------------------------------
+def _flee(ctx) -> None:
+    """X/Y battle menu: Left→Right→A reaches RUN from the FIGHT
+    cursor; then mash B to clear the got-away dialogue."""
+    log.info("  not a target — fleeing.")
+    for button in ("DpadLeft", "DpadRight", "A"):
+        ctx.input.tap(button, hold_s=0.05)
+        time.sleep(0.5)
+    for _ in range(6):
+        ctx.input.tap("B", hold_s=0.05)
+        time.sleep(0.25)
 
-def _autodiscover_foe_base(ctx, movement: str) -> bool:
-    """Walk + scan in parallel until a battle exposes the foe slot.
 
-    The walking loop runs in the main thread (so the player starts
-    moving immediately, with no scan-blocked dead time), and a scanner
-    runs alongside on a background thread:
+def _alert_shiny(ctx, pkm, addr: int, count: int) -> None:
+    lvl = _level_from_exp(pkm.exp)
+    bar = "★" * 28
+    log.info(bar)
+    log.info(f"  SHINY / TARGET FOUND  —  encounter #{count}")
+    log.info(f"  #{pkm.species} {pkm.nickname or ''} ~Lv{lvl} "
+             f"{pkm.gender}  PID={pkm.pid:08X}  nature={pkm.nature}")
+    log.info(f"  IVs {pkm.ivs}  @ {addr:#010x}")
+    log.info("  Bot STOPPED — battle left on screen. Catch it!")
+    log.info(bar)
+    ctx.dashboard.broadcast(
+        "target_hit", count=count,
+        reason=(ctx.target.describe(pkm) if ctx.target else "shiny"),
+        species=pkm.species, shiny=pkm.shiny,
+        nature=pkm.nature, ivs=pkm.ivs)
 
-      - Baseline pass catalogues every valid PK6 currently in RAM
-        (party + boxes + any stale battle data).
-      - Subsequent passes diff against the baseline. The first new
-        address is treated as the foe slot, since the foe is the only
-        new PK6 the engine allocates when a wild battle starts.
 
-    Inputs go through the input driver (PostMessage on Windows, no
-    RPC), the scanner owns the RPC, so there's no contention on the
-    socket. Result is persisted to config.yaml.
-    """
-    import threading
+def _is_target(ctx, pkm) -> bool:
+    if pkm.shiny:
+        return True
+    return bool(ctx.target and ctx.target.matches(pkm))
 
-    from ..find_offsets import scan_accessors
-    from ..games import heap_range_for
 
-    range_ = heap_range_for(ctx.game.generation)
-    log.info("foe_base = 0 — auto-discovering. Bot is walking now; "
-             "scanner is sniffing memory in parallel.")
-    log.info(f"  heap range:    {range_[0]:#x}–{range_[1]:#x}")
-    log.info(f"  walk axis:     {movement}")
-    log.info(f"  expected time: 30-90 s once you bump into a wild encounter.")
-    ctx.dashboard.broadcast("offset_scan", state="started",
-                            target="foe_base")
+def run(ctx) -> None:
+    o = ctx.game.offsets
+    foe_base = o.foe_base
+    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
+    party_base = o.party_base
+    party_stride = o.party_stride or 484
+    player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
+        "trainer_name", "Roman")
+    movement = (ctx.config.get("random_encounters") or {}).get(
+        "movement", "horizontal").lower()
+    if movement not in ("horizontal", "vertical"):
+        movement = "horizontal"
 
-    found = [None]                   # type: list[int | None]
-    discovered = threading.Event()
-
-    def _scanner() -> None:
-        baseline: set[int] = set()
-        t0 = time.monotonic()
-        log.info("  scanner: building baseline (overworld) …")
-        try:
-            for addr, _info in scan_accessors(ctx.rpc, range_[0], range_[1],
-                                              chunk=0x4000, throttle_s=0.005):
-                baseline.add(addr)
-                if ctx.should_stop() or discovered.is_set():
-                    return
-        except Exception as e:
-            log.error(f"  scanner: baseline failed: {e}")
-            return
-        log.info(f"  scanner: baseline = {len(baseline)} PK6 records "
-                 f"({time.monotonic() - t0:.1f}s). Watching for new ones.")
-
-        pass_n = 0
-        while not ctx.should_stop() and not discovered.is_set():
-            pass_n += 1
-            t1 = time.monotonic()
-            new_here: list[int] = []
-            try:
-                for addr, _info in scan(ctx.rpc, range_[0], range_[1],
-                                        chunk=0x4000, throttle_s=0.005):
-                    if addr not in baseline:
-                        new_here.append(addr)
-                    if ctx.should_stop() or discovered.is_set():
-                        return
-            except Exception as e:
-                log.warning(f"  scanner: pass #{pass_n} failed: {e}")
-                time.sleep(1.0)
-                continue
-            elapsed = time.monotonic() - t1
-            if not new_here:
-                log.info(f"  scanner: pass #{pass_n} — no new PK6 "
-                         f"({elapsed:.1f}s). Keep walking.")
-                continue
-            # Lowest fresh address is the most likely foe slot;
-            # later addresses tend to be battle-engine work copies.
-            foe_addr = min(new_here)
-            log.info(f"  scanner: pass #{pass_n} found {len(new_here)} "
-                     f"new PK6(s); foe_base = {foe_addr:#010x}")
-            found[0] = foe_addr
-            discovered.set()
-            return
-
-    t = threading.Thread(target=_scanner, name="FoeScanner", daemon=True)
-    t.start()
+    log.info(f"Mode: shiny hunt — random encounters ({movement})")
+    log.info(f"  foe window=[{foe_base:#010x},"
+             f"{foe_base + foe_len:#010x})  player OT {player_ot!r}")
+    if not foe_base:
+        log.error("foe_base not configured (X/Y: 0x08800000). Set it "
+                  "in config.yaml [offsets:].")
+        return
 
     diag = ctx.input.diagnose()
     log.info(f"  input driver: {diag}")
-    if diag.get("dry_run"):
-        log.warning("  input driver is in DRY-RUN — no keystrokes will "
-                    "actually reach Azahar. Check pynput install / "
-                    "config.yaml input.dry_run.")
-    if (diag.get("platform", "").startswith("win")
-            and not diag.get("azahar_hwnd")):
-        log.warning("  no Azahar window detected on Windows. "
-                    "PostMessage path won't work; bot will fall back "
-                    "to pynput which requires Azahar to be FOCUSED.")
+    dry = bool(diag.get("dry_run"))
+    if dry:
+        log.warning("  input driver DRY-RUN — cannot walk/flee; this "
+                    "will only detect & log (like manual mode).")
+    else:
+        try:
+            from ..platform_utils import focus_azahar
+            focus_azahar()
+        except Exception as e:
+            log.warning(f"  focus_azahar failed: {e}")
 
-    # Focus + activate Azahar right before the first key. The launcher
-    # focuses ~750 ms after Start, but in encounter mode the user
-    # reported the player not moving despite PostMessage taps reaching
-    # the queue — classic Qt symptom of the window not being "active".
-    # focus_azahar() ends with a synthetic click into the client area
-    # which forces Qt to route key events to the GL widget.
-    try:
-        from ..platform_utils import focus_azahar
-        focus_azahar()
-    except Exception as e:
-        log.warning(f"  focus_azahar failed: {e}")
+    # Party keys exclude the player's own mons from the wild scan.
+    party_keys = {p.encryption_key
+                  for p in _read_party(ctx, party_base, party_stride)} \
+        if party_base else set()
 
-    walk_iter = _alternating_dirs(movement)
-    holds = 0
-    paths_seen: dict[str, int] = {}
-    while not ctx.should_stop() and not discovered.is_set():
-        button, hold_s = next(walk_iter)
-        path = ctx.input.tap(button, hold_s=hold_s)
-        paths_seen[path] = paths_seen.get(path, 0) + 1
-        time.sleep(0.15)                   # brief gap before next hold
-        holds += 1
-        if holds == 1:
-            log.info(f"  walker: hold #1 → {button} for {hold_s:.1f}s "
-                     f"via {path}")
-        elif holds == 4:
-            log.info(f"  walker: 4 holds done. paths: {paths_seen}")
-        elif holds % 10 == 0:               # roughly every ~30 s of walking
-            log.info(f"  walker: {holds} holds total. paths: {paths_seen}; "
-                     f"scanner still sniffing.")
-            # Re-focus periodically in case the user clicked away. Cheap
-            # no-op when Azahar is already foreground.
-            try:
-                from ..platform_utils import focus_azahar as _focus
-                _focus()
-            except Exception:
-                pass
+    handled: set[int] = set()       # enc_keys already evaluated
+    walk = _alternating_dirs(movement)
+    encounters = 0
+    last_party_refresh = time.monotonic()
 
-    if not discovered.is_set():
-        return False                           # ctx requested stop
-    foe_addr = found[0]
-    if foe_addr is None:
-        return False
-    ctx.game.offsets.foe_base = foe_addr
-    ctx.dashboard.broadcast("offset_scan", state="ok", foe_base=foe_addr)
-    _persist_foe_base(foe_addr)
-    return True
+    while not ctx.should_stop():
+        # Refresh party occasionally (cheap insurance if it changes).
+        if party_base and time.monotonic() - last_party_refresh > 30:
+            party_keys = {p.encryption_key for p in
+                          _read_party(ctx, party_base, party_stride)}
+            last_party_refresh = time.monotonic()
 
+        wild = find_wild(ctx, foe_base, foe_len, party_keys, player_ot)
 
-def _persist_foe_base(addr: int) -> None:
-    """Write foe_base into config.yaml's offsets: block (line-aware).
+        if wild is None:
+            # Overworld — take a walking step (skip if no input driver).
+            if dry:
+                ctx._stop_evt.wait(0.8)
+            else:
+                button, hold_s = next(walk)
+                ctx.input.tap(button, hold_s=hold_s)
+                ctx._stop_evt.wait(0.15)
+            continue
 
-    Preserves comments / formatting; only rewrites the foe_base line.
-    """
-    cfg = ROOT / "config.yaml"
-    if not cfg.exists():
-        return
-    try:
-        text = cfg.read_text(encoding="utf-8")
-    except Exception as e:
-        log.warning(f"could not read {cfg}: {e}")
-        return
-    new_line = f"  foe_base: {addr:#010x}"
-    out, n = re.subn(r"^( *)foe_base:\s*[^\n]+", new_line, text,
-                     count=1, flags=re.MULTILINE)
-    if n == 0:
-        log.warning(f"foe_base line not found in {cfg.name}; "
-                    f"address {addr:#010x} kept in memory only.")
-        return
-    try:
-        cfg.write_text(out, encoding="utf-8")
-        log.info(f"  saved foe_base = {addr:#010x} to {cfg.name}")
-    except Exception as e:
-        log.warning(f"could not write {cfg}: {e}")
+        addr, pkm = wild
+        if pkm.encryption_key in handled:
+            # Same battle we already dealt with (mid-flee / lingering
+            # stale record). Nudge forward to clear dialogue and roll
+            # the next encounter; don't re-evaluate it.
+            if not dry:
+                button, _ = next(walk)
+                ctx.input.tap(button, hold_s=0.1)
+            ctx._stop_evt.wait(0.25)
+            continue
+
+        handled.add(pkm.encryption_key)
+        if len(handled) > 256:
+            handled = {pkm.encryption_key}
+        encounters += 1
+        _report_encounter(ctx, pkm, addr, encounters, "hunt")
+
+        if _is_target(ctx, pkm):
+            _alert_shiny(ctx, pkm, addr, encounters)
+            ctx.request_stop("shiny / target found")
+            return
+
+        if dry:
+            continue                # can't flee without inputs
+
+        # Let the battle intro animation finish and the FIGHT/BAG/
+        # POKéMON/RUN menu render before mashing the flee inputs.
+        ctx._stop_evt.wait(2.0)
+        _flee(ctx)
+
+    log.info(f"Shiny hunt stopped after {encounters} encounter(s).")
