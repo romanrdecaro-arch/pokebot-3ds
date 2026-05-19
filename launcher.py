@@ -744,18 +744,21 @@ class _RecentlySeen(tk.Frame):
             text=self._counter_text(),
             fg=_ACCENT, font=("Segoe UI", 9, "bold"))
 
+        # Insert ONLY the new row, at the top, without touching the
+        # existing rows. The old approach pack_forgot + re-packed every
+        # row each encounter — that "reloaded" the whole list and
+        # flickered every animating sprite. `before=` puts the new row
+        # first; existing rows (and their animations) are undisturbed.
+        prev_first = self._rows[0] if self._rows else None
         row = self._build_row(evt)
-        row.pack(fill="x", padx=0, pady=2)
+        if prev_first is not None and prev_first.winfo_exists():
+            row.pack(fill="x", padx=0, pady=2, before=prev_first)
+        else:
+            row.pack(fill="x", padx=0, pady=2)
         self._rows.insert(0, row)
-        # Move newest row to top
-        for r in self._rows:
-            r.pack_forget()
-        for r in self._rows[: self.MAX_ROWS]:
-            r.pack(fill="x", padx=0, pady=2)
-        # Trim
-        for r in self._rows[self.MAX_ROWS :]:
-            r.destroy()
-        self._rows = self._rows[: self.MAX_ROWS]
+        # Trim only the overflow tail (destroy at most a few).
+        while len(self._rows) > self.MAX_ROWS:
+            self._rows.pop().destroy()
         self._canvas.yview_moveto(0.0)
 
     # ---- row construction --------------------------------------------------
