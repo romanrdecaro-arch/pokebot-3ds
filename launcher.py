@@ -583,39 +583,53 @@ class _PartyStrip(tk.Frame):
 
     # ---- rendering ---------------------------------------------------------
 
+    # Every slot — filled OR empty — uses this identical 3-zone
+    # layout (fixed sprite box · level line · name line) so all six
+    # tiles are the same size and the strip lines up as clean rows.
+    _SPR_W, _SPR_H = 66, 50
+
+    def _slot_widgets(self, cell: tk.Frame, bg: str):
+        box = tk.Frame(cell, bg=bg, width=self._SPR_W,
+                       height=self._SPR_H)
+        box.pack(pady=(2, 1))
+        box.pack_propagate(False)
+        spr = tk.Label(box, bg=bg, bd=0, highlightthickness=0)
+        spr.place(relx=0.5, rely=0.5, anchor="center")
+        lvl = tk.Label(cell, bg=bg, font=("Segoe UI", 9, "bold"))
+        lvl.pack()
+        name = tk.Label(cell, bg=bg, fg=_MUTED,
+                        font=("Segoe UI", 8))
+        name.pack(pady=(0, 2))
+        return spr, lvl, name
+
     def _render_empty(self, cell: tk.Frame, idx: int):
-        tk.Label(cell, text=f"Slot {idx + 1}", bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 8, "italic")).pack()
-        tk.Label(cell, text="—", bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 14)).pack(pady=4)
+        cell.configure(bg=_PANEL2, highlightthickness=0)
+        spr, lvl, name = self._slot_widgets(cell, _PANEL2)
+        spr.config(text="—", fg=_MUTED, font=("Segoe UI", 14))
+        lvl.config(text="", bg=_PANEL2)
+        name.config(text=f"Slot {idx + 1}", bg=_PANEL2, fg=_MUTED,
+                    font=("Segoe UI", 8, "italic"))
 
     def _render_slot(self, cell: tk.Frame, idx: int, evt: dict):
         species_id = int(evt.get("species") or 0)
         shiny = bool(evt.get("shiny"))
         level = evt.get("level")
         nick = evt.get("nickname") or ""
-        # Border colour for shiny / non-shiny.
         if shiny:
             cell.configure(bg="#2a230a", highlightthickness=1,
                            highlightbackground="#ffd86b")
         else:
             cell.configure(bg=_PANEL2, highlightthickness=0)
         bg = cell.cget("bg")
-        # Sprite.
-        sprite_lbl = tk.Label(cell, bg=bg, bd=0, highlightthickness=0)
-        sprite_lbl.pack()
-        self._load_sprite_async(species_id, shiny, sprite_lbl)
-        # Level
+        spr, lvl, name = self._slot_widgets(cell, bg)
+        self._load_sprite_async(species_id, shiny, spr)
         lvl_text = f"Lv {level}" if level is not None else "Lv —"
         if shiny:
             lvl_text += "  ★"
-        tk.Label(cell, text=lvl_text, bg=bg,
-                 fg="#ffd86b" if shiny else _TEXT,
-                 font=("Segoe UI", 9, "bold")).pack()
-        # Nickname (or species number fallback).
-        sub = nick if nick else f"#{species_id}"
-        tk.Label(cell, text=sub, bg=bg, fg=_MUTED,
-                 font=("Segoe UI", 8)).pack()
+        lvl.config(text=lvl_text, bg=bg,
+                   fg="#ffd86b" if shiny else _TEXT)
+        name.config(text=nick if nick else f"#{species_id}", bg=bg,
+                    fg=_MUTED, font=("Segoe UI", 8))
 
     def _load_sprite_async(self, species_id: int, shiny: bool,
                            target: tk.Label):

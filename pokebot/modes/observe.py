@@ -164,22 +164,34 @@ def _scan_owned(ctx, lo, hi, player_ot):
 
 
 def get_party(ctx, party_base_cfg, party_stride, player_ot):
-    """The live party as a list of ParsedPokemon. Tries a cached /
-    configured base (fast stride read) first; otherwise scans for the
-    player-owned cluster and caches its base on ctx for next time."""
-    stride = party_stride or 484
-    for base in (getattr(ctx, "_party_base", 0), party_base_cfg):
-        if base:
-            p = _read_party(ctx, base, stride)
-            if p:
-                ctx._party_base = base
-                return p
+    """The live party as a list of ParsedPokemon.
+
+    The party is RE-DERIVED from content every call (a stride read
+    off a cached base was fragile — when slot 2 wasn't exactly
+    base+484 it stopped after the lead, so the strip collapsed to
+    just the lead). We cache a tight WINDOW around the owned cluster
+    and re-scan only that window each refresh (cheap); a broad scan
+    runs once to find it (or again if it moves)."""
+    win = getattr(ctx, "_party_win", None)
+    if win:
+        owned = _scan_owned(ctx, win[0], win[1], player_ot)
+        if owned:
+            return [p for _, p in owned[:_PARTY_SLOTS]]
+        ctx._party_win = None                 # moved → relocate below
+
     for lo, hi in _PARTY_SCAN_RANGES:
         owned = _scan_owned(ctx, lo, hi, player_ot)
         if owned:
-            ctx._party_base = owned[0][0]
-            log.info(f"  party located @ {owned[0][0]:#010x} "
-                     f"({len(owned)} owned PK6, OT {player_ot!r})")
+            a0 = owned[0][0]
+            a1 = owned[-1][0]
+            # Window covers all members + margin so it survives the
+            # party shifting a little or gaining/losing a member.
+            ctx._party_win = (max(lo, a0 - 0x400),
+                              min(hi, a1 + _OPP_PK6 + 0x800))
+            log.info(f"  party located @ {a0:#010x}..{a1:#010x} "
+                     f"({len(owned)} owned PK6, OT {player_ot!r}); "
+                     f"window {ctx._party_win[0]:#x}-"
+                     f"{ctx._party_win[1]:#x}")
             return [p for _, p in owned[:_PARTY_SLOTS]]
     return []
 
