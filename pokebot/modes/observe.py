@@ -186,19 +186,27 @@ def _scan_owned(ctx, lo, hi, player_ot):
 
 
 def _refine_party(ctx, owned):
-    """The owned cluster is found via the 232-byte box decode (no
-    level field), so the strip fell back to an EXP estimate — wrong
-    for non-Medium-Fast species (Fennekin Lv8 → showed 6). Re-read
-    each member as a 260-byte PARTY record so the REAL level (byte
-    0xEC) is parsed; keep the box copy only if that fails."""
+    """Re-read each located party member to get the REAL level.
+
+    Live in-RAM party slots have the body (0x08-0xE7) ENCRYPTED but
+    the party-stats region (0xE8-0x103) PLAINTEXT — the .pkx file
+    format encrypts both, so a full decrypt_pkm(260) xors plaintext
+    bytes and corrupts the level byte at 0xEC (the "Lv 84" Chespin
+    bug: real 5 → 84). Decrypt ONLY the body, then append the raw
+    party-stats bytes, and parse_pkm reads the true level."""
     out = []
     for addr, pkm in owned[:_PARTY_SLOTS]:
         try:
-            rec = ctx.rpc.read(addr, _PK6)        # 260 = party fmt
-            pp = _decode(rec, party=True)
+            rec = ctx.rpc.read(addr, _PK6)            # 260 bytes
+            body = decrypt_pkm(rec[:_OPP_PK6])         # 232 plaintext
+            blended = body + rec[_OPP_PK6:_PK6]        # +28 raw stats
+            pp = _parse_valid(blended)
+            if pp is not None and pp.party:
+                out.append(pp)
+                continue
         except Exception:
-            pp = None
-        out.append(pp if (pp is not None and pp.party) else pkm)
+            pass
+        out.append(pkm)
     return out
 
 

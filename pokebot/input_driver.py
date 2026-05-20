@@ -274,5 +274,36 @@ class InputDriver:
             self._kb.release(k)
 
     def soft_reset(self, hold_s: float = 0.5):
-        """Standard 3DS soft-reset combo: L + R + Start (or Select)."""
+        """3DS soft-reset combo: L + R + Start held together.
+
+        Prefer the PostMessage path on Windows — pynput's SendInput
+        wrapper crashes on Python 3.14 (ctypes signature mismatch),
+        and PostMessage doesn't need Azahar focused either way.
+        """
+        if self.dry_run:
+            log.info(f"[DRY] soft_reset ({hold_s}s)")
+            time.sleep(hold_s)
+            return
+        if sys.platform.startswith("win"):
+            try:
+                from .platform_utils import (
+                    find_azahar_hwnd, post_key_down, post_key_up,
+                    char_to_vk,
+                )
+                vks = [char_to_vk(getattr(self.binds, b, None))
+                       for b in ("L", "R", "Start")]
+                if not self._azahar_hwnd:
+                    self._azahar_hwnd = find_azahar_hwnd() or 0
+                if self._azahar_hwnd and all(vks):
+                    for vk in vks:
+                        post_key_down(self._azahar_hwnd, vk)
+                    time.sleep(hold_s)
+                    for vk in vks:
+                        post_key_up(self._azahar_hwnd, vk)
+                    return
+            except Exception as e:
+                log.warning(f"  soft_reset PostMessage failed ({e}); "
+                            f"falling back to pynput.")
+        # pynput fallback (needs focus; may crash on Python 3.14 —
+        # the PostMessage path above is the primary route).
         self.combo("L", "R", "Start", hold_s=hold_s)
