@@ -279,9 +279,19 @@ def run(ctx):
         has_rules = bool(ctx.target and ctx.target.rules)
         hit = (ctx.target.matches(pkm) if has_rules
                else starter_id is not None)
-        if hit:
-            reason = (ctx.target.describe(pkm) if has_rules
-                      else f"starter #{pkm.species}")
+        # Hardcoded safety net: stop if PSV is unusually low (<8).
+        # Why: a low PSV Pokémon is shiny on any TSV-matched save and
+        # is rare enough that we never want to throw one away even if
+        # the user's target filter wouldn't have flagged it.
+        low_psv = pkm.psv < 8
+        if hit or low_psv:
+            if low_psv and not hit:
+                reason = f"low PSV={pkm.psv} (<8) — keep this one!"
+            else:
+                reason = (ctx.target.describe(pkm) if has_rules
+                          else f"starter #{pkm.species}")
+                if low_psv:
+                    reason += f" + low PSV={pkm.psv}"
             bar = "*" * 30
             for line in (bar, f"  TARGET — attempt #{attempt}: {reason}",
                          "  Bot STOPPED — it's in your party. Go SAVE!",
@@ -291,7 +301,8 @@ def run(ctx):
                 "target_hit", attempt=attempt, count=attempt,
                 reason=reason, species=pkm.species, shiny=pkm.shiny,
                 nature=pkm.nature, ivs=pkm.ivs)
-            ctx.request_stop("target hit")
+            ctx.request_stop("low PSV" if low_psv and not hit
+                             else "target hit")
             return
 
         _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)

@@ -57,7 +57,11 @@ def _alert(ctx, pkm, addr: int, count: int) -> None:
 
 
 def _is_target(ctx, pkm) -> bool:
-    return bool(pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
+    # Hardcoded safety net: PSV<8 stops the hunt even if the user's
+    # target filter wouldn't have flagged it (a low-PSV mon is shiny
+    # on any matching TSV — too rare to throw away).
+    return bool(pkm.shiny or pkm.psv < 8
+                or (ctx.target and ctx.target.matches(pkm)))
 
 
 def _refresh_party(ctx, party_base, party_stride, player_ot):
