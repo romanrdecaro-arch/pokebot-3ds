@@ -452,11 +452,15 @@ def run(ctx) -> None:
                 log.info(f"    [{tag}] {_desc(p, a)}")
 
         if new:
-            a, p = pick_opponent(new)
-            enc_count += 1
-            _report_encounter(ctx, p, a, enc_count, "new-key")
-            for _, np in new:
-                seen.add(np.encryption_key)
+            # Horde-aware: a horde battle puts 5 unseen non-party PK6
+            # in the foe window at once. Report EVERY one (5 rows in
+            # Recently Seen) instead of picking just the lead — gives
+            # the full picture and lets the launcher's target_hit
+            # broadcast fire on ANY shiny in the horde.
+            for a, p in sorted(new, key=lambda ap: ap[0]):
+                seen.add(p.encryption_key)
+                enc_count += 1
+                _report_encounter(ctx, p, a, enc_count, "new-key")
 
         # Bound memory without re-reporting current stale records.
         if len(seen) > 512:

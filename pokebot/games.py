@@ -258,6 +258,13 @@ def methods_for(game_key: str) -> list[Method]:
                      "bot resumes walking. Requires foe_base + "
                      "in_battle_flag offsets — run Debug first if "
                      "those aren't set."),
+        Method("Horde encounters", "horde",
+               notes="Same as Random encounters but tuned for hordes "
+                     "(5 wild Pokémon per battle, ~5× shiny chance). "
+                     "Every mon in the horde is reported and the bot "
+                     "stops on ANY shiny among the 5. Hordes happen "
+                     "~5%% of the time in tall grass, or use Sweet "
+                     "Scent / Honey for guaranteed."),
         Method("Debug — find offsets", "debug",
                notes="One-shot offset bootstrap. Sends NO inputs. "
                      "Brute-force scans memory for party_base, then "

@@ -1507,7 +1507,7 @@ class _App(tk.Tk):
             self._starter_hint.config(
                 text="Save in front of the starter table — see "
                      "TUTORIAL.md for the exact position per game.")
-        elif m and m.mode == "encounter":
+        elif m and m.mode in ("encounter", "horde"):
             self._movement_frame.pack(fill="x", pady=(4, 0),
                                       before=self._target_divider)
 
@@ -1626,7 +1626,7 @@ class _App(tk.Tk):
             chosen_starter = method.starter
         # Resolve the movement axis for encounter mode.
         chosen_movement = None
-        if method.mode == "encounter":
+        if method.mode in ("encounter", "horde"):
             chosen_movement = (
                 "vertical"
                 if "Vertical" in self._movement_var.get()
@@ -1640,7 +1640,7 @@ class _App(tk.Tk):
             args += ["--starter", chosen_starter]
         if chosen_movement:
             args += ["--movement", chosen_movement]
-        if method.mode == "encounter":
+        if method.mode in ("encounter", "horde"):
             try:
                 args += ["--flee-delay", f"{float(self._flee_var.get()):.1f}"]
             except Exception:

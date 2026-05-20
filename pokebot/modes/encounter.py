@@ -178,15 +178,27 @@ def run(ctx) -> None:
                if p.encryption_key not in seen]
 
         if new:
-            addr, pkm = pick_opponent(new)
-            for _, np in new:
-                seen.add(np.encryption_key)
+            # Horde-aware: a horde battle drops 5 unseen non-party
+            # PK6 into the foe window at once. Report each (so
+            # Recently Seen gets 5 rows / 5x the data) and stop on
+            # the FIRST target match anywhere in the horde. Fleeing
+            # ends the whole battle in one RUN press either way.
+            ordered = sorted(new, key=lambda ap: ap[0])
+            n = len(ordered)
+            log.info(f"  encounter: {n} new wild "
+                     f"{'(horde)' if n > 1 else '(single)'}")
+            target_hit = None
+            for a, p in ordered:
+                seen.add(p.encryption_key)
+                encounters += 1
+                _report_encounter(ctx, p, a, encounters, "new-key")
+                if target_hit is None and _is_target(ctx, p):
+                    target_hit = (a, p)
             if len(seen) > 512:
                 seen = {p.encryption_key for _, p in cands}
-            encounters += 1
-            _report_encounter(ctx, pkm, addr, encounters, "new-key")
-            if _is_target(ctx, pkm):
-                _alert(ctx, pkm, addr, encounters)
+            if target_hit is not None:
+                a, p = target_hit
+                _alert(ctx, p, a, encounters)
                 ctx.request_stop("shiny / target found")
                 return
             if not dry:
