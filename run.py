@@ -99,6 +99,14 @@ def main(argv=None):
                     help="seconds to wait after a wild appears before "
                          "fleeing (encounter mode). Raise for a slower "
                          "emulator; overrides config.yaml.")
+    ap.add_argument("--trainer-name", default=None,
+                    help="in-game OT name; used by the party locator "
+                         "to identify your owned Pokémon (soft_reset "
+                         "mode). Overrides config.yaml.")
+    ap.add_argument("--press-speed", type=float, default=None,
+                    help="seconds between button presses in the X/Y "
+                         "starter sequence (soft_reset mode). Lower "
+                         "= faster; sets advance_gap + xy_receive_gap.")
     ap.add_argument("--verify-address", default=None,
                     help="for debug mode: read 260 bytes at this hex "
                          "address and report whether it's a valid PK6 "
@@ -132,6 +140,12 @@ def main(argv=None):
         config.setdefault("random_encounters", {})["movement"] = args.movement
     if args.flee_delay is not None:
         config.setdefault("random_encounters", {})["flee_delay"] = args.flee_delay
+    if args.trainer_name:
+        config.setdefault("soft_reset", {})["trainer_name"] = args.trainer_name
+    if args.press_speed is not None:
+        sr = config.setdefault("soft_reset", {})
+        sr["advance_gap"] = args.press_speed
+        sr["xy_receive_gap"] = args.press_speed
     if args.target:   config["target"] = _target_preset(args.target)
     if args.verify_address:
         config["verify_address"] = int(args.verify_address, 0)

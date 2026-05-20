@@ -1194,7 +1194,57 @@ class _App(tk.Tk):
                                       font=("Segoe UI", 9, "italic"),
                                       anchor="w",
                                       wraplength=235, justify="left")
-        self._starter_hint.pack(fill="x", pady=(2, 0))
+        self._starter_hint.pack(fill="x", pady=(2, 8))
+
+        # Trainer name (OT) — used to locate the party by content. Pre-
+        # filled from config.yaml so it survives between sessions.
+        _seed = (_load_config().get("soft_reset", {}) or {})
+        tk.Label(self._starter_frame, text="Trainer name (OT)",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x")
+        self._trainer_var = tk.StringVar(value=str(
+            _seed.get("trainer_name", "")))
+        tk.Entry(self._starter_frame, textvariable=self._trainer_var,
+                 bg=_PANEL, fg=_TEXT, insertbackground=_TEXT,
+                 bd=0, relief="flat", highlightthickness=1,
+                 highlightbackground=_BORDER,
+                 highlightcolor=_ACCENT,
+                 font=("Segoe UI", 10)).pack(fill="x", pady=(2, 8),
+                                              ipady=4)
+
+        # Press speed — seconds between button presses in the X/Y
+        # starter sequence (advance_gap + xy_receive_gap). Lower =
+        # faster; raise if the cursor / Tierno text gets skipped.
+        ps_head = tk.Frame(self._starter_frame, bg=_PANEL2)
+        ps_head.pack(fill="x")
+        tk.Label(ps_head, text="Press speed",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(side="left")
+        self._press_var = tk.DoubleVar(value=float(
+            _seed.get("advance_gap", 1.0)))
+        self._press_val_lbl = tk.Label(
+            ps_head, text=f"{self._press_var.get():.1f} s",
+            bg=_PANEL2, fg=_ACCENT,
+            font=("Segoe UI", 9, "bold"))
+        self._press_val_lbl.pack(side="right")
+        tk.Scale(self._starter_frame, from_=0.3, to=2.0,
+                 resolution=0.1, orient="horizontal",
+                 variable=self._press_var, showvalue=False,
+                 bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
+                 highlightthickness=0, bd=0, sliderrelief="flat",
+                 activebackground=_ACCENT,
+                 command=lambda v: self._press_val_lbl.config(
+                     text=f"{float(v):.1f} s")).pack(fill="x")
+        tk.Label(self._starter_frame,
+                 text="Lower = faster button presses. Raise if the "
+                      "Tierno text gets cut off or the cursor doesn't "
+                      "register.",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "italic"),
+                 anchor="w", wraplength=235, justify="left"
+                 ).pack(fill="x", pady=(2, 0))
 
         # MOVEMENT (sub-dropdown, only visible when method=Random encounters)
         self._movement_frame = tk.Frame(hunt_card, bg=_PANEL2)
@@ -1593,6 +1643,15 @@ class _App(tk.Tk):
         if method.mode == "encounter":
             try:
                 args += ["--flee-delay", f"{float(self._flee_var.get()):.1f}"]
+            except Exception:
+                pass
+        if method.mode == "soft_reset":
+            tn = self._trainer_var.get().strip()
+            if tn:
+                args += ["--trainer-name", tn]
+            try:
+                args += ["--press-speed",
+                         f"{float(self._press_var.get()):.2f}"]
             except Exception:
                 pass
         flag = self._TARGET_FILTER_FLAG.get(self._target_var.get())
