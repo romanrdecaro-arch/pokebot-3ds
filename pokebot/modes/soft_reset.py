@@ -143,16 +143,24 @@ def run(ctx):
     party_base = ctx.game.offsets.party_base
     party_stride = ctx.game.offsets.party_stride or 484
 
+    # Map ALL three starters for the chosen game — used for the
+    # species gate, and logged so it's clear the script handles
+    # Chespin / Fennekin / Froakie (not just Fennekin).
+    all_starters = starters_for(ctx.game.key) or {}
+    log.info(f"  {ctx.game.key} starters: " + ", ".join(
+        f"{n.title()}=#{i}" for n, i in all_starters.items()) or "(none)")
+    valid_starter_ids = set(all_starters.values())
+
     starter_id = None
     if starter_name:
         starter_id = starter_species(ctx.game.key, str(starter_name))
         if starter_id:
-            log.info(f"  hunting starter {starter_name} "
-                     f"(#{starter_id}); OT {player_ot!r}")
+            log.info(f"  hunting {starter_name.title()} "
+                     f"(species #{starter_id}); OT {player_ot!r}")
         else:
             log.warning(f"  unknown starter {starter_name!r} for "
                         f"{ctx.game.key}; known: "
-                        f"{list(starters_for(ctx.game.key))}")
+                        f"{list(all_starters)}")
     seq_fn = _SEQUENCES.get(ctx.game.key)
     if not (seq_fn and starter_name):
         log.info("  no game-specific starter sequence — generic A-mash.")
@@ -180,7 +188,9 @@ def run(ctx):
                 ctx._stop_evt.wait(advance_gap)
 
         # 2. Detect the received starter by content (relocation-proof;
-        #    no offsets needed). Poll until it lands in the party.
+        #    no offsets needed). Exit as soon as ANY mon lands in the
+        #    party — the species check happens next so a wrong-cursor
+        #    pickup is logged clearly instead of timing out.
         pkm = None
         for _ in range(detect_tries):
             if ctx.should_stop():
@@ -188,20 +198,34 @@ def run(ctx):
             party = get_party(ctx, party_base, party_stride, player_ot)
             if party:
                 broadcast_party(ctx, party)
-                lead = party[0]
-                if starter_id is None or lead.species == starter_id:
-                    pkm = lead
-                    break
+                pkm = party[0]
+                break
             ctx._stop_evt.wait(detect_gap)
 
         if pkm is None:
-            log.warning(f"  attempt {attempt}: starter never appeared "
-                        f"in the party (sequence likely missed the "
-                        f"cursor / save not in front of the table). "
-                        f"Resetting.")
+            log.warning(f"  attempt {attempt}: nothing in the party "
+                        f"after the sequence (cursor likely missed or "
+                        f"save isn't in front of the table). Resetting.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
-                reason="starter not found in party after sequence")
+                reason="no party member after sequence")
+            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+            continue
+
+        # Species gate — accepts the chosen starter; logs+resets if
+        # the cursor landed on the wrong one (e.g. picked Fennekin
+        # when Chespin was requested).
+        if starter_id is not None and pkm.species != starter_id:
+            got = next((n for n, i in all_starters.items()
+                        if i == pkm.species), f"#{pkm.species}")
+            log.warning(f"  attempt {attempt}: WRONG starter — got "
+                        f"{got.title()} (#{pkm.species}), wanted "
+                        f"{starter_name.title()} (#{starter_id}). "
+                        f"Cursor misfire; resetting.")
+            ctx.dashboard.broadcast(
+                "read_failure", attempt=attempt,
+                reason=f"wrong starter (got #{pkm.species}, "
+                       f"wanted #{starter_id})")
             _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
 
