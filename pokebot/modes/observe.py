@@ -186,27 +186,21 @@ def _scan_owned(ctx, lo, hi, player_ot):
 
 
 def _refine_party(ctx, owned):
-    """Re-read each located party member to get the REAL level.
-
-    Live in-RAM party slots have the body (0x08-0xE7) ENCRYPTED but
-    the party-stats region (0xE8-0x103) PLAINTEXT — the .pkx file
-    format encrypts both, so a full decrypt_pkm(260) xors plaintext
-    bytes and corrupts the level byte at 0xEC (the "Lv 84" Chespin
-    bug: real 5 → 84). Decrypt ONLY the body, then append the raw
-    party-stats bytes, and parse_pkm reads the true level."""
+    """Re-read each located party member as a 260-byte PARTY record so
+    parse_pkm fills .party (level, current stats). Works for the
+    in-battle / overworld party-copy slot (the normal hunt case);
+    the soft-reset starter case is special because right after the
+    receive cutscene the live slot is in a transitional state where
+    byte 0xEC isn't the level yet — soft_reset overrides level to 5
+    (starters are always Lv5)."""
     out = []
     for addr, pkm in owned[:_PARTY_SLOTS]:
         try:
-            rec = ctx.rpc.read(addr, _PK6)            # 260 bytes
-            body = decrypt_pkm(rec[:_OPP_PK6])         # 232 plaintext
-            blended = body + rec[_OPP_PK6:_PK6]        # +28 raw stats
-            pp = _parse_valid(blended)
-            if pp is not None and pp.party:
-                out.append(pp)
-                continue
+            rec = ctx.rpc.read(addr, _PK6)
+            pp = _decode(rec, party=True)
         except Exception:
-            pass
-        out.append(pkm)
+            pp = None
+        out.append(pp if (pp is not None and pp.party) else pkm)
     return out
 
 

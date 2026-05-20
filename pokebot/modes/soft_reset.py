@@ -129,12 +129,12 @@ def run(ctx):
     player_ot = cfg.get("trainer_name", "Roman")
     advance_taps = int(cfg.get("advance_taps", 60))
     advance_gap = float(cfg.get("advance_gap", 1.0))
-    post_reset = float(cfg.get("post_reset_wait", 12.0))
-    post_reset_taps = int(cfg.get("post_reset_taps", 6))
-    post_reset_gap = float(cfg.get("post_reset_gap", 1.0))
+    post_reset = float(cfg.get("post_reset_wait", 6.0))
+    post_reset_taps = int(cfg.get("post_reset_taps", 4))
+    post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
     starter_name = cfg.get("starter")
     xy_pre_taps = int(cfg.get("xy_pre_taps", 25))
-    xy_post_taps = int(cfg.get("xy_post_taps", 40))
+    xy_post_taps = int(cfg.get("xy_post_taps", 30))
     xy_receive_gap = float(cfg.get("xy_receive_gap", 1.0))
     # How long to wait for the starter to show up in the party after
     # the input sequence before declaring the attempt a miss.
@@ -229,16 +229,29 @@ def run(ctx):
             _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
 
-        # 3. Report + evaluate.
+        # 3. Report + evaluate. X/Y starters are ALWAYS received at
+        # Lv5 — the byte at 0xEC of the live party slot right after
+        # the cutscene isn't yet the level field (transitional
+        # state), so hardcode 5 for display rather than show a wrong
+        # value like 84/48.
+        STARTER_LEVEL = 5
+        if pkm.party:
+            pkm.party = {**pkm.party, "level": STARTER_LEVEL}
+        # Re-broadcast the strip with the corrected level too.
+        try:
+            broadcast_party(ctx, [pkm])
+        except Exception:
+            pass
         ctx.dashboard.broadcast(
             "candidate", attempt=attempt,
             species=pkm.species, nickname=pkm.nickname,
             shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
             ivs=pkm.ivs, pid=pkm.pid, tsv=pkm.tsv, psv=pkm.psv,
             ability_id=pkm.ability_id, ability_num=pkm.ability_num,
-            level=pkm.party["level"] if pkm.party else None,
+            level=STARTER_LEVEL,
             moves=pkm.moves)
         log.info(f"  starter: #{pkm.species} {pkm.nickname or ''} "
+                 f"Lv{STARTER_LEVEL} "
                  f"{'★SHINY★ ' if pkm.shiny else ''}"
                  f"nature={pkm.nature} IVs={pkm.ivs} "
                  f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
