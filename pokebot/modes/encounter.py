@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 
+from ..pk6_export import ensure_targets_dir
 from .observe import (scan_nonparty, pick_opponent, get_party,
                        broadcast_party, _report_encounter,
                        _level_from_exp)
@@ -127,6 +128,7 @@ def run(ctx) -> None:
     run_local = rcfg.get("run_local") or [0.5, 0.86]
     run_override = rcfg.get("run_touch")     # None ⇒ auto-geometry
 
+    ensure_targets_dir()                    # targets/ shows up now
     log.info(f"Mode: shiny hunt — random encounters ({movement}, "
              f"{walk_hold:.2f}s steps, flee_delay {flee_delay:.1f}s, "
              f"run_settle {run_settle:.1f}s)")

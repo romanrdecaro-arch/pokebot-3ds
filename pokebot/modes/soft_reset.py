@@ -25,6 +25,7 @@ import logging
 import time
 
 from ..games import starter_species, starters_for
+from ..pk6_export import ensure_targets_dir, save_target_pk6
 from ..platform_utils import focus_azahar
 from .observe import get_party, broadcast_party, quick_get_party
 
@@ -128,6 +129,7 @@ def _do_reset(ctx, post_wait: float, post_taps: int, post_gap: float):
 
 def run(ctx):
     log.info("Mode: soft_reset (starter)")
+    ensure_targets_dir()                    # targets/ shows up now
     try:
         if focus_azahar():
             log.info("  Azahar window focused.")
@@ -282,6 +284,10 @@ def run(ctx):
         if hit:
             reason = (ctx.target.describe(pkm) if has_rules
                       else f"starter #{pkm.species}")
+            addr = getattr(pkm, "source_address", None)
+            if addr is not None:
+                save_target_pk6(ctx, addr, pkm,
+                                "shiny" if pkm.shiny else "starter")
             bar = "*" * 30
             for line in (bar, f"  TARGET — attempt #{attempt}: {reason}",
                          "  Bot STOPPED — it's in your party. Go SAVE!",

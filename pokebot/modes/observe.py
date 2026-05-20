@@ -210,7 +210,11 @@ def _refine_party(ctx, owned):
     the soft-reset starter case is special because right after the
     receive cutscene the live slot is in a transitional state where
     byte 0xEC isn't the level yet — soft_reset overrides level to 5
-    (starters are always Lv5)."""
+    (starters are always Lv5).
+
+    Each returned record carries ``source_address`` (the RAM address
+    of its slot) so callers — notably the .pk6 exporter — can re-read
+    the raw bytes to save a target hit."""
     out = []
     for addr, pkm in owned[:_PARTY_SLOTS]:
         try:
@@ -218,7 +222,9 @@ def _refine_party(ctx, owned):
             pp = _decode(rec, party=True)
         except Exception:
             pp = None
-        out.append(pp if (pp is not None and pp.party) else pkm)
+        result = pp if (pp is not None and pp.party) else pkm
+        result.source_address = addr
+        out.append(result)
     return out
 
 
@@ -373,7 +379,12 @@ def _report_encounter(ctx, pkm, addr: int, count: int, via: str) -> None:
     ctx.dashboard.broadcast(
         "encounter", source="wild", address=f"{addr:#010x}",
         count=count, **payload)
-    if ctx.target and ctx.target.matches(pkm):
+    is_target_hit = bool(ctx.target and ctx.target.matches(pkm))
+    if pkm.shiny or is_target_hit:
+        from ..pk6_export import save_target_pk6
+        save_target_pk6(ctx, addr, pkm,
+                        "shiny" if pkm.shiny else "wild")
+    if is_target_hit:
         log.info(f"*** TARGET HIT *** {ctx.target.describe(pkm)}")
         ctx.dashboard.broadcast(
             "target_hit", count=count,
@@ -394,6 +405,8 @@ def run(ctx) -> None:
     player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
         "trainer_name", "Roman")
 
+    from ..pk6_export import ensure_targets_dir
+    ensure_targets_dir()                    # targets/ shows up now
     log.info("Mode: manual control (live wild detection — bot sends "
              f"no inputs; player OT {player_ot!r})")
     log.info(f"  party_base={party_base:#010x} stride={party_stride}  "
