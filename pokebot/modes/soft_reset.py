@@ -26,7 +26,7 @@ import time
 
 from ..games import starter_species, starters_for
 from ..platform_utils import focus_azahar
-from .observe import get_party, broadcast_party
+from .observe import get_party, broadcast_party, quick_get_party
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 def _xy_starter_sequence(ctx, starter: str, gap: float,
                          pre_taps: int, post_taps: int,
-                         receive_gap: float) -> bool:
+                         receive_gap: float, detect_cb=None) -> bool:
     """Pokémon X/Y starter sequence (fixed, manually-timed). Returns
     False if a stop was requested mid-run.
 
@@ -83,10 +83,19 @@ def _xy_starter_sequence(ctx, starter: str, gap: float,
         if not _tap(btn, g):
             return False
 
-    log.info(f"  X/Y: {post_taps}× B to receive (gap {receive_gap}s)")
-    for _ in range(post_taps):
+    log.info(f"  X/Y: up to {post_taps}× B to receive "
+             f"(gap {receive_gap}s, early-exit on detect)")
+    for i in range(post_taps):
         if not _tap("B", receive_gap):
             return False
+        # Cheap poll between presses — break out the moment the
+        # starter is written to the live party. Skip the first 2
+        # (the slot can't possibly be ready yet, and the broad scan
+        # only happens once after the cache is set).
+        if detect_cb is not None and i >= 2 and detect_cb():
+            log.info(f"  X/Y: starter detected after {i + 1} B "
+                     f"press(es) — stopping B-mash early.")
+            return True
     return True
 
 
@@ -175,10 +184,21 @@ def run(ctx):
         except Exception:
             pass
 
+        # Detect callback used by the sequence between B presses —
+        # break out the moment the starter lands in the live party
+        # so we don't keep mashing B after it's already received.
+        def _detected() -> bool:
+            party = quick_get_party(ctx, player_ot)
+            if not party:
+                return False
+            lead = party[0]
+            return starter_id is None or lead.species == starter_id
+
         # 1. Drive the game to "starter received".
         if seq_fn and starter_name:
             if not seq_fn(ctx, starter_name, advance_gap,
-                          xy_pre_taps, xy_post_taps, xy_receive_gap):
+                          xy_pre_taps, xy_post_taps, xy_receive_gap,
+                          detect_cb=_detected):
                 return
         else:
             for _ in range(advance_taps):

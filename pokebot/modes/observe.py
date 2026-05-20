@@ -155,6 +155,24 @@ def broadcast_party(ctx, party):
     return {p.encryption_key for p in party}
 
 
+# Fast (no broad-scan) party check used while the bot is in an input
+# sequence — we want a near-zero-cost poll after each button press,
+# not the multi-second broad scan get_party would do on a miss. Reads
+# only the cached window (if get_party has already located the party)
+# or a 12 KB default window near the X/Y PartyOffset; returns [] if
+# nothing is there. Caller falls back to get_party for the slow case.
+_PARTY_FAST_WINDOW = (0x08CE0000, 0x08CE3000)
+
+
+def quick_get_party(ctx, player_ot):
+    """Fast party check — scans ONLY the cached or default tight
+    window. Never broad-scans. Returns [] when the party isn't there
+    yet (so the caller can keep going)."""
+    win = getattr(ctx, "_party_win", None) or _PARTY_FAST_WINDOW
+    owned = _scan_owned(ctx, win[0], win[1], player_ot)
+    return _refine_party(ctx, owned) if owned else []
+
+
 # Azahar relocates the fixed PartyOffset (like every other address),
 # so reading it literally returns nothing. Locate the live party by
 # content instead: the player's team are checksum-valid PK6 whose OT
