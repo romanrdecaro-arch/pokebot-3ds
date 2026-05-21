@@ -1,4 +1,8 @@
-# pokebot-3ds
+<p align="center">
+  <img src="assets/logo.svg" alt="pokebot-3ds logo" width="160"/>
+</p>
+
+<h1 align="center">pokebot-3ds</h1>
 
 Automation tool for the Generation 6 and Generation 7 mainline Pokémon
 games (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra

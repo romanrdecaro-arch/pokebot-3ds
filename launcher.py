@@ -201,14 +201,26 @@ _WARN   = "#ffd60a"   # iOS systemYellow
 _DANGER = "#ff453a"   # iOS systemRed
 
 
+_LOGO_PNG = Path(__file__).resolve().parent / "assets" / "logo.png"
+_LOGO_ICO = Path(__file__).resolve().parent / "assets" / "logo.ico"
+
+
 def _pokeball_photo(size: int, bg: str):
-    """Anti-aliased monoline Pokéball as a PhotoImage. Tk Canvas
-    shapes aren't smoothed, so draw at 4x with Pillow and downscale
-    LANCZOS for clean edges. None if Pillow is unavailable."""
+    """Header logo as a PhotoImage. Prefers the bundled Pokéball +
+    circuit-board PNG at ``assets/logo.png``; falls back to a Pillow-
+    drawn monoline Pokéball if the asset is missing, and returns None
+    if Pillow itself isn't available (caller draws on a Tk Canvas)."""
     try:
         from PIL import Image, ImageDraw, ImageTk
     except Exception:
         return None
+    try:
+        if _LOGO_PNG.exists():
+            im = Image.open(_LOGO_PNG).convert("RGBA").resize(
+                (size, size), Image.LANCZOS)
+            return ImageTk.PhotoImage(im)
+    except Exception:
+        pass
     try:
         S = size * 4
         lw = max(6, S // 16)
@@ -977,6 +989,22 @@ class _App(tk.Tk):
         self.geometry("1180x720")
         self.minsize(900, 520)
         self.configure(bg=_BG)
+        # Window/taskbar icon — .ico for Windows (multi-resolution),
+        # iconphoto from the PNG everywhere else / as a fallback.
+        try:
+            if _LOGO_ICO.exists():
+                self.iconbitmap(default=str(_LOGO_ICO))
+        except Exception:
+            pass
+        try:
+            if _LOGO_PNG.exists():
+                from PIL import Image, ImageTk
+                self._titlebar_icon = ImageTk.PhotoImage(
+                    Image.open(_LOGO_PNG).convert("RGBA")
+                    .resize((64, 64), Image.LANCZOS))
+                self.iconphoto(True, self._titlebar_icon)
+        except Exception:
+            pass
         try:
             ttk.Style().theme_use("clam")
         except Exception:
