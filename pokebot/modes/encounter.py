@@ -291,9 +291,11 @@ def run(ctx) -> None:
             continue
         if idle_action == "fish":
             _use_fishing_rod(ctx, fish_cast_settle)
-            # If the A press hooked something, the next scan_nonparty
-            # at the top of the loop catches it; if not (mistimed or
-            # no bite), the loop falls back here and we recast.
+            # 1 s breather between attempts. If the A hooked something
+            # the next scan_nonparty (post-wait) still catches it; if
+            # not, the wait gives the rod-retract / "no nibble" text
+            # time to clear before the next Y cast lands.
+            ctx._stop_evt.wait(1.0)
             continue
         # Hold B while moving so the player RUNS (covers grass faster
         # → more encounters per minute).
