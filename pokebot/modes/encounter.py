@@ -128,10 +128,16 @@ def _flee(ctx, layout, run_local, override, run_settle: float) -> None:
     log.info(f"  flee: touch RUN @ ({fx:.3f},{fy:.3f}) [{how}] "
              f"after {run_settle:.1f}s settle "
              f"-> {'sent' if ok else 'FAILED (touch unavailable)'}")
-    ctx._stop_evt.wait(0.3)
-    for _ in range(3):                       # clear "Got away!" fast
+    # "Got away!" text + battle fade-out + return-to-overworld is
+    # slower than a single-wild flee on a horde — the previous 0.3s +
+    # 3×0.12s totalled ~0.66s, which ran into the next Sweet Scent
+    # press before the overworld was fully back. Give the transition
+    # room to finish.
+    ctx._stop_evt.wait(1.5)
+    for _ in range(3):                       # clear "Got away!" text
         ctx.input.tap("B", hold_s=0.05)
-        ctx._stop_evt.wait(0.12)
+        ctx._stop_evt.wait(0.5)
+    ctx._stop_evt.wait(0.8)                  # post-battle slide-back
 
 
 def run(ctx) -> None:
