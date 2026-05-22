@@ -33,9 +33,10 @@ log = logging.getLogger(__name__)
 def run(ctx):
     rcfg = ctx.config.setdefault("random_encounters", {})
     rcfg.setdefault("idle_action", "fish")
-    # Slightly longer flee delay than a single overworld encounter —
-    # the fishing battle intro has the rod-reel cutscene tacked on.
-    rcfg.setdefault("flee_delay", 6.0)
+    # Match the horde default — the fishing battle intro has its own
+    # cutscene (rod reel + fish leap + "Oh! A bite!" text) that needs
+    # the same 7s of headroom before the RUN touch lands.
+    rcfg.setdefault("flee_delay", 7.0)
     log.info("Mode: fishing (Y → A-spam, foe-window detection; "
              "stops on shiny / target)")
     log.info("  Setup: rod registered to Y, standing facing water.")
