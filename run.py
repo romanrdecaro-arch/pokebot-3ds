@@ -91,6 +91,10 @@ def main(argv=None):
     ap.add_argument("--starter", default=None,
                     help="starter to hunt in soft_reset mode "
                          "(e.g. chespin, fennekin, froakie)")
+    ap.add_argument("--soft-reset-target", default=None,
+                    choices=["starters", "snorlax", "lucario", "lapras"],
+                    help="which soft-reset routine to run. Defaults to "
+                         "'starters'; the others are stubs for now.")
     ap.add_argument("--movement", default=None,
                     choices=["horizontal", "vertical"],
                     help="walking axis for encounter mode "
@@ -136,6 +140,8 @@ def main(argv=None):
     if args.game:     config["game"] = args.game
     if args.dry_run:  config.setdefault("input", {})["dry_run"] = True
     if args.starter:  config.setdefault("soft_reset", {})["starter"] = args.starter
+    if args.soft_reset_target:
+        config.setdefault("soft_reset", {})["target"] = args.soft_reset_target
     if args.movement:
         config.setdefault("random_encounters", {})["movement"] = args.movement
     if args.flee_delay is not None:

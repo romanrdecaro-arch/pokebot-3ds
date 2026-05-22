@@ -206,6 +206,27 @@ def starter_species(game_key: str, name: str) -> Optional[int]:
 
 
 # --------------------------------------------------------------------
+# Soft-reset target catalogue.
+#
+# "Starters" is the always-present option — the bot picks one of the
+# three lab starters and resets until the species + target filter
+# match. X/Y additionally support per-encounter soft-resets for the
+# in-game GIFT / STATIC legendaries (Snorlax on Route 7, Lucario
+# from Korrina, Lapras at Ambrette/Sea Spirit's Den). Other games
+# can add their own list as the sequences are implemented.
+# --------------------------------------------------------------------
+
+SOFT_RESET_TARGETS = {
+    "X-USA":  ["Starters", "Snorlax", "Lucario", "Lapras"],
+    "Y-USA":  ["Starters", "Snorlax", "Lucario", "Lapras"],
+}
+
+
+def soft_reset_targets_for(game_key: str) -> list[str]:
+    return SOFT_RESET_TARGETS.get(game_key, ["Starters"])
+
+
+# --------------------------------------------------------------------
 # Per-game bot methods. Each method tells the launcher which bot mode
 # to run, an optional starter constraint, and whether the target is
 # shiny-locked by the game (so the UI can warn the user).
@@ -250,7 +271,11 @@ def methods_for(game_key: str) -> list[Method]:
                      "read/write the running Azahar game. In PKHeX: "
                      "Auto-Legality → LiveHeX → protocol NTR, IP "
                      "127.0.0.1, port 8000, Connect."),
-        Method("Starters", "soft_reset"),
+        Method("Soft reset", "soft_reset",
+               notes="Resets the game until a target candidate appears. "
+                     "Pick what to reset for from the Target sub-dropdown "
+                     "(Starters always available; X/Y also support "
+                     "Snorlax / Lucario / Lapras stubs)."),
         Method("Random encounters", "encounter",
                notes="Walks back-and-forth in tall grass on the chosen "
                      "axis. Every wild Pokémon is recorded to the "

@@ -1217,37 +1217,67 @@ class _App(tk.Tk):
         self._method_warn.pack(fill="x", pady=(2, 0))
         self._method_var.trace_add("write", self._on_method_change)
 
-        # STARTER (sub-dropdown, only visible when method=Starters)
+        # SOFT-RESET CONFIG (sub-frame, only visible when method=Soft reset).
+        # Contains: Target dropdown + (conditional Starter picker) +
+        # trainer name + press-speed slider. The trainer/speed bits
+        # apply to every soft-reset variant; the Starter picker is
+        # shown only when Target == "Starters".
         self._starter_frame = tk.Frame(hunt_card, bg=_PANEL2)
         tk.Frame(self._starter_frame, bg=_BORDER, height=1).pack(
             fill="x", pady=(10, 8))
-        tk.Label(self._starter_frame, text="Starter",
+
+        # Target — what we're soft-resetting for (Starters / Snorlax /
+        # Lucario / Lapras for X/Y; just Starters for other games).
+        tk.Label(self._starter_frame, text="Soft-reset target",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", pady=(0, 4))
+        self._sr_target_var = tk.StringVar(value="Starters")
+        self._sr_target_cb = ttk.Combobox(
+            self._starter_frame, textvariable=self._sr_target_var,
+            values=["Starters"], state="readonly",
+            style="Dark.TCombobox")
+        self._sr_target_cb.pack(fill="x", pady=(0, 8))
+        self._sr_target_var.trace_add("write", self._on_sr_target_change)
+
+        # Starter picker — shown only when sr_target == "Starters".
+        self._starter_picker = tk.Frame(self._starter_frame, bg=_PANEL2)
+        tk.Label(self._starter_picker, text="Starter",
                  bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(fill="x", pady=(0, 4))
         self._starter_var = tk.StringVar(value="")
-        self._starter_cb = ttk.Combobox(self._starter_frame,
+        self._starter_cb = ttk.Combobox(self._starter_picker,
                                         textvariable=self._starter_var,
                                         values=[], state="readonly",
                                         style="Dark.TCombobox")
         self._starter_cb.pack(fill="x")
-        self._starter_hint = tk.Label(self._starter_frame, text="",
+        self._starter_hint = tk.Label(self._starter_picker, text="",
                                       bg=_PANEL2, fg=_MUTED,
                                       font=("Segoe UI", 9, "italic"),
                                       anchor="w",
                                       wraplength=235, justify="left")
         self._starter_hint.pack(fill="x", pady=(2, 8))
+        # Packed/unpacked by _on_sr_target_change.
+        self._starter_picker.pack(fill="x")
+
+        # Trainer name + press-speed live in their own sub-frame so
+        # the Starter picker above can be hidden / shown without
+        # affecting their position (the picker uses this frame as its
+        # `before=` anchor when it re-packs).
+        self._sr_rest_frame = tk.Frame(self._starter_frame, bg=_PANEL2)
+        self._sr_rest_frame.pack(fill="x")
 
         # Trainer name (OT) — used to locate the party by content. Pre-
         # filled from config.yaml so it survives between sessions.
         _seed = (_load_config().get("soft_reset", {}) or {})
-        tk.Label(self._starter_frame, text="Trainer name (OT)",
+        tk.Label(self._sr_rest_frame, text="Trainer name (OT)",
                  bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(fill="x")
         self._trainer_var = tk.StringVar(value=str(
             _seed.get("trainer_name", "")))
-        tk.Entry(self._starter_frame, textvariable=self._trainer_var,
+        tk.Entry(self._sr_rest_frame, textvariable=self._trainer_var,
                  bg=_PANEL, fg=_TEXT, insertbackground=_TEXT,
                  bd=0, relief="flat", highlightthickness=1,
                  highlightbackground=_BORDER,
@@ -1258,7 +1288,7 @@ class _App(tk.Tk):
         # Press speed — seconds between button presses in the X/Y
         # starter sequence (advance_gap + xy_receive_gap). Lower =
         # faster; raise if the cursor / Tierno text gets skipped.
-        ps_head = tk.Frame(self._starter_frame, bg=_PANEL2)
+        ps_head = tk.Frame(self._sr_rest_frame, bg=_PANEL2)
         ps_head.pack(fill="x")
         tk.Label(ps_head, text="Press speed",
                  bg=_PANEL2, fg=_MUTED,
@@ -1271,7 +1301,7 @@ class _App(tk.Tk):
             bg=_PANEL2, fg=_ACCENT,
             font=("Segoe UI", 9, "bold"))
         self._press_val_lbl.pack(side="right")
-        tk.Scale(self._starter_frame, from_=0.3, to=2.0,
+        tk.Scale(self._sr_rest_frame, from_=0.3, to=2.0,
                  resolution=0.1, orient="horizontal",
                  variable=self._press_var, showvalue=False,
                  bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
@@ -1279,7 +1309,7 @@ class _App(tk.Tk):
                  activebackground=_ACCENT,
                  command=lambda v: self._press_val_lbl.config(
                      text=f"{float(v):.1f} s")).pack(fill="x")
-        tk.Label(self._starter_frame,
+        tk.Label(self._sr_rest_frame,
                  text="Lower = faster button presses. Raise if the "
                       "Tierno text gets cut off or the cursor doesn't "
                       "register.",
@@ -1477,6 +1507,7 @@ class _App(tk.Tk):
         # Preserve user's choice if still valid; otherwise pick a sane default.
         if self._method_var.get() not in labels:
             self._method_var.set(labels[0] if labels else "")
+        self._refresh_sr_target_options()
         self._refresh_starter_options()
         self._on_method_change()
 
@@ -1514,6 +1545,28 @@ class _App(tk.Tk):
             pass
         return False
 
+    def _refresh_sr_target_options(self):
+        """Repopulate the Soft-reset target sub-dropdown for the
+        current game. X/Y get the full list (Starters / Snorlax /
+        Lucario / Lapras); other games default to just Starters."""
+        try:
+            from pokebot.games import soft_reset_targets_for
+            options = soft_reset_targets_for(self._game_var.get())
+        except Exception:
+            options = ["Starters"]
+        self._sr_target_cb.configure(values=options)
+        if self._sr_target_var.get() not in options:
+            self._sr_target_var.set(options[0] if options else "Starters")
+
+    def _on_sr_target_change(self, *_):
+        """Show / hide the Starter picker — only relevant when the
+        soft-reset target is one of the three lab starters."""
+        if self._sr_target_var.get() == "Starters":
+            self._starter_picker.pack(
+                fill="x", before=self._sr_rest_frame)
+        else:
+            self._starter_picker.pack_forget()
+
     def _refresh_starter_options(self):
         """Repopulate the starter sub-dropdown for the current game.
 
@@ -1543,9 +1596,12 @@ class _App(tk.Tk):
         # Method → (Starter or Movement) → Target.
         self._starter_frame.pack_forget()
         self._movement_frame.pack_forget()
-        if m and m.label == "Starters":
+        if m and m.mode == "soft_reset":
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
+            # Sync the Starter picker visibility with the current
+            # sr_target (Starters → show; others → hide).
+            self._on_sr_target_change()
             self._starter_hint.config(
                 text="Save in front of the starter table — see "
                      "TUTORIAL.md for the exact position per game.")
@@ -1656,16 +1712,23 @@ class _App(tk.Tk):
             self._log("First run — bot will auto-discover memory offsets "
                       "after the first starter is received (~1 min one-time "
                       "scan). Subsequent resets are full-speed.", "warn")
-        # Validate starter sub-selection when method requires one.
-        if method.label == "Starters":
-            picked = self._starter_var.get().strip()
-            if not picked:
-                messagebox.showwarning(
-                    "Pick a starter",
-                    "Select which starter to hunt from the dropdown.")
-                return
-            # Dropdown shows 'Chespin' but the bot expects 'chespin'.
-            chosen_starter = picked.lower()
+        # Validate starter sub-selection when soft-resetting for the
+        # lab starters (Snorlax / Lucario / Lapras don't need one).
+        chosen_sr_target = None
+        if method.mode == "soft_reset":
+            chosen_sr_target = self._sr_target_var.get().strip().lower() \
+                or "starters"
+            if chosen_sr_target == "starters":
+                picked = self._starter_var.get().strip()
+                if not picked:
+                    messagebox.showwarning(
+                        "Pick a starter",
+                        "Select which starter to hunt from the dropdown.")
+                    return
+                # Dropdown shows 'Chespin' but the bot expects 'chespin'.
+                chosen_starter = picked.lower()
+            else:
+                chosen_starter = None
         else:
             chosen_starter = method.starter
         # Resolve the movement axis for encounter mode.
@@ -1682,6 +1745,8 @@ class _App(tk.Tk):
             args += ["--game", game]
         if chosen_starter:
             args += ["--starter", chosen_starter]
+        if chosen_sr_target:
+            args += ["--soft-reset-target", chosen_sr_target]
         if chosen_movement:
             args += ["--movement", chosen_movement]
         if method.mode in ("encounter", "horde"):

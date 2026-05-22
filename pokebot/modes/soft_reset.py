@@ -128,15 +128,44 @@ def _do_reset(ctx, post_wait: float, post_taps: int, post_gap: float):
 # ---------------------------------------------------------------------------
 
 def run(ctx):
+    """Soft-reset entry point.
+
+    Dispatches on ``config.soft_reset.target`` (set by the launcher's
+    Target sub-dropdown or ``--soft-reset-target``):
+
+      ``starters`` (default) — the full starter sequence below.
+      ``snorlax`` / ``lucario`` / ``lapras`` — X/Y stubs; sequence
+        not yet implemented, the bot logs a notice and stops.
+    """
+    ensure_targets_dir()
+    cfg = ctx.config.get("soft_reset", {}) or {}
+    target = str(cfg.get("target", "starters")).lower()
+    if target != "starters":
+        return _run_stub(ctx, target)
+    return _run_starters(ctx, cfg)
+
+
+def _run_stub(ctx, name: str) -> None:
+    """Placeholder for the X/Y legendary / gift soft-resets. The button
+    sequence will be filled in per target as it's user-verified; for
+    now we just stop cleanly with a clear log line so the launcher
+    doesn't sit there appearing to run."""
+    log.info(f"Mode: soft_reset → {name}")
+    log.warning(f"  Soft-reset sequence for {name.title()} is not "
+                f"implemented yet.")
+    log.info("  Add the per-target sequence in pokebot/modes/"
+             "soft_reset.py to enable. Stopping.")
+    ctx.request_stop(f"{name} stub")
+
+
+def _run_starters(ctx, cfg):
     log.info("Mode: soft_reset (starter)")
-    ensure_targets_dir()                    # targets/ shows up now
     try:
         if focus_azahar():
             log.info("  Azahar window focused.")
     except Exception as e:
         log.warning(f"  couldn't focus Azahar: {e}")
 
-    cfg = ctx.config.get("soft_reset", {}) or {}
     player_ot = cfg.get("trainer_name", "Roman")
     advance_taps = int(cfg.get("advance_taps", 60))
     advance_gap = float(cfg.get("advance_gap", 1.0))
