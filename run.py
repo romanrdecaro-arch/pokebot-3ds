@@ -103,6 +103,10 @@ def main(argv=None):
                     help="seconds to wait after a wild appears before "
                          "fleeing (encounter mode). Raise for a slower "
                          "emulator; overrides config.yaml.")
+    ap.add_argument("--fish-cast-settle", type=float, default=None,
+                    help="seconds between the Y cast and the A hook "
+                         "(fishing mode). Higher = waits longer for "
+                         "the bite. Overrides config.yaml.")
     ap.add_argument("--trainer-name", default=None,
                     help="in-game OT name; used by the party locator "
                          "to identify your owned Pokémon (soft_reset "
@@ -146,6 +150,9 @@ def main(argv=None):
         config.setdefault("random_encounters", {})["movement"] = args.movement
     if args.flee_delay is not None:
         config.setdefault("random_encounters", {})["flee_delay"] = args.flee_delay
+    if args.fish_cast_settle is not None:
+        config.setdefault(
+            "random_encounters", {})["fish_cast_settle"] = args.fish_cast_settle
     if args.trainer_name:
         config.setdefault("soft_reset", {})["trainer_name"] = args.trainer_name
     if args.press_speed is not None:

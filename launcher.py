@@ -1371,6 +1371,43 @@ class _App(tk.Tk):
                  anchor="w", wraplength=235, justify="left"
                  ).pack(fill="x", pady=(2, 0))
 
+        # FISHING (sub-frame, only visible when method=Fishing).
+        # One knob: time between the Y cast and the A hook. Different
+        # rods / Azahar speeds want slightly different settles.
+        self._fishing_frame = tk.Frame(hunt_card, bg=_PANEL2)
+        tk.Frame(self._fishing_frame, bg=_BORDER, height=1).pack(
+            fill="x", pady=(10, 8))
+        tk.Label(self._fishing_frame, text="Fishing",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", pady=(0, 6))
+        fish_head = tk.Frame(self._fishing_frame, bg=_PANEL2)
+        fish_head.pack(fill="x")
+        tk.Label(fish_head, text="Wait before A (cast → hook)",
+                 bg=_PANEL2, fg=_MUTED, font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(side="left")
+        self._fish_settle_var = tk.DoubleVar(value=3.0)
+        self._fish_settle_lbl = tk.Label(
+            fish_head, text="3.0 s", bg=_PANEL2, fg=_ACCENT,
+            font=("Segoe UI", 9, "bold"))
+        self._fish_settle_lbl.pack(side="right")
+        tk.Scale(self._fishing_frame, from_=3.0, to=8.0,
+                 resolution=0.5, orient="horizontal",
+                 variable=self._fish_settle_var, showvalue=False,
+                 bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
+                 highlightthickness=0, bd=0, sliderrelief="flat",
+                 activebackground=_ACCENT,
+                 command=lambda v: self._fish_settle_lbl.config(
+                     text=f"{float(v):.1f} s")).pack(fill="x")
+        tk.Label(self._fishing_frame,
+                 text="Higher = waits longer for the bite. If the bot "
+                      "never hooks, raise it. If A fires before the "
+                      "bite window starts, lower it.",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "italic"),
+                 anchor="w", wraplength=235, justify="left"
+                 ).pack(fill="x", pady=(2, 0))
+
         # TARGET FILTER (always visible)
         # Keep a reference to the divider so _on_method_change can pack
         # the starter frame BEFORE it (between method and target rather
@@ -1596,6 +1633,7 @@ class _App(tk.Tk):
         # Method → (Starter or Movement) → Target.
         self._starter_frame.pack_forget()
         self._movement_frame.pack_forget()
+        self._fishing_frame.pack_forget()
         if m and m.mode == "soft_reset":
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
@@ -1610,6 +1648,9 @@ class _App(tk.Tk):
             # direction to pick, so the Movement panel stays hidden.
             self._movement_frame.pack(fill="x", pady=(4, 0),
                                       before=self._target_divider)
+        elif m and m.mode == "fishing":
+            self._fishing_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
 
     # ---- Live Azahar status polling ----------------------------------------
 
@@ -1752,6 +1793,12 @@ class _App(tk.Tk):
         if method.mode in ("encounter", "horde"):
             try:
                 args += ["--flee-delay", f"{float(self._flee_var.get()):.1f}"]
+            except Exception:
+                pass
+        if method.mode == "fishing":
+            try:
+                args += ["--fish-cast-settle",
+                         f"{float(self._fish_settle_var.get()):.1f}"]
             except Exception:
                 pass
         if method.mode == "soft_reset":
