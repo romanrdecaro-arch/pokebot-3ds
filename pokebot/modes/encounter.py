@@ -90,6 +90,35 @@ def _run_fraction(layout, run_local, override):
     return 0.5, 0.92, "fallback"
 
 
+def _use_fishing_rod(ctx, cast_settle: float, a_count: int,
+                     a_gap: float) -> None:
+    """Cast the registered fishing rod and hook anything that bites.
+
+    Pressing **Y** uses the player's registered key item — assumed to
+    be a fishing rod (Old / Good / Super). After the cast animation
+    we don't try to detect the "!" bite cue (no framebuffer pipeline);
+    instead we spam A through the bite window. An A press during the
+    "!" hooks the fish; presses outside it just recast or dismiss
+    "Not even a nibble". Detection happens in the main loop via
+    scan_nonparty — a new PK6 in the foe window means a battle
+    started; an empty foe window means we just recast.
+
+    **Setup:** rod must be registered to Y (Bag → Key Items → rod →
+    Register) and the player must be facing fishable water.
+    """
+    log.info(f"  Fishing cast: Y → wait {cast_settle:.1f}s → "
+             f"{a_count}× A @ {a_gap:.2f}s")
+    if ctx.should_stop():
+        return
+    ctx.input.tap("Y", hold_s=0.05)
+    ctx._stop_evt.wait(cast_settle)
+    for _ in range(a_count):
+        if ctx.should_stop():
+            return
+        ctx.input.tap("A", hold_s=0.05)
+        ctx._stop_evt.wait(a_gap)
+
+
 def _use_sweet_scent(ctx, gap: float) -> None:
     """Open menu → Pokémon → slot 1 → Sweet Scent.
 
@@ -158,6 +187,9 @@ def run(ctx) -> None:
     idle_action = str(rcfg.get("idle_action", "walk")).lower()
     sweet_scent_gap = float(rcfg.get("sweet_scent_gap", 1.0))
     sweet_scent_settle = float(rcfg.get("sweet_scent_settle", 4.0))
+    fish_cast_settle = float(rcfg.get("fish_cast_settle", 3.0))
+    fish_a_count = int(rcfg.get("fish_a_count", 10))
+    fish_a_gap = float(rcfg.get("fish_a_gap", 0.3))
     screen_layout = str(rcfg.get("screen_layout",
                                  "side_by_side")).lower()
     run_local = rcfg.get("run_local") or [0.5, 0.86]
@@ -263,6 +295,13 @@ def run(ctx) -> None:
             # Wait out the menu close + horde intro animation so the
             # next scan_nonparty sees the 5 newly-generated wilds.
             ctx._stop_evt.wait(sweet_scent_settle)
+            continue
+        if idle_action == "fish":
+            _use_fishing_rod(ctx, fish_cast_settle, fish_a_count,
+                             fish_a_gap)
+            # No extra settle — _use_fishing_rod's A-spam already
+            # covers the bite window; if a battle started, the next
+            # scan_nonparty picks it up; if it didn't, we just recast.
             continue
         # Hold B while moving so the player RUNS (covers grass faster
         # → more encounters per minute).
