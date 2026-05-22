@@ -184,8 +184,8 @@ match.
 
 ### What it does each iteration
 
-1. Press **X, A, A, Down, A, A** with 1-second intervals — opens the
-   menu, picks slot 1, selects Sweet Scent.
+1. Press **X, A, A, Down, A, A** with 1.5-second intervals — opens
+   the menu, picks slot 1, selects Sweet Scent.
 2. Waits for the horde intro animation (`sweet_scent_settle`, default
    4s).
 3. Scans the foe window — a 5-mon horde drops 5 fresh PK6 records

@@ -10,8 +10,9 @@ In Gen 6 the move **Sweet Scent** pulls 100% from the horde table on
 any horde-enabled route — so this mode skips the random-walk approach
 entirely and just fires Sweet Scent each iteration:
 
-  1. Tap **X, A, A, Down, A, A** (1-second intervals): open menu, pick
-     Pokémon, pick slot 1 (the Sweet Scent user), select Sweet Scent.
+  1. Tap **X, A, A, Down, A, A** (1.5-second intervals): open menu,
+     pick Pokémon, pick slot 1 (the Sweet Scent user), select Sweet
+     Scent.
   2. Wait for the horde intro animation to settle.
   3. Detect — every checksum-valid non-party PK6 in the foe window is
      reported (5 Recently Seen rows per battle) and target-checked.
@@ -46,7 +47,7 @@ def run(ctx):
     rcfg.setdefault("flee_delay", 7.0)
     # Switch the encounter loop's idle action to Sweet Scent.
     rcfg.setdefault("idle_action", "sweet_scent")
-    rcfg.setdefault("sweet_scent_gap", 1.0)
+    rcfg.setdefault("sweet_scent_gap", 1.5)
     rcfg.setdefault("sweet_scent_settle", 4.0)
     log.info("Mode: horde encounters (Sweet Scent → guaranteed 5-mon "
              "horde; stops on ANY shiny / target in the horde)")
