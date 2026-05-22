@@ -502,7 +502,7 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
             for kind, p in sources:
                 try:
                     if kind == "gif":
-                        frames = _prep_gif(p, 68, 54, _bg)
+                        frames = _prep_gif(p, 76, 66, _bg)
                         if not frames:        # raw Tk frames fallback
                             frames, i = [], 0
                             while True:
@@ -518,7 +518,7 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
                             _apply_sprite(widget, frames)
                             return
                     else:
-                        img = _prep_icon(p, 68, 54)
+                        img = _prep_icon(p, 76, 66)
                         if img is None:
                             img = tk.PhotoImage(file=p)
                         cache[key] = img
@@ -598,7 +598,10 @@ class _PartyStrip(tk.Frame):
     # Every slot — filled OR empty — uses this identical 3-zone
     # layout (fixed sprite box · level line · name line) so all six
     # tiles are the same size and the strip lines up as clean rows.
-    _SPR_W, _SPR_H = 66, 50
+    # Sized to fit the largest Showdown 'ani' sprites (Snorlax,
+    # Wailord, Steelix etc. land ~76×66 after the union-bbox crop),
+    # plus 4 px breathing room on each axis so nothing gets clipped.
+    _SPR_W, _SPR_H = 80, 70
 
     def _slot_widgets(self, cell: tk.Frame, bg: str):
         box = tk.Frame(cell, bg=bg, width=self._SPR_W,
