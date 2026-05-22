@@ -99,13 +99,14 @@ def _use_sweet_scent(ctx, gap: float) -> None:
       A     — select "Pokémon"
       A     — select slot 1 (the Sweet Scent user)
       Down  — cursor onto the Sweet Scent field-move entry
-      A     — confirm
+      A     — open the field-move list
+      A     — confirm Sweet Scent
 
     Slot 1 must hold a Sweet Scent user (Bulbasaur from Sycamore is
     the easiest in X/Y). On a horde-enabled route this triggers a
     5-mon horde 100% of the time.
     """
-    seq = ["X", "A", "A", "DpadDown", "A"]
+    seq = ["X", "A", "A", "DpadDown", "A", "A"]
     log.info(f"  Sweet Scent: {len(seq)} presses × {gap:.1f}s "
              f"({' → '.join(seq)})")
     for btn in seq:

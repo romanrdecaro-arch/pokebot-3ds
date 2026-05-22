@@ -184,7 +184,7 @@ match.
 
 ### What it does each iteration
 
-1. Press **X, A, A, Down, A** with 1-second intervals — opens the
+1. Press **X, A, A, Down, A, A** with 1-second intervals — opens the
    menu, picks slot 1, selects Sweet Scent.
 2. Waits for the horde intro animation (`sweet_scent_settle`, default
    4s).

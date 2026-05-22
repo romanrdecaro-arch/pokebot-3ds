@@ -10,7 +10,7 @@ In Gen 6 the move **Sweet Scent** pulls 100% from the horde table on
 any horde-enabled route — so this mode skips the random-walk approach
 entirely and just fires Sweet Scent each iteration:
 
-  1. Tap **X, A, A, Down, A** (1-second intervals): open menu, pick
+  1. Tap **X, A, A, Down, A, A** (1-second intervals): open menu, pick
      Pokémon, pick slot 1 (the Sweet Scent user), select Sweet Scent.
   2. Wait for the horde intro animation to settle.
   3. Detect — every checksum-valid non-party PK6 in the foe window is
