@@ -27,7 +27,8 @@ import time
 from ..games import starter_species, starters_for
 from ..pk6_export import ensure_targets_dir, save_target_pk6
 from ..platform_utils import focus_azahar
-from .observe import get_party, broadcast_party, quick_get_party
+from .observe import (get_party, broadcast_party, quick_get_party,
+                       scan_nonparty, _report_encounter)
 
 log = logging.getLogger(__name__)
 
@@ -140,9 +141,11 @@ def run(ctx):
     ensure_targets_dir()
     cfg = ctx.config.get("soft_reset", {}) or {}
     target = str(cfg.get("target", "starters")).lower()
-    if target != "starters":
-        return _run_stub(ctx, target)
-    return _run_starters(ctx, cfg)
+    if target == "starters":
+        return _run_starters(ctx, cfg)
+    if target == "snorlax":
+        return _run_snorlax(ctx, cfg)
+    return _run_stub(ctx, target)
 
 
 def _run_stub(ctx, name: str) -> None:
@@ -156,6 +159,126 @@ def _run_stub(ctx, name: str) -> None:
     log.info("  Add the per-target sequence in pokebot/modes/"
              "soft_reset.py to enable. Stopping.")
     ctx.request_stop(f"{name} stub")
+
+
+def _run_snorlax(ctx, cfg):
+    """Snorlax soft-reset (X/Y, Route 7 bridge).
+
+    Player setup (one-time, before starting the bot):
+      1. Retrieve the Poké Flute from the Pokémon Café in Lumiose,
+         say NO when the woman offers the choice (so the flute is
+         in your bag).
+      2. Stand directly south of the sleeping Snorlax on the wooden
+         bridge of Route 7, facing it. SAVE the game here — each
+         soft-reset returns the player to the save spot.
+
+    Per attempt the bot:
+      1. Mashes A — playing the Poké Flute wakes Snorlax and starts
+         the wild battle.
+      2. Polls the foe window between A presses; the moment a new
+         (never-baseline) PK6 appears it's the wild Snorlax.
+      3. Target hit (shiny / matches target rules) → stop + alert +
+         save .pk6. Miss → L+R+Start and repeat.
+    """
+    log.info("Mode: soft_reset → Snorlax (Route 7 bridge)")
+    log.info("  Setup: Poké Flute in bag · standing on bridge facing "
+             "the sleeping Snorlax · game saved here.")
+
+    o = ctx.game.offsets
+    foe_base = o.foe_base
+    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
+    party_base = o.party_base
+    party_stride = o.party_stride or 484
+    player_ot = cfg.get("trainer_name", "Roman")
+    post_reset = float(cfg.get("post_reset_wait", 6.0))
+    post_reset_taps = int(cfg.get("post_reset_taps", 4))
+    post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
+    a_gap = float(cfg.get("snorlax_a_gap", 0.4))
+    a_max = int(cfg.get("snorlax_a_max", 60))
+    if not foe_base:
+        log.error("foe_base not configured (X/Y: 0x08800000); aborting.")
+        return
+
+    try:
+        focus_azahar()
+    except Exception:
+        pass
+
+    attempt = 0
+    while not ctx.should_stop():
+        attempt += 1
+        log.info(f"Snorlax attempt #{attempt}")
+        ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
+        try:
+            focus_azahar()
+        except Exception:
+            pass
+
+        # Refresh party so the baseline scan excludes the player's
+        # own mons from "new wild" detection.
+        party = get_party(ctx, party_base, party_stride, player_ot)
+        party_keys = broadcast_party(ctx, party)
+
+        # Baseline non-party PK6 — a wild left over from the last
+        # attempt (or a stale battle copy) lives here; only a KEY not
+        # in this set counts as the newly-woken Snorlax.
+        baseline = {p.encryption_key for _, p in
+                    scan_nonparty(ctx, foe_base, foe_len, party_keys)}
+
+        # Mash A, poll the foe window between each press.
+        wild = None
+        for i in range(a_max):
+            if ctx.should_stop():
+                return
+            ctx.input.tap("A", hold_s=0.05)
+            ctx._stop_evt.wait(a_gap)
+            cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
+            new = sorted(
+                ((a, p) for a, p in cands
+                 if p.encryption_key not in baseline),
+                key=lambda ap: ap[0])
+            if new:
+                wild = new[0]
+                log.info(f"  Snorlax detected after {i + 1} A "
+                         f"press(es).")
+                break
+
+        if wild is None:
+            log.warning(f"  attempt {attempt}: no encounter after "
+                        f"{a_max} A presses. Check you're on the "
+                        f"bridge facing Snorlax. Resetting.")
+            ctx.dashboard.broadcast(
+                "read_failure", attempt=attempt,
+                reason="no foe after A-mash")
+            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+            continue
+
+        addr, pkm = wild
+        _report_encounter(ctx, pkm, addr, attempt, "snorlax-A")
+
+        is_target = bool(
+            pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
+        if is_target:
+            save_target_pk6(ctx, addr, pkm,
+                            "shiny" if pkm.shiny else "snorlax")
+            reason = (ctx.target.describe(pkm) if (ctx.target
+                      and ctx.target.matches(pkm)) else "shiny Snorlax")
+            bar = "*" * 30
+            for line in (
+                bar, f"  TARGET — attempt #{attempt}: {reason}",
+                "  Bot STOPPED — battle left on screen. Catch it!",
+                bar):
+                log.info(line)
+            ctx.dashboard.broadcast(
+                "target_hit", attempt=attempt, count=attempt,
+                reason=reason, species=pkm.species, shiny=pkm.shiny,
+                nature=pkm.nature, ivs=pkm.ivs)
+            ctx.request_stop("target hit")
+            return
+
+        _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+
+    log.info(f"Snorlax soft-reset stopped after {attempt} attempt(s).")
 
 
 def _run_starters(ctx, cfg):
