@@ -190,7 +190,7 @@ def _run_snorlax(ctx, cfg):
     party_base = o.party_base
     party_stride = o.party_stride or 484
     player_ot = cfg.get("trainer_name", "Roman")
-    post_reset = float(cfg.get("post_reset_wait", 6.0))
+    post_reset = float(cfg.get("post_reset_wait", 3.5))
     post_reset_taps = int(cfg.get("post_reset_taps", 4))
     post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
     a_gap = float(cfg.get("snorlax_a_gap", 0.4))
@@ -292,7 +292,7 @@ def _run_starters(ctx, cfg):
     player_ot = cfg.get("trainer_name", "Roman")
     advance_taps = int(cfg.get("advance_taps", 60))
     advance_gap = float(cfg.get("advance_gap", 1.0))
-    post_reset = float(cfg.get("post_reset_wait", 6.0))
+    post_reset = float(cfg.get("post_reset_wait", 3.5))
     post_reset_taps = int(cfg.get("post_reset_taps", 4))
     post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
     starter_name = cfg.get("starter")
