@@ -90,6 +90,31 @@ def _run_fraction(layout, run_local, override):
     return 0.5, 0.92, "fallback"
 
 
+def _use_sweet_scent(ctx, gap: float) -> None:
+    """Open menu → Pokémon → slot 1 → Sweet Scent.
+
+    Sequence (user-verified in X/Y, ``gap``-second intervals):
+
+      X     — open the main menu
+      A     — select "Pokémon"
+      A     — select slot 1 (the Sweet Scent user)
+      Down  — cursor onto the Sweet Scent field-move entry
+      A     — confirm
+
+    Slot 1 must hold a Sweet Scent user (Bulbasaur from Sycamore is
+    the easiest in X/Y). On a horde-enabled route this triggers a
+    5-mon horde 100% of the time.
+    """
+    seq = ["X", "A", "A", "DpadDown", "A"]
+    log.info(f"  Sweet Scent: {len(seq)} presses × {gap:.1f}s "
+             f"({' → '.join(seq)})")
+    for btn in seq:
+        if ctx.should_stop():
+            return
+        ctx.input.tap(btn, hold_s=0.05)
+        ctx._stop_evt.wait(gap)
+
+
 def _flee(ctx, layout, run_local, override, run_settle: float) -> None:
     """Clear the appearance text so the command menu is up, wait for
     it to render, touch RUN, then clear the got-away text."""
@@ -123,15 +148,23 @@ def run(ctx) -> None:
     walk_hold = float(rcfg.get("walk_hold", 0.35))
     flee_delay = float(rcfg.get("flee_delay", 5.0))
     run_settle = float(rcfg.get("run_settle", 1.5))
+    idle_action = str(rcfg.get("idle_action", "walk")).lower()
+    sweet_scent_gap = float(rcfg.get("sweet_scent_gap", 1.0))
+    sweet_scent_settle = float(rcfg.get("sweet_scent_settle", 4.0))
     screen_layout = str(rcfg.get("screen_layout",
                                  "side_by_side")).lower()
     run_local = rcfg.get("run_local") or [0.5, 0.86]
     run_override = rcfg.get("run_touch")     # None ⇒ auto-geometry
 
     ensure_targets_dir()                    # targets/ shows up now
-    log.info(f"Mode: shiny hunt — random encounters ({movement}, "
-             f"{walk_hold:.2f}s steps, flee_delay {flee_delay:.1f}s, "
-             f"run_settle {run_settle:.1f}s)")
+    log.info(f"Mode: shiny hunt — random encounters "
+             f"(idle={idle_action}"
+             + (f", movement={movement}, {walk_hold:.2f}s steps"
+                if idle_action == "walk"
+                else f", Sweet Scent gap={sweet_scent_gap:.1f}s, "
+                     f"settle={sweet_scent_settle:.1f}s")
+             + f", flee_delay {flee_delay:.1f}s, "
+             + f"run_settle {run_settle:.1f}s)")
     log.info(f"  foe window=[{foe_base:#010x},"
              f"{foe_base + foe_len:#010x})  layout={screen_layout} "
              f"run_local={run_local}"
@@ -211,9 +244,18 @@ def run(ctx) -> None:
                       run_settle)
             continue                          # don't walk this iter
 
-        # No new wild → overworld / stale lingering → roam.
+        # No new wild → overworld / stale lingering → take the
+        # configured idle action: walk (random encounters) or fire a
+        # Sweet Scent (horde mode — Slot 1 must be a Sweet Scent user
+        # on a horde-enabled route; result is a guaranteed 5-mon horde).
         if dry:
             ctx._stop_evt.wait(0.4)
+            continue
+        if idle_action == "sweet_scent":
+            _use_sweet_scent(ctx, sweet_scent_gap)
+            # Wait out the menu close + horde intro animation so the
+            # next scan_nonparty sees the 5 newly-generated wilds.
+            ctx._stop_evt.wait(sweet_scent_settle)
             continue
         # Hold B while moving so the player RUNS (covers grass faster
         # → more encounters per minute).

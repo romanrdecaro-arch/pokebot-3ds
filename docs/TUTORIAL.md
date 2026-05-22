@@ -149,6 +149,64 @@ game was on when slot 0 finished writing — usually the "What will
 you nickname [STARTER]?" prompt. From here it's all manual:
 nickname, walk to your house, save.
 
+## Horde mode (Sweet Scent shiny hunting)
+
+Horde battles put **5 wild Pokémon** on the field at once, each rolled
+independently — so the effective shiny rate is **~5× a single
+encounter**. The bot's `horde` method uses **Sweet Scent** to guarantee
+a horde every time, then checks all 5 for a target and flees if none
+match.
+
+### What you need in-game
+
+1. **Slot 1 must be a Sweet Scent user.** The easiest pick in X/Y is
+   **Bulbasaur**, which Professor Sycamore gives you for free in
+   Lumiose City after the first gym. The whole Bulbasaur line learns
+   Sweet Scent natively, so no evolution / TM hunting required. Other
+   options:
+   - **Gloom** (Route 7, Y only) — already knows Sweet Scent in the
+     wild, no leveling.
+   - **Roselia** (Route 7) — common, learns Sweet Scent by level-up.
+2. **Give slot 1 a Smoke Ball.** This held item guarantees escape from
+   wild battles regardless of Speed. Without it, fast hordes can
+   sometimes refuse the run; with it, every flee succeeds.
+3. **Stand on a horde-enabled route.** Routes 1-3 have no horde tables
+   — Sweet Scent there just gives a single wild. Route 5 onwards is
+   fine. Route 7 (Skiddo / Pikachu hordes), Route 10, and Route 22
+   tend to be the most popular shiny-horde spots in X/Y.
+
+### Launcher setup
+
+1. **METHOD** — set to **Horde encounters**.
+2. **TARGET FILTER** — usually *Shiny only*; the bot stops on the
+   FIRST shiny among the 5 in any horde.
+3. Press **▶ Start Bot**.
+
+### What it does each iteration
+
+1. Press **X, A, A, Down, A** with 1-second intervals — opens the
+   menu, picks slot 1, selects Sweet Scent.
+2. Waits for the horde intro animation (`sweet_scent_settle`, default
+   4s).
+3. Scans the foe window — a 5-mon horde drops 5 fresh PK6 records
+   with new encryption keys; the bot reports each as its own
+   *Recently Seen* row.
+4. **Any of the 5 a shiny / target → stop + alert** (battle left on
+   screen for you to catch).
+5. **None shiny → flee** (B-mash to dismiss appearance text, touch the
+   *Run* button; Smoke Ball makes this a guaranteed success).
+6. Loop.
+
+### Troubleshooting
+
+- **Sequence opens the wrong menu / picks the wrong slot.** Make sure
+  you're standing still in the overworld when you start, not in a
+  dialog or sub-menu. The sequence assumes a clean overworld state.
+- **"0 new wild" forever.** Either you're on a no-horde route (check
+  Serebii's [horde encounters list](https://www.serebii.net/xy/hordeencounters.shtml))
+  or slot 1 doesn't know Sweet Scent yet. The bot will spam the menu
+  sequence but no horde will spawn.
+
 ## Tips for reliable hunts
 
 - **Set in-game text speed to FAST.** *Options → Text Speed → Fast.*
