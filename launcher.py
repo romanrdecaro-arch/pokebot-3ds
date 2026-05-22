@@ -32,6 +32,7 @@ _STATS_FILE = ROOT / ".pokebot_stats.json"
 _STATS_DEFAULT = {
     "total": 0,
     "phase": 0,
+    "shinies": 0,            # lifetime shiny-encounter count
     "phase_best_sv": None,   # lowest PSV seen this phase (rarer = lower)
     "phase_best_iv": None,   # highest IV-sum seen this phase
 }
@@ -44,6 +45,7 @@ def _load_stats() -> dict:
         d = _j.loads(_STATS_FILE.read_text())
         s["total"] = int(d.get("total", 0))
         s["phase"] = int(d.get("phase", 0))
+        s["shinies"] = int(d.get("shinies", 0))
         bsv = d.get("phase_best_sv")
         biv = d.get("phase_best_iv")
         s["phase_best_sv"] = int(bsv) if bsv is not None else None
@@ -782,6 +784,7 @@ class _RecentlySeen(tk.Frame):
         else:
             rate = "…/hr"
         return (f"Phase {s['phase']}  ·  Total {s['total']}  ·  "
+                f"★ Shinies {s.get('shinies', 0)}  ·  "
                 f"Best SV {bsv if bsv is not None else '—'}  ·  "
                 f"Best IVs {biv if biv is not None else '—'}  ·  "
                 f"{rate}")
@@ -818,6 +821,9 @@ class _RecentlySeen(tk.Frame):
             self._stats["total"] += 1
             self._stats["phase"] += 1
             self._sess_n += 1                 # this run → encounters/hr
+            if evt.get("shiny"):
+                self._stats["shinies"] = (
+                    int(self._stats.get("shinies", 0)) + 1)
             psv = self._evt_psv(evt)
             if psv is not None:
                 cur = self._stats["phase_best_sv"]
@@ -1543,7 +1549,9 @@ class _App(tk.Tk):
             self._starter_hint.config(
                 text="Save in front of the starter table — see "
                      "TUTORIAL.md for the exact position per game.")
-        elif m and m.mode in ("encounter", "horde"):
+        elif m and m.mode == "encounter":
+            # Horde mode uses Sweet Scent, not walking — no movement
+            # direction to pick, so the Movement panel stays hidden.
             self._movement_frame.pack(fill="x", pady=(4, 0),
                                       before=self._target_divider)
 
