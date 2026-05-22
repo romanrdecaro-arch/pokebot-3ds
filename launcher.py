@@ -660,7 +660,7 @@ class _RecentlySeen(tk.Frame):
     colour, and Hidden Power type/power.
     """
 
-    MAX_ROWS = 100  # how many recent encounters to keep on screen
+    MAX_ROWS = 30   # how many recent encounters to keep on screen
 
     # Column layout: (label, fixed_width_px, anchor). Fixed pixel
     # widths, NO uniform group (a shared uniform forces every column
