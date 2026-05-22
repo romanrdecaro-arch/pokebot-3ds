@@ -502,21 +502,26 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
             for kind, p in sources:
                 try:
                     if kind == "gif":
+                        # Static mode — animating 6 + N Recently Seen
+                        # sprites at 11 FPS each (widget.after(90,…))
+                        # was the main source of UI frame drops. Keep
+                        # using Showdown's GIF for its higher-quality
+                        # art (vs PokeAPI's static set) but render only
+                        # frame 0 and cache it as a single PhotoImage.
                         frames = _prep_gif(p, 76, 66, _bg)
-                        if not frames:        # raw Tk frames fallback
-                            frames, i = [], 0
-                            while True:
-                                try:
-                                    frames.append(tk.PhotoImage(
-                                        file=p,
-                                        format=f"gif -index {i}"))
-                                except tk.TclError:
-                                    break
-                                i += 1
-                        if frames:
-                            cache[key] = frames
-                            _apply_sprite(widget, frames)
-                            return
+                        if not frames:        # raw Tk frame-0 fallback
+                            try:
+                                img = tk.PhotoImage(
+                                    file=p, format="gif -index 0")
+                                cache[key] = img
+                                _apply_sprite(widget, img)
+                                return
+                            except tk.TclError:
+                                continue
+                        img = frames[0]       # discard frames 1..N
+                        cache[key] = img
+                        _apply_sprite(widget, img)
+                        return
                     else:
                         img = _prep_icon(p, 76, 66)
                         if img is None:
