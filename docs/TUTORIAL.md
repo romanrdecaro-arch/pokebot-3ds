@@ -207,6 +207,56 @@ match.
   or slot 1 doesn't know Sweet Scent yet. The bot will spam the menu
   sequence but no horde will spawn.
 
+## Fishing mode
+
+Hunts shiny / target Pokémon on water tiles by casting a fishing rod
+and reading the foe window. No screen / bite-cue detection — the bot
+just casts, taps A once to try the hook, and recasts on miss.
+Imperfect timing means some bites are fumbled, but the loop is
+patient and recasts are free.
+
+### What you need in-game
+
+1. **A fishing rod in your bag.** Old Rod is given by the Fisherman
+   on Route 4 (Lumiose → Santalune); Good Rod on Route 16; Super Rod
+   in Couriway Town. The bot doesn't care which rod is registered —
+   it presses Y and uses whatever's bound.
+2. **Register the rod to Y.** Open the **Bag** → **Key Items** → pick
+   the rod → **Register**. Pressing Y in the overworld now casts it.
+3. **Stand facing fishable water.** Any pier / beach / riverbank
+   tile works (Couriway Town dock, Cyllage / Ambrette beach, Route
+   8 / 16 / 22 banks, etc.).
+
+### Launcher setup
+
+1. **METHOD** — set to **Fishing**.
+2. **TARGET FILTER** — pick the criteria for the hit (usually
+   *Shiny only*).
+3. Press **▶ Start Bot**.
+
+### What it does each iteration
+
+1. Press **Y** — casts the registered rod.
+2. Wait `fish_cast_settle` (default **3.0s**) — covers the typical
+   bite delay.
+3. Press **A** once — hook attempt.
+4. Scan the foe window:
+   - **New wild appeared** → reported to Recently Seen, evaluated
+     against the target. Hit → stop + alert + `.pk6` saved to
+     `targets/`. Miss → flee (Smoke Ball recommended) and recast.
+   - **Nothing in the foe window** → bite missed or no bite this
+     cast — recast immediately.
+
+### Troubleshooting
+
+- **Bot casts but never hooks.** The 3.0s delay is missing the bite
+  window for your rod / lag. Try raising `random_encounters.
+  fish_cast_settle` in `config.yaml` (e.g. 4.0).
+- **Y opens the bag instead of casting.** The rod isn't registered.
+  Bag → Key Items → rod → Register.
+- **"0 new wild" forever.** You're not facing fishable water (the
+  cast animation doesn't play, so A does nothing useful).
+
 ## Tips for reliable hunts
 
 - **Set in-game text speed to FAST.** *Options → Text Speed → Fast.*
