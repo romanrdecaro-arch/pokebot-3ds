@@ -349,13 +349,20 @@ def _run_lucario(ctx, cfg):
             pass
 
         # 1. BASELINE — snapshot + log the party BEFORE the sequence.
-        # Use the raw (unfiltered) scan so we also see any
-        # battle-buffer ghosts living off-grid; the display still
-        # gets the filtered version so the strip stays clean.
+        # Invalidate the cached party window first so the scan
+        # re-locates the party from scratch each attempt. The Lucario
+        # gift lands in a live-party buffer that may NOT overlap the
+        # save-block cluster the cache was anchored on; the END scan
+        # below needs the broader view to spot it, and starting from
+        # a fresh cache here keeps START and END comparable.
+        if hasattr(ctx, "_party_win"):
+            ctx._party_win = None
         baseline_disp = get_party(ctx, party_base, party_stride,
                                   player_ot)
         if baseline_disp:
             broadcast_party(ctx, baseline_disp)
+        if hasattr(ctx, "_party_win"):
+            ctx._party_win = None
         baseline = get_party(ctx, party_base, party_stride, player_ot,
                              contiguous=False)
         if baseline:
@@ -388,6 +395,13 @@ def _run_lucario(ctx, cfg):
         ctx._stop_evt.wait(settle)
 
         # 4. FINAL — snapshot + log the party AFTER the sequence.
+        # Invalidate the cached window AGAIN before re-scanning: the
+        # gift Lucario can land in a buffer the baseline window
+        # didn't cover, and reusing the cache would miss it. Pay the
+        # broad-scan cost (~1-2s) once per attempt; cheap compared
+        # to a missed hit.
+        if hasattr(ctx, "_party_win"):
+            ctx._party_win = None
         # Broadcast the RAW (unfiltered) party so the strip shows
         # whatever's actually in RAM — including the freshly-added
         # mon even if it sits off-grid from the save-block cluster.
