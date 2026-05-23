@@ -305,16 +305,17 @@ def _run_lucario(ctx, cfg):
          spot with Lucario still waiting to be picked up.
 
     Per attempt the bot:
-      1. Runs a 5 A → 8 B cycle (1-second intervals): A's drive
-         "Will you take Lucario?" → Yes → "received" → nickname
-         prompt; B's decline the nickname and dismiss the trailing
-         text. Cycle repeats until Lucario is detected or the cap
-         is hit.
-      2. Polls the party between each press; the moment Lucario
-         (#448) appears in any slot with a brand-new encryption
-         key, evaluate.
-      3. Target hit (shiny / matches target rules) → stop + alert +
-         save .pk6. Miss → L+R+Start and repeat.
+      1. Logs the party AT START (baseline) — addresses + species.
+      2. Runs the full 5 A → 8 B sequence (1-second intervals) end
+         to end without mid-sequence polling. A's accept Lucario and
+         clear "received" text; B's decline the nickname prompt and
+         dismiss the trailing dialog.
+      3. Waits a short settle so the final dialog frame resolves
+         and the new PK6 finishes writing to RAM.
+      4. Logs the party AFTER (raw scan with addresses) so any
+         Lucario living in a non-grid buffer still surfaces here.
+      5. Finds Lucario (#448) with a key not in the baseline and
+         evaluates: target hit → stop + save .pk6; miss → reset.
     """
     LUCARIO_SPECIES = 448
     log.info("Mode: soft_reset → Lucario (Tower of Mastery)")
@@ -327,7 +328,7 @@ def _run_lucario(ctx, cfg):
     post_reset_taps = int(cfg.get("post_reset_taps", 4))
     post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
     press_gap = float(cfg.get("lucario_press_gap", 1.0))
-    max_presses = int(cfg.get("lucario_max_presses", 80))
+    settle = float(cfg.get("lucario_settle", 1.5))
     PATTERN = ["A"] * 5 + ["B"] * 8
     party_base = ctx.game.offsets.party_base
     party_stride = ctx.game.offsets.party_stride or 484
@@ -347,90 +348,75 @@ def _run_lucario(ctx, cfg):
         except Exception:
             pass
 
-        # Snapshot the party BEFORE the A-mash so we can tell which
-        # slot is the freshly-gifted Lucario (vs. one the player
-        # already had on the team for some reason). Broadcast it
-        # too — otherwise the launcher's party strip stays empty
-        # for the whole attempt.
-        baseline = get_party(ctx, party_base, party_stride, player_ot)
+        # 1. BASELINE — snapshot + log the party BEFORE the sequence.
+        # Use the raw (unfiltered) scan so we also see any
+        # battle-buffer ghosts living off-grid; the display still
+        # gets the filtered version so the strip stays clean.
+        baseline_disp = get_party(ctx, party_base, party_stride,
+                                  player_ot)
+        if baseline_disp:
+            broadcast_party(ctx, baseline_disp)
+        baseline = get_party(ctx, party_base, party_stride, player_ot,
+                             contiguous=False)
         if baseline:
-            broadcast_party(ctx, baseline)
-            log.info(f"  baseline party ({len(baseline)} mons): " +
-                     ", ".join(f"#{p.species}" for p in baseline))
+            log.info(
+                f"  party at sequence START ({len(baseline)} PK6): "
+                + ", ".join(
+                    f"#{p.species}@"
+                    f"{getattr(p, 'source_address', 0):#010x}"
+                    for p in baseline))
         else:
-            log.warning("  baseline party scan returned 0 members — "
+            log.warning("  baseline scan returned 0 PK6 — "
                         "trainer_name mismatch or party_base "
-                        "unlocated. Detection will still try but "
-                        "may not work.")
+                        "unlocated.")
         baseline_keys = {p.encryption_key for p in baseline}
 
-        # 5A → 8B cycle at 1s gaps, polling party between each press.
-        # Detection fires the moment Lucario (species 448) is in
-        # any slot with a key not in the pre-mash baseline. The party
-        # is re-broadcast each poll so the strip updates the instant
-        # Lucario lands in the open slot — even before detection
-        # confirms it, the user sees the new mon appear.
-        new_luc = None
-        last_party = baseline
-        for i in range(max_presses):
+        # 2. SEQUENCE — full 5 A + 8 B at press_gap intervals, end to
+        # end. No mid-sequence polling: we want the dialog to finish
+        # cleanly, then read the result once. (Polling between
+        # presses was racy — get_party could fire while the slot was
+        # mid-write, returning a half-baked record OR an inconsistent
+        # snapshot from one of the two live buffers.)
+        for btn in PATTERN:
             if ctx.should_stop():
                 return
-            btn = PATTERN[i % len(PATTERN)]
             ctx.input.tap(btn, hold_s=0.05)
             ctx._stop_evt.wait(press_gap)
-            # Display path — contiguous filter strips battle-buffer
-            # ghosts so the strip stays clean (e.g. no leftover
-            # Carbink in slot 6 after the user moved it to PC).
-            party = get_party(ctx, party_base, party_stride, player_ot)
-            if party:
-                broadcast_party(ctx, party)
-                last_party = party
-            # Detection path — UNFILTERED. The game writes a freshly
-            # received gift Pokémon to the live battle buffer at an
-            # address that's off-grid from the save-block cluster; the
-            # display filter would hide it. Scan the raw owned set
-            # for any Lucario whose key wasn't in the baseline.
-            party_raw = get_party(ctx, party_base, party_stride,
-                                  player_ot, contiguous=False)
-            for p in party_raw:
-                if (p.species == LUCARIO_SPECIES
-                        and p.encryption_key not in baseline_keys):
-                    new_luc = p
-                    break
-            if new_luc is not None:
-                log.info(f"  Lucario detected after {i + 1} "
-                         f"press(es).")
+
+        # 3. SETTLE — let the final B-clear text finish and any
+        # remaining PK6 writes flush before we read.
+        ctx._stop_evt.wait(settle)
+
+        # 4. FINAL — snapshot + log the party AFTER the sequence.
+        final_disp = get_party(ctx, party_base, party_stride,
+                               player_ot)
+        if final_disp:
+            broadcast_party(ctx, final_disp)
+        final = get_party(ctx, party_base, party_stride, player_ot,
+                          contiguous=False)
+        log.info(
+            f"  party at sequence END ({len(final)} PK6): "
+            + (", ".join(
+                f"#{p.species}@"
+                f"{getattr(p, 'source_address', 0):#010x}"
+                for p in final) if final else "(empty)"))
+
+        # 5. EVALUATE — find Lucario (#448) whose key wasn't in the
+        # baseline.
+        new_luc = None
+        for p in final:
+            if (p.species == LUCARIO_SPECIES
+                    and p.encryption_key not in baseline_keys):
+                new_luc = p
                 break
 
         if new_luc is None:
-            # Diagnostic — what DID we end up with? Lets you tell
-            # "Lucario never joined" from "Lucario joined but the
-            # species check missed it" from "Lucario joined at an
-            # off-grid address the display filter is hiding" at a
-            # glance. Dump the UNFILTERED scan with addresses; if
-            # #448 is in the list but the strip never showed it,
-            # the game wrote it to a buffer the display filter
-            # rejected as off-grid.
-            try:
-                raw_last = get_party(ctx, party_base, party_stride,
-                                     player_ot, contiguous=False)
-            except Exception:
-                raw_last = []
-            species_list = (", ".join(f"#{p.species}" for p in
-                                       last_party) if last_party
-                            else "(empty)")
-            raw_list = (", ".join(
-                f"#{p.species}@{getattr(p, 'source_address', 0):#010x}"
-                for p in raw_last) if raw_last else "(empty)")
-            log.warning(f"  attempt {attempt}: no Lucario in party "
-                        f"after {max_presses} presses. Final party "
-                        f"(filtered): {species_list}. Final raw "
-                        f"scan: {raw_list}. Check that you're in "
-                        f"front of Lucario with an open slot. "
-                        f"Resetting.")
+            log.warning(f"  attempt {attempt}: no NEW Lucario (#448) "
+                        f"in final party. Check that you're in front "
+                        f"of Lucario with an open slot. Resetting.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
-                reason="no Lucario in party after A/B-mash")
+                reason="no Lucario in party after sequence")
             _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
 
