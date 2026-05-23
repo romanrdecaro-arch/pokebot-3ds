@@ -203,6 +203,45 @@ def _scan_owned(ctx, lo, hi, player_ot):
     return out
 
 
+_PARTY_SLOT_STRIDE = 260
+_PARTY_CONTIG_TOL = 8   # ±8 bytes per slot wiggle (alignment / padding)
+
+
+def _filter_contiguous_party(owned):
+    """Drop entries that aren't part of the contiguous save-block party.
+
+    ``_scan_owned`` returns EVERY OT-matching PK6 in the scan window.
+    The save-block party is six (or fewer) records at a fixed
+    ``_PARTY_SLOT_STRIDE``-byte stride, but the same scan window also
+    catches:
+
+      - stale battle-buffer copies left over after the player moved a
+        mon to the PC (PK6 bytes aren't zeroed; the game just stops
+        referencing them);
+      - day-care / box-1 records when their region overlaps the scan
+        range.
+
+    Both manifest as "extra slots" beyond the live party — the user
+    sees a 6-slot strip when their party is 5. To kill the ghosts we
+    anchor on the lowest-address record (always a real party slot
+    when present) and keep only siblings sitting at
+    ``slot0 + N*stride`` (±tolerance for occasional padding).
+    """
+    if not owned:
+        return owned
+    owned = sorted(owned, key=lambda ap: ap[0])
+    base = owned[0][0]
+    kept = []
+    for addr, pkm in owned:
+        idx = (addr - base) // _PARTY_SLOT_STRIDE
+        if idx >= _PARTY_SLOTS:
+            continue
+        expect = base + idx * _PARTY_SLOT_STRIDE
+        if abs(addr - expect) <= _PARTY_CONTIG_TOL:
+            kept.append((addr, pkm))
+    return kept
+
+
 def _refine_party(ctx, owned):
     """Re-read each located party member as a 260-byte PARTY record so
     parse_pkm fills .party (level, current stats). Works for the
@@ -215,6 +254,7 @@ def _refine_party(ctx, owned):
     Each returned record carries ``source_address`` (the RAM address
     of its slot) so callers — notably the .pk6 exporter — can re-read
     the raw bytes to save a target hit."""
+    owned = _filter_contiguous_party(owned)
     out = []
     for addr, pkm in owned[:_PARTY_SLOTS]:
         try:
