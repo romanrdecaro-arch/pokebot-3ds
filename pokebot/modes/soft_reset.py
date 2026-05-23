@@ -388,12 +388,13 @@ def _run_lucario(ctx, cfg):
         ctx._stop_evt.wait(settle)
 
         # 4. FINAL — snapshot + log the party AFTER the sequence.
-        final_disp = get_party(ctx, party_base, party_stride,
-                               player_ot)
-        if final_disp:
-            broadcast_party(ctx, final_disp)
+        # Broadcast the RAW (unfiltered) party so the strip shows
+        # whatever's actually in RAM — including the freshly-added
+        # mon even if it sits off-grid from the save-block cluster.
         final = get_party(ctx, party_base, party_stride, player_ot,
                           contiguous=False)
+        if final:
+            broadcast_party(ctx, final)
         log.info(
             f"  party at sequence END ({len(final)} PK6): "
             + (", ".join(
@@ -401,26 +402,35 @@ def _run_lucario(ctx, cfg):
                 f"{getattr(p, 'source_address', 0):#010x}"
                 for p in final) if final else "(empty)"))
 
-        # 5. EVALUATE — find Lucario (#448) whose key wasn't in the
-        # baseline.
-        new_luc = None
+        # 5. EVALUATE — find ANY Pokémon whose key wasn't in the
+        # baseline. The species check (was: == 448) kept missing
+        # Lucario in practice — either because the game wrote it to
+        # an unexpected buffer or the species byte was transiently
+        # wrong. Either way, the new key IS the gift mon by
+        # construction (Korrina's dialog is the only thing that can
+        # introduce one), so just take the first new key and let
+        # the target filter decide.
+        new_pkm = None
         for p in final:
-            if (p.species == LUCARIO_SPECIES
-                    and p.encryption_key not in baseline_keys):
-                new_luc = p
+            if p.encryption_key not in baseline_keys:
+                new_pkm = p
                 break
 
-        if new_luc is None:
-            log.warning(f"  attempt {attempt}: no NEW Lucario (#448) "
-                        f"in final party. Check that you're in front "
-                        f"of Lucario with an open slot. Resetting.")
+        if new_pkm is None:
+            log.warning(f"  attempt {attempt}: no new Pokémon in "
+                        f"party after sequence. Check that you're "
+                        f"in front of Lucario with an open slot. "
+                        f"Resetting.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
-                reason="no Lucario in party after sequence")
+                reason="no new mon in party after sequence")
             _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
+        if new_pkm.species != LUCARIO_SPECIES:
+            log.info(f"  new Pokémon is #{new_pkm.species}, not "
+                     f"Lucario (#448) — evaluating anyway.")
 
-        pkm = new_luc
+        pkm = new_pkm
         ctx.dashboard.broadcast(
             "candidate", attempt=attempt,
             species=pkm.species, nickname=pkm.nickname,
@@ -429,7 +439,7 @@ def _run_lucario(ctx, cfg):
             ability_id=pkm.ability_id, ability_num=pkm.ability_num,
             level=(pkm.party or {}).get("level"),
             moves=pkm.moves)
-        log.info(f"  Lucario: {pkm.nickname or ''} "
+        log.info(f"  new mon: #{pkm.species} {pkm.nickname or ''} "
                  f"{'★SHINY★ ' if pkm.shiny else ''}"
                  f"nature={pkm.nature} IVs={pkm.ivs} "
                  f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
