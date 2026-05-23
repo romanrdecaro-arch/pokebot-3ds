@@ -1383,15 +1383,15 @@ class _App(tk.Tk):
                  anchor="w").pack(fill="x", pady=(0, 6))
         fish_head = tk.Frame(self._fishing_frame, bg=_PANEL2)
         fish_head.pack(fill="x")
-        tk.Label(fish_head, text="Wait before A (cast → hook)",
+        tk.Label(fish_head, text="Bite-poll timeout",
                  bg=_PANEL2, fg=_MUTED, font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(side="left")
-        self._fish_settle_var = tk.DoubleVar(value=3.0)
+        self._fish_settle_var = tk.DoubleVar(value=5.0)
         self._fish_settle_lbl = tk.Label(
-            fish_head, text="3.0 s", bg=_PANEL2, fg=_ACCENT,
+            fish_head, text="5.0 s", bg=_PANEL2, fg=_ACCENT,
             font=("Segoe UI", 9, "bold"))
         self._fish_settle_lbl.pack(side="right")
-        tk.Scale(self._fishing_frame, from_=3.0, to=8.0,
+        tk.Scale(self._fishing_frame, from_=3.0, to=10.0,
                  resolution=0.5, orient="horizontal",
                  variable=self._fish_settle_var, showvalue=False,
                  bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
@@ -1400,9 +1400,10 @@ class _App(tk.Tk):
                  command=lambda v: self._fish_settle_lbl.config(
                      text=f"{float(v):.1f} s")).pack(fill="x")
         tk.Label(self._fishing_frame,
-                 text="Higher = waits longer for the bite. If the bot "
-                      "never hooks, raise it. If A fires before the "
-                      "bite window starts, lower it.",
+                 text="How long to watch for the bite cue before "
+                      "giving up and recasting. The bot taps A the "
+                      "moment a bite is detected — this is just the "
+                      "upper bound. Super Rod sometimes needs longer.",
                  bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 9, "italic"),
                  anchor="w", wraplength=235, justify="left"

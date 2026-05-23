@@ -90,28 +90,40 @@ def _run_fraction(layout, run_local, override):
     return 0.5, 0.92, "fallback"
 
 
-def _use_fishing_rod(ctx, cast_settle: float) -> None:
-    """One fishing iteration: Y (cast) → wait → A (hook).
+def _use_fishing_rod(ctx, foe_base: int, foe_len: int,
+                     party_keys: set, baseline: set,
+                     poll_timeout: float) -> None:
+    """One fishing iteration: Y (cast) → poll until "!" → A (hook).
 
-    Pressing **Y** uses the player's registered key item, assumed to
-    be a fishing rod (Old / Good / Super). After ``cast_settle`` (the
-    typical bite delay) the bot taps A once to try the hook. No
-    bite-window detection — if the timing missed we just recast on
-    the next loop iteration. Detection happens in the main loop via
-    ``scan_nonparty``: a new PK6 in the foe window means a battle
-    started; an empty foe window means we just recast.
+    The "!" bite cue coincides with a freshly-generated PK6 landing
+    in the foe window — so polling ``scan_nonparty`` after the cast
+    is functionally equivalent to detecting the visual cue. The
+    moment a never-baseline key appears we tap A: the press is
+    guaranteed to land inside the bite window because we just
+    detected its start.
 
-    **Setup:** rod must be registered to Y (Bag → Key Items → rod →
-    Register) and the player must be facing fishable water.
+    Returns silently after ``poll_timeout`` if no bite appears — the
+    main loop's next iteration will fall back here and recast.
+
+    **Setup:** rod registered to Y (Bag → Key Items → rod → Register),
+    player facing fishable water.
     """
-    log.info(f"  Fishing cast: Y → wait {cast_settle:.1f}s → A")
+    poll_gap = 0.2
+    log.info(f"  Fishing cast: Y → poll for bite (≤{poll_timeout:.1f}s)")
     if ctx.should_stop():
         return
     ctx.input.tap("Y", hold_s=0.05)
-    ctx._stop_evt.wait(cast_settle)
-    if ctx.should_stop():
-        return
-    ctx.input.tap("A", hold_s=0.05)
+    iterations = max(1, int(poll_timeout / poll_gap))
+    for _ in range(iterations):
+        if ctx.should_stop():
+            return
+        ctx._stop_evt.wait(poll_gap)
+        cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
+        if any(p.encryption_key not in baseline for _, p in cands):
+            log.info("  Fishing: bite detected → A (hook)")
+            ctx.input.tap("A", hold_s=0.05)
+            return
+    log.info(f"  Fishing: no bite within {poll_timeout:.1f}s — recast")
 
 
 def _use_sweet_scent(ctx, gap: float) -> None:
@@ -290,11 +302,19 @@ def run(ctx) -> None:
             ctx._stop_evt.wait(sweet_scent_settle)
             continue
         if idle_action == "fish":
-            _use_fishing_rod(ctx, fish_cast_settle)
-            # 1 s breather between attempts. If the A hooked something
-            # the next scan_nonparty (post-wait) still catches it; if
-            # not, the wait gives the rod-retract / "no nibble" text
-            # time to clear before the next Y cast lands.
+            # Pass the live `seen` set as the baseline — the
+            # fishing routine watches the foe window for any key
+            # NOT in that set (i.e. the "!" just landed); when one
+            # appears it taps A. The fresh PK6 stays in the foe
+            # window so the main loop's next scan finds it and
+            # routes to the standard "if new:" branch above.
+            _use_fishing_rod(ctx, foe_base, foe_len, party_keys,
+                             baseline=seen,
+                             poll_timeout=fish_cast_settle)
+            # 1 s breather between attempts. After a hooked bite the
+            # battle intro is still cued up when we return — the wait
+            # lets the rod-retract / "no nibble" animation clear
+            # before the next iteration's scan or recast.
             ctx._stop_evt.wait(1.0)
             continue
         # Hold B while moving so the player RUNS (covers grass faster

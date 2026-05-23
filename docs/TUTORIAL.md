@@ -237,25 +237,29 @@ patient and recasts are free.
 ### What it does each iteration
 
 1. Press **Y** — casts the registered rod.
-2. Wait `fish_cast_settle` (default **3.0s**) — covers the typical
-   bite delay.
-3. Press **A** once — hook attempt.
-4. Scan the foe window:
-   - **New wild appeared** → reported to Recently Seen, evaluated
-     against the target. Hit → stop + alert + `.pk6` saved to
-     `targets/`. Miss → flee (Smoke Ball recommended) and recast.
-   - **Nothing in the foe window** → bite missed or no bite this
-     cast — recast immediately.
+2. **Poll the foe window** every 0.2s for up to the slider's
+   timeout (default **5.0s**). A fresh PK6 in the foe window
+   coincides with the "!" appearing above the player's head — i.e.
+   the bite cue.
+3. **Bite detected → press A immediately** to hook (the press is
+   guaranteed to land inside the bite window since we just detected
+   the start of it). Battle starts.
+4. Main loop scans, reports the wild to Recently Seen, evaluates
+   against the target. Hit → stop + alert + `.pk6` saved to
+   `targets/`. Miss → flee (Smoke Ball recommended) and recast.
+5. **Polling timed out → no bite this cast** → 1s breather, recast.
 
 ### Troubleshooting
 
-- **Bot casts but never hooks.** The 3.0s delay is missing the bite
-  window for your rod / lag. Try raising `random_encounters.
-  fish_cast_settle` in `config.yaml` (e.g. 4.0).
+- **Bot casts but never hooks.** The bite-poll timeout is shorter
+  than your rod's bite delay. Raise the **Bite-poll timeout** slider
+  (or `random_encounters.fish_cast_settle` in `config.yaml`). Super
+  Rod can take 6-8s in some spots.
 - **Y opens the bag instead of casting.** The rod isn't registered.
   Bag → Key Items → rod → Register.
-- **"0 new wild" forever.** You're not facing fishable water (the
-  cast animation doesn't play, so A does nothing useful).
+- **"0 new wild" forever.** You're not facing fishable water, so
+  the cast animation never plays — Y just bounces. Walk to a tile
+  that lets you cast (Couriway dock, any beach, river edge).
 
 ## Tips for reliable hunts
 
