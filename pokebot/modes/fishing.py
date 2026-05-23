@@ -35,8 +35,8 @@ def run(ctx):
     rcfg.setdefault("idle_action", "fish")
     # Match the horde default — the fishing battle intro has its own
     # cutscene (rod reel + fish leap + "Oh! A bite!" text) that needs
-    # the same 7s of headroom before the RUN touch lands.
-    rcfg.setdefault("flee_delay", 7.0)
+    # the same 9s of headroom before the RUN touch lands.
+    rcfg.setdefault("flee_delay", 9.0)
     log.info("Mode: fishing (Y → A-spam, foe-window detection; "
              "stops on shiny / target)")
     log.info("  Setup: rod registered to Y, standing facing water.")

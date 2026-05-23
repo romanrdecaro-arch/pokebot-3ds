@@ -44,7 +44,7 @@ def run(ctx):
     rcfg = ctx.config.setdefault("random_encounters", {})
     # Horde intro is longer than a single encounter — bump default
     # flee_delay so the command menu is actually drawn before RUN.
-    rcfg.setdefault("flee_delay", 7.0)
+    rcfg.setdefault("flee_delay", 9.0)
     # Switch the encounter loop's idle action to Sweet Scent.
     rcfg.setdefault("idle_action", "sweet_scent")
     rcfg.setdefault("sweet_scent_gap", 1.5)
