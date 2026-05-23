@@ -94,7 +94,7 @@ def main(argv=None):
     ap.add_argument("--soft-reset-target", default=None,
                     choices=["starters", "snorlax", "lapras"],
                     help="which soft-reset routine to run. Defaults to "
-                         "'starters'. Lapras is still a stub.")
+                         "'starters'.")
     ap.add_argument("--movement", default=None,
                     choices=["horizontal", "vertical"],
                     help="walking axis for encounter mode "

@@ -136,7 +136,7 @@ def run(ctx):
 
       ``starters`` (default) — the full starter sequence below.
       ``snorlax``  — Route 7 sleeping Snorlax (foe-window detect).
-      ``lapras``   — X/Y stub; sequence not yet implemented.
+      ``lapras``   — Route 12 Hiker gift Lapras (party-slot detect).
 
     Korrina's Lucario at the Tower of Mastery is SHINY-LOCKED in
     X/Y (its PID is set by the cutscene script, not rolled), so
@@ -157,6 +157,8 @@ def run(ctx):
         return _run_starters(ctx, cfg)
     if target == "snorlax":
         return _run_snorlax(ctx, cfg)
+    if target == "lapras":
+        return _run_lapras(ctx, cfg)
     return _run_stub(ctx, target)
 
 
@@ -291,6 +293,206 @@ def _run_snorlax(ctx, cfg):
         _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
 
     log.info(f"Snorlax soft-reset stopped after {attempt} attempt(s).")
+
+
+def _run_lapras(ctx, cfg):
+    """Lapras soft-reset (X/Y, Route 12 Hiker gift).
+
+    Player setup (one-time, before starting the bot):
+      1. Make sure your party has at least one OPEN slot.
+      2. Walk up to the Hiker NPC on Route 12 (the one standing by
+         the route sign — see the screenshot in the tutorial). Stand
+         directly in front of him, facing him.
+      3. SAVE the game here. Every reset returns the player to this
+         spot with the Hiker still waiting to offer Lapras.
+
+    Per attempt the bot:
+      1. Logs the party AT START (baseline) — raw scan with
+         addresses so any off-grid records show up too.
+      2. Runs the full 6 A → 6 B sequence (1-second intervals) end
+         to end without mid-sequence polling. A's accept Lapras and
+         clear "received" text; B's decline the nickname prompt and
+         dismiss the trailing dialog.
+      3. Waits a short settle so the final dialog frame resolves
+         and the new PK6 finishes writing to RAM.
+      4. Logs the party AFTER (raw scan with addresses).
+      5. Finds the new-key record (the gift mon by construction)
+         and evaluates: target hit → stop + save .pk6; miss → reset.
+    """
+    LAPRAS_SPECIES = 131
+    log.info("Mode: soft_reset → Lapras (Route 12 Hiker)")
+    log.info("  Setup: party has open slot · standing in front of "
+             "the Route 12 Hiker · game saved here.")
+
+    player_ot = cfg.get("trainer_name", "Roman")
+    post_reset = float(cfg.get("post_reset_wait", 3.5))
+    post_reset_taps = int(cfg.get("post_reset_taps", 4))
+    post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
+    press_gap = float(cfg.get("lapras_press_gap", 1.0))
+    settle = float(cfg.get("lapras_settle", 1.5))
+    PATTERN = ["A"] * 6 + ["B"] * 6
+    party_base = ctx.game.offsets.party_base
+    party_stride = ctx.game.offsets.party_stride or 484
+
+    try:
+        focus_azahar()
+    except Exception:
+        pass
+
+    attempt = 0
+    while not ctx.should_stop():
+        attempt += 1
+        log.info(f"Lapras attempt #{attempt}")
+        ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
+        try:
+            focus_azahar()
+        except Exception:
+            pass
+
+        # 1. BASELINE — snapshot + log the party BEFORE the sequence.
+        # Invalidate the cached party window first so the scan
+        # re-locates the party from scratch each attempt. A gift mon
+        # can land in a live-party buffer that doesn't overlap the
+        # save-block cluster the cache was anchored on; the END scan
+        # below needs the broader view to spot it, and starting from
+        # a fresh cache here keeps START and END comparable.
+        if hasattr(ctx, "_party_win"):
+            ctx._party_win = None
+        baseline_disp = get_party(ctx, party_base, party_stride,
+                                  player_ot)
+        if baseline_disp:
+            broadcast_party(ctx, baseline_disp)
+        if hasattr(ctx, "_party_win"):
+            ctx._party_win = None
+        baseline = get_party(ctx, party_base, party_stride, player_ot,
+                             contiguous=False)
+        if baseline:
+            log.info(
+                f"  party at sequence START ({len(baseline)} PK6): "
+                + ", ".join(
+                    f"#{p.species}@"
+                    f"{getattr(p, 'source_address', 0):#010x}"
+                    for p in baseline))
+        else:
+            log.warning("  baseline scan returned 0 PK6 — "
+                        "trainer_name mismatch or party_base "
+                        "unlocated.")
+        baseline_keys = {p.encryption_key for p in baseline}
+
+        # 2. SEQUENCE — full 6 A + 6 B at press_gap intervals, end to
+        # end. No mid-sequence polling: we want the dialog to finish
+        # cleanly, then read the result once.
+        for btn in PATTERN:
+            if ctx.should_stop():
+                return
+            ctx.input.tap(btn, hold_s=0.05)
+            ctx._stop_evt.wait(press_gap)
+
+        # 3. SETTLE — let the final B-clear text finish and any
+        # remaining PK6 writes flush before we read.
+        ctx._stop_evt.wait(settle)
+
+        # 4. FINAL — snapshot + log the party AFTER the sequence.
+        # Invalidate the cached window AGAIN before re-scanning so a
+        # broad scan runs (gift mons can land outside the baseline
+        # cache).
+        if hasattr(ctx, "_party_win"):
+            ctx._party_win = None
+        final = get_party(ctx, party_base, party_stride, player_ot,
+                          contiguous=False)
+        log.info(
+            f"  party at sequence END ({len(final)} PK6): "
+            + (", ".join(
+                f"#{p.species}@"
+                f"{getattr(p, 'source_address', 0):#010x}"
+                for p in final) if final else "(empty)"))
+        # New mons = anything in the final scan whose key wasn't in
+        # the baseline. By construction that's just the gift Lapras.
+        new_mons = [p for p in final
+                    if p.encryption_key not in baseline_keys]
+
+        # Gift Lapras is fixed at Lv30 — same transient-state quirk
+        # as starters: byte 0xEC of the live party slot isn't the
+        # real level field yet right after the cutscene write, so
+        # reading it gives garbage. Override on the canonical gift
+        # level so BOTH the strip and the candidate broadcast show
+        # the right number.
+        LAPRAS_GIFT_LEVEL = 30
+        for p in new_mons:
+            if p.species == LAPRAS_SPECIES and p.party:
+                p.party = {**p.party, "level": LAPRAS_GIFT_LEVEL}
+
+        # Strip = filtered save-block party (clean, no box ghosts)
+        # PLUS any new-key record (the gift mon, wherever it lives
+        # in RAM).
+        if hasattr(ctx, "_party_win"):
+            ctx._party_win = None
+        clean_party = get_party(ctx, party_base, party_stride,
+                                player_ot)
+        strip = (list(clean_party) + new_mons)[:6]
+        if strip:
+            broadcast_party(ctx, strip)
+
+        # 5. EVALUATE — first new-key record is the gift mon. By
+        # construction (the Hiker's dialog is the only source of a
+        # new key during the sequence), this is the Lapras.
+        new_pkm = new_mons[0] if new_mons else None
+
+        if new_pkm is None:
+            log.warning(f"  attempt {attempt}: no new Pokémon in "
+                        f"party after sequence. Check that you're "
+                        f"in front of the Hiker with an open slot. "
+                        f"Resetting.")
+            ctx.dashboard.broadcast(
+                "read_failure", attempt=attempt,
+                reason="no new mon in party after sequence")
+            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+            continue
+        if new_pkm.species != LAPRAS_SPECIES:
+            log.info(f"  new Pokémon is #{new_pkm.species}, not "
+                     f"Lapras (#131) — evaluating anyway.")
+
+        pkm = new_pkm
+        ctx.dashboard.broadcast(
+            "candidate", attempt=attempt,
+            species=pkm.species, nickname=pkm.nickname,
+            shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
+            ivs=pkm.ivs, pid=pkm.pid, tsv=pkm.tsv, psv=pkm.psv,
+            ability_id=pkm.ability_id, ability_num=pkm.ability_num,
+            level=(pkm.party or {}).get("level"),
+            moves=pkm.moves)
+        log.info(f"  new mon: #{pkm.species} {pkm.nickname or ''} "
+                 f"{'★SHINY★ ' if pkm.shiny else ''}"
+                 f"nature={pkm.nature} IVs={pkm.ivs} "
+                 f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
+
+        is_target = bool(
+            pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
+        if is_target:
+            addr = getattr(pkm, "source_address", None)
+            if addr is not None:
+                save_target_pk6(ctx, addr, pkm,
+                                "shiny" if pkm.shiny else "lapras")
+            reason = (ctx.target.describe(pkm) if (ctx.target
+                      and ctx.target.matches(pkm))
+                      else "shiny Lapras")
+            bar = "*" * 30
+            for line in (
+                bar, f"  TARGET — attempt #{attempt}: {reason}",
+                "  Bot STOPPED — it's in your party. Decline the "
+                "nickname (B) and go SAVE!",
+                bar):
+                log.info(line)
+            ctx.dashboard.broadcast(
+                "target_hit", attempt=attempt, count=attempt,
+                reason=reason, species=pkm.species, shiny=pkm.shiny,
+                nature=pkm.nature, ivs=pkm.ivs)
+            ctx.request_stop("target hit")
+            return
+
+        _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+
+    log.info(f"Lapras soft-reset stopped after {attempt} attempt(s).")
 
 
 def _run_starters(ctx, cfg):

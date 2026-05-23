@@ -149,7 +149,7 @@ game was on when slot 0 finished writing — usually the "What will
 you nickname [STARTER]?" prompt. From here it's all manual:
 nickname, walk to your house, save.
 
-## Soft-reset gift Pokémon (X/Y: Snorlax)
+## Soft-reset gift Pokémon (X/Y: Snorlax, Lapras)
 
 The **Soft reset** method has a **Target** sub-dropdown for hunting
 specific in-game gift / static encounters in addition to the starters.
@@ -190,8 +190,36 @@ The bot mashes A — the first press plays the Poké Flute, the rest
 clear the wake-up dialog and start the wild battle. The moment a new
 PK6 lands in the foe window it's evaluated; non-targets soft-reset.
 
-> The **Lapras** target in the dropdown is a stub at the moment — the
-> sequence isn't populated yet.
+### Target: Lapras (Route 12 Hiker)
+
+Shiny rate 1/4096 (1/683 with Shiny Charm). **Gift** Pokémon (not
+shiny-locked, unlike Korrina's Lucario) — detection is party-slot
+based, same model as starters.
+
+**Setup (one-time):**
+
+1. Make sure your party has at least one **OPEN slot** — without it
+   the Hiker won't hand Lapras over and the bot will loop forever.
+2. Walk to **Route 12** (Fourrage Road) and find the **Hiker NPC
+   standing by the route sign** at the south end of the route. Stand
+   directly in front of him, facing him.
+3. **SAVE the game** here.
+
+**Launcher:**
+
+- **METHOD** → *Soft reset*
+- **TARGET** → *Lapras*
+- **TARGET FILTER** → *Shiny only* (or use the IV/nature filters).
+- Press **▶ Start Bot**.
+
+The bot runs a fixed 6 A → 6 B sequence at 1-second intervals: A's
+talk to the Hiker, accept Lapras, and clear the "received" dialog;
+B's decline the nickname prompt and dismiss the trailing text. After
+a short settle the bot re-reads the party — any new encryption key
+is the gift Lapras by construction (the Hiker is the only source of
+new keys during the sequence) and gets target-evaluated. On a hit
+the bot stops at the nickname prompt; press **B** to decline the
+nickname and save.
 
 ## Horde mode (Sweet Scent shiny hunting)
 
