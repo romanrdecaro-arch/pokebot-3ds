@@ -298,11 +298,14 @@ def _run_lucario(ctx, cfg):
          spot with Lucario still waiting to be picked up.
 
     Per attempt the bot:
-      1. Mashes A — the first press talks to Lucario, the rest carry
-         the "Will you take Lucario?" → Yes → "received" dialog
-         through to the point where the PK6 is written to the party.
-      2. Polls the party between A presses; the moment Lucario
-         (#448) appears in any slot, evaluate.
+      1. Runs a 5 A → 5 B cycle (1-second intervals): A's drive
+         "Will you take Lucario?" → Yes → "received" → nickname
+         prompt; B's decline the nickname and dismiss the trailing
+         text. Cycle repeats until Lucario is detected or the cap
+         is hit.
+      2. Polls the party between each press; the moment Lucario
+         (#448) appears in any slot with a brand-new encryption
+         key, evaluate.
       3. Target hit (shiny / matches target rules) → stop + alert +
          save .pk6. Miss → L+R+Start and repeat.
     """
@@ -316,8 +319,9 @@ def _run_lucario(ctx, cfg):
     post_reset = float(cfg.get("post_reset_wait", 3.5))
     post_reset_taps = int(cfg.get("post_reset_taps", 4))
     post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
-    a_gap = float(cfg.get("lucario_a_gap", 0.5))
-    a_max = int(cfg.get("lucario_a_max", 80))
+    press_gap = float(cfg.get("lucario_press_gap", 1.0))
+    max_presses = int(cfg.get("lucario_max_presses", 80))
+    PATTERN = ["A"] * 5 + ["B"] * 5
     party_base = ctx.game.offsets.party_base
     party_stride = ctx.game.offsets.party_stride or 484
 
@@ -342,16 +346,17 @@ def _run_lucario(ctx, cfg):
         baseline = get_party(ctx, party_base, party_stride, player_ot)
         baseline_keys = {p.encryption_key for p in baseline}
 
-        # Mash A, poll party between each press. Detection fires the
-        # moment a Pokémon whose key wasn't already on the team
-        # appears AND its species matches Lucario.
+        # 5A → 5B cycle at 1s gaps, polling party between each press.
+        # Detection fires the moment a Pokémon whose key wasn't
+        # already on the team appears AND its species matches Lucario.
         new_luc = None
         full_party = None
-        for i in range(a_max):
+        for i in range(max_presses):
             if ctx.should_stop():
                 return
-            ctx.input.tap("A", hold_s=0.05)
-            ctx._stop_evt.wait(a_gap)
+            btn = PATTERN[i % len(PATTERN)]
+            ctx.input.tap(btn, hold_s=0.05)
+            ctx._stop_evt.wait(press_gap)
             party = get_party(ctx, party_base, party_stride, player_ot)
             if not party:
                 continue
@@ -362,15 +367,15 @@ def _run_lucario(ctx, cfg):
                     full_party = party
                     break
             if new_luc is not None:
-                log.info(f"  Lucario detected after {i + 1} A "
+                log.info(f"  Lucario detected after {i + 1} "
                          f"press(es).")
                 break
 
         if new_luc is None:
             log.warning(f"  attempt {attempt}: no Lucario in party "
-                        f"after {a_max} A presses. Check that you're "
-                        f"in front of Lucario with an open slot. "
-                        f"Resetting.")
+                        f"after {max_presses} presses. Check that "
+                        f"you're in front of Lucario with an open "
+                        f"slot. Resetting.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
                 reason="no Lucario in party after A-mash")
