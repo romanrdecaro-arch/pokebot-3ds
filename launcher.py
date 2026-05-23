@@ -1826,6 +1826,16 @@ class _App(tk.Tk):
             self._log("Note: target is shiny-locked. Bot will run but "
                       "this Pokémon cannot legitimately be shiny.",
                       "warn")
+        # Wipe the party strip so the user sees a clean slate while
+        # the bot spins up — otherwise it keeps showing whatever the
+        # previous run last broadcast (a 6th-slot Pokémon that the
+        # player has since deposited, the wrong shiny marker, etc.).
+        # The bot's first broadcast_party call repopulates it within
+        # ~1 second.
+        try:
+            self._party.update_from_party([])
+        except Exception:
+            pass
         self._bot.start(args)
         self._set_running(True)
         # Focus Azahar so keystrokes land there, not on the launcher
