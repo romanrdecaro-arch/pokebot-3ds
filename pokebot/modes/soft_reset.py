@@ -411,16 +411,20 @@ def _run_lapras(ctx, cfg):
         new_mons = [p for p in final
                     if p.encryption_key not in baseline_keys]
 
-        # Gift Lapras is fixed at Lv30 — same transient-state quirk
-        # as starters: byte 0xEC of the live party slot isn't the
-        # real level field yet right after the cutscene write, so
-        # reading it gives garbage. Override on the canonical gift
-        # level so BOTH the strip and the candidate broadcast show
-        # the right number.
+        # Gift Lapras is fixed at Lv30 — override unconditionally
+        # so the strip + candidate broadcast both show 30 regardless
+        # of whether the live record we found has party stats yet
+        # (the box-format scan finds the gift before the party-stats
+        # block is initialized, leaving p.party=None and the UI
+        # displaying "?"). Synthesize a minimal party dict in that
+        # case; the other party fields (HP/Atk/etc.) don't matter
+        # for soft-reset reporting.
         LAPRAS_GIFT_LEVEL = 30
         for p in new_mons:
-            if p.species == LAPRAS_SPECIES and p.party:
-                p.party = {**p.party, "level": LAPRAS_GIFT_LEVEL}
+            if p.species != LAPRAS_SPECIES:
+                continue
+            base = p.party or {}
+            p.party = {**base, "level": LAPRAS_GIFT_LEVEL}
 
         # Strip = filtered save-block party (clean, no box ghosts)
         # PLUS any new-key record (the gift mon, wherever it lives
