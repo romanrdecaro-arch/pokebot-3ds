@@ -402,19 +402,30 @@ def _run_lucario(ctx, cfg):
         # to a missed hit.
         if hasattr(ctx, "_party_win"):
             ctx._party_win = None
-        # Broadcast the RAW (unfiltered) party so the strip shows
-        # whatever's actually in RAM — including the freshly-added
-        # mon even if it sits off-grid from the save-block cluster.
+        # Raw scan first (every OT-matching PK6 in RAM — party, box,
+        # live-buffer copies).
         final = get_party(ctx, party_base, party_stride, player_ot,
                           contiguous=False)
-        if final:
-            broadcast_party(ctx, final)
         log.info(
             f"  party at sequence END ({len(final)} PK6): "
             + (", ".join(
                 f"#{p.species}@"
                 f"{getattr(p, 'source_address', 0):#010x}"
                 for p in final) if final else "(empty)"))
+        # Strip = filtered save-block party (clean, no box ghosts)
+        # PLUS any record whose key isn't in the baseline (the gift
+        # mon, wherever it lives in RAM). This shows the player
+        # exactly what changed without re-introducing the Carbink
+        # ghost that lives in a box at a separate RAM region.
+        if hasattr(ctx, "_party_win"):
+            ctx._party_win = None
+        clean_party = get_party(ctx, party_base, party_stride,
+                                player_ot)
+        new_mons = [p for p in final
+                    if p.encryption_key not in baseline_keys]
+        strip = (list(clean_party) + new_mons)[:6]
+        if strip:
+            broadcast_party(ctx, strip)
 
         # 5. EVALUATE — find ANY Pokémon whose key wasn't in the
         # baseline. The species check (was: == 448) kept missing

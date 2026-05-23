@@ -264,9 +264,14 @@ def _refine_party(ctx, owned, *, contiguous: bool = True):
     Korrina, for instance), and the contiguity filter would hide it.
     """
     if contiguous:
-        owned = _filter_contiguous_party(owned)
+        owned = _filter_contiguous_party(owned)[:_PARTY_SLOTS]
+    # contiguous=False: keep EVERY owned PK6 in the scan window —
+    # box mons, live-party-buffer copies, the lot — so detection
+    # callers can find new keys regardless of which RAM region the
+    # gift mon landed in. The display path is the one that needs
+    # the 6-slot cap.
     out = []
-    for addr, pkm in owned[:_PARTY_SLOTS]:
+    for addr, pkm in owned:
         try:
             rec = ctx.rpc.read(addr, _PK6)
             pp = _decode(rec, party=True)
