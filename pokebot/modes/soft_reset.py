@@ -412,34 +412,45 @@ def _run_lucario(ctx, cfg):
                 f"#{p.species}@"
                 f"{getattr(p, 'source_address', 0):#010x}"
                 for p in final) if final else "(empty)"))
+        # New mons = anything in the final scan whose key wasn't in
+        # the baseline. By construction that's just the gift Lucario.
+        new_mons = [p for p in final
+                    if p.encryption_key not in baseline_keys]
+
+        # Korrina's gift Lucario is fixed at Lv30 — same transient-
+        # state quirk as the starter case: byte 0xEC of the live
+        # party slot isn't the real level field yet right after the
+        # cutscene write, so reading it gives garbage (Lv89, Lv52,
+        # whatever). Override on the canonical gift level so BOTH
+        # the strip and the candidate broadcast show the right
+        # number. Mutate the live object — same instance is reused
+        # for the broadcast and the evaluation below.
+        LUCARIO_GIFT_LEVEL = 30
+        for p in new_mons:
+            if p.species == LUCARIO_SPECIES and p.party:
+                p.party = {**p.party, "level": LUCARIO_GIFT_LEVEL}
+
         # Strip = filtered save-block party (clean, no box ghosts)
-        # PLUS any record whose key isn't in the baseline (the gift
-        # mon, wherever it lives in RAM). This shows the player
-        # exactly what changed without re-introducing the Carbink
-        # ghost that lives in a box at a separate RAM region.
+        # PLUS any new-key record (the gift mon, wherever it lives
+        # in RAM). Shows the player exactly what changed without
+        # re-introducing the Carbink ghost in box 1.
         if hasattr(ctx, "_party_win"):
             ctx._party_win = None
         clean_party = get_party(ctx, party_base, party_stride,
                                 player_ot)
-        new_mons = [p for p in final
-                    if p.encryption_key not in baseline_keys]
         strip = (list(clean_party) + new_mons)[:6]
         if strip:
             broadcast_party(ctx, strip)
 
-        # 5. EVALUATE — find ANY Pokémon whose key wasn't in the
-        # baseline. The species check (was: == 448) kept missing
-        # Lucario in practice — either because the game wrote it to
-        # an unexpected buffer or the species byte was transiently
+        # 5. EVALUATE — first new-key record is the gift mon. The
+        # species check (was: == 448) kept missing Lucario in
+        # practice — either because the game wrote it to an
+        # unexpected buffer or the species byte was transiently
         # wrong. Either way, the new key IS the gift mon by
         # construction (Korrina's dialog is the only thing that can
-        # introduce one), so just take the first new key and let
-        # the target filter decide.
-        new_pkm = None
-        for p in final:
-            if p.encryption_key not in baseline_keys:
-                new_pkm = p
-                break
+        # introduce one), so take the first new key and let the
+        # target filter decide.
+        new_pkm = new_mons[0] if new_mons else None
 
         if new_pkm is None:
             log.warning(f"  attempt {attempt}: no new Pokémon in "
