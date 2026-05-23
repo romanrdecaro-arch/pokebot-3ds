@@ -149,6 +149,72 @@ game was on when slot 0 finished writing — usually the "What will
 you nickname [STARTER]?" prompt. From here it's all manual:
 nickname, walk to your house, save.
 
+## Soft-reset gift Pokémon (X/Y: Snorlax, Lucario)
+
+The **Soft reset** method has a **Target** sub-dropdown for hunting
+specific in-game gift / static encounters in addition to the starters.
+Each target needs its own one-time in-game setup, then runs unattended
+just like the starter hunt — L+R+Start until the target rolls shiny.
+
+### Target: Snorlax (Route 7 bridge)
+
+Shiny rate 1/4096 (1/683 with Shiny Charm). Wild encounter — detection
+is foe-window based.
+
+**Setup (one-time):**
+
+1. Pick up the **Poké Flute** from the Pokémon Café in Lumiose City.
+   When the receptionist asks if you want to leave it with her, say
+   **NO** so it stays in your bag.
+2. Walk to the wooden bridge on **Route 7** where Snorlax is sleeping.
+   Stand directly south of Snorlax, facing it.
+3. **SAVE the game** here.
+
+**Launcher:**
+
+- **METHOD** → *Soft reset*
+- **TARGET** → *Snorlax*
+- **TARGET FILTER** → *Shiny only* (or use the IV/nature filters).
+- Press **▶ Start Bot**.
+
+The bot mashes A — the first press plays the Poké Flute, the rest
+clear the wake-up dialog and start the wild battle. The moment a new
+PK6 lands in the foe window it's evaluated; non-targets soft-reset.
+
+### Target: Lucario (Tower of Mastery)
+
+Shiny rate 1/4096 (1/683 with Shiny Charm). **Gift** Pokémon —
+detection is party-slot based, the same as starters.
+
+**Setup (one-time):**
+
+1. Defeat **Korrina** at the top of the **Tower of Mastery** in
+   Shalour City (the rooftop fight, not the gym).
+2. Make sure your party has at least one **OPEN slot** — without it
+   Lucario can't be received and the bot will loop forever.
+3. When Korrina first offers Lucario, **DECLINE**. Lucario stays on
+   the rooftop as an interactable NPC, and talking to it re-triggers
+   the offer dialog. (Accepting bakes the PID; declining keeps every
+   future reset rolling a fresh one.)
+4. Walk up to Lucario and stand directly in front of it, facing it.
+5. **SAVE the game** here.
+
+**Launcher:**
+
+- **METHOD** → *Soft reset*
+- **TARGET** → *Lucario*
+- **TARGET FILTER** → *Shiny only* (or IV/nature filters).
+- Press **▶ Start Bot**.
+
+The bot mashes A — the first press talks to Lucario and re-opens the
+offer dialog, subsequent presses accept and clear dialog through to
+"received". The moment Lucario (#448) appears in the party slot it's
+evaluated; non-targets soft-reset. On a hit the bot stops at the
+nickname prompt — press **B** to decline the nickname, then save.
+
+> The **Lapras** target in the dropdown is a stub at the moment — the
+> sequence isn't populated yet.
+
 ## Horde mode (Sweet Scent shiny hunting)
 
 Horde battles put **5 wild Pokémon** on the field at once, each rolled

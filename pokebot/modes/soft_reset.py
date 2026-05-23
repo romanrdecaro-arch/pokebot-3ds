@@ -135,8 +135,9 @@ def run(ctx):
     Target sub-dropdown or ``--soft-reset-target``):
 
       ``starters`` (default) — the full starter sequence below.
-      ``snorlax`` / ``lucario`` / ``lapras`` — X/Y stubs; sequence
-        not yet implemented, the bot logs a notice and stops.
+      ``snorlax``  — Route 7 sleeping Snorlax (foe-window detect).
+      ``lucario``  — Tower of Mastery gift Lucario (party detect).
+      ``lapras``   — X/Y stub; sequence not yet implemented.
     """
     ensure_targets_dir()
     cfg = ctx.config.get("soft_reset", {}) or {}
@@ -145,6 +146,8 @@ def run(ctx):
         return _run_starters(ctx, cfg)
     if target == "snorlax":
         return _run_snorlax(ctx, cfg)
+    if target == "lucario":
+        return _run_lucario(ctx, cfg)
     return _run_stub(ctx, target)
 
 
@@ -279,6 +282,149 @@ def _run_snorlax(ctx, cfg):
         _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
 
     log.info(f"Snorlax soft-reset stopped after {attempt} attempt(s).")
+
+
+def _run_lucario(ctx, cfg):
+    """Lucario soft-reset (X/Y, Tower of Mastery).
+
+    Player setup (one-time, before starting the bot):
+      1. Defeat Korrina at the top of the Tower of Mastery.
+      2. Make sure your party has at least one OPEN slot.
+      3. When Korrina first offers Lucario, DECLINE. Lucario stays
+         on the rooftop as an interactable NPC — talking to it
+         re-triggers the offer dialog on every subsequent visit.
+      4. Stand directly in front of the Lucario sprite, facing it.
+         SAVE the game here — every reset returns the player to this
+         spot with Lucario still waiting to be picked up.
+
+    Per attempt the bot:
+      1. Mashes A — the first press talks to Lucario, the rest carry
+         the "Will you take Lucario?" → Yes → "received" dialog
+         through to the point where the PK6 is written to the party.
+      2. Polls the party between A presses; the moment Lucario
+         (#448) appears in any slot, evaluate.
+      3. Target hit (shiny / matches target rules) → stop + alert +
+         save .pk6. Miss → L+R+Start and repeat.
+    """
+    LUCARIO_SPECIES = 448
+    log.info("Mode: soft_reset → Lucario (Tower of Mastery)")
+    log.info("  Setup: Korrina defeated · party has open slot · "
+             "Lucario previously DECLINED · standing in front of "
+             "Lucario · game saved here.")
+
+    player_ot = cfg.get("trainer_name", "Roman")
+    post_reset = float(cfg.get("post_reset_wait", 3.5))
+    post_reset_taps = int(cfg.get("post_reset_taps", 4))
+    post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
+    a_gap = float(cfg.get("lucario_a_gap", 0.5))
+    a_max = int(cfg.get("lucario_a_max", 80))
+    party_base = ctx.game.offsets.party_base
+    party_stride = ctx.game.offsets.party_stride or 484
+
+    try:
+        focus_azahar()
+    except Exception:
+        pass
+
+    attempt = 0
+    while not ctx.should_stop():
+        attempt += 1
+        log.info(f"Lucario attempt #{attempt}")
+        ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
+        try:
+            focus_azahar()
+        except Exception:
+            pass
+
+        # Snapshot the party BEFORE the A-mash so we can tell which
+        # slot is the freshly-gifted Lucario (vs. one the player
+        # already had on the team for some reason).
+        baseline = get_party(ctx, party_base, party_stride, player_ot)
+        baseline_keys = {p.encryption_key for p in baseline}
+
+        # Mash A, poll party between each press. Detection fires the
+        # moment a Pokémon whose key wasn't already on the team
+        # appears AND its species matches Lucario.
+        new_luc = None
+        full_party = None
+        for i in range(a_max):
+            if ctx.should_stop():
+                return
+            ctx.input.tap("A", hold_s=0.05)
+            ctx._stop_evt.wait(a_gap)
+            party = get_party(ctx, party_base, party_stride, player_ot)
+            if not party:
+                continue
+            for p in party:
+                if (p.species == LUCARIO_SPECIES
+                        and p.encryption_key not in baseline_keys):
+                    new_luc = p
+                    full_party = party
+                    break
+            if new_luc is not None:
+                log.info(f"  Lucario detected after {i + 1} A "
+                         f"press(es).")
+                break
+
+        if new_luc is None:
+            log.warning(f"  attempt {attempt}: no Lucario in party "
+                        f"after {a_max} A presses. Check that you're "
+                        f"in front of Lucario with an open slot. "
+                        f"Resetting.")
+            ctx.dashboard.broadcast(
+                "read_failure", attempt=attempt,
+                reason="no Lucario in party after A-mash")
+            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+            continue
+
+        # Re-broadcast the strip so the launcher shows the new
+        # Lucario in its real slot.
+        try:
+            broadcast_party(ctx, full_party)
+        except Exception:
+            pass
+
+        pkm = new_luc
+        ctx.dashboard.broadcast(
+            "candidate", attempt=attempt,
+            species=pkm.species, nickname=pkm.nickname,
+            shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
+            ivs=pkm.ivs, pid=pkm.pid, tsv=pkm.tsv, psv=pkm.psv,
+            ability_id=pkm.ability_id, ability_num=pkm.ability_num,
+            level=(pkm.party or {}).get("level"),
+            moves=pkm.moves)
+        log.info(f"  Lucario: {pkm.nickname or ''} "
+                 f"{'★SHINY★ ' if pkm.shiny else ''}"
+                 f"nature={pkm.nature} IVs={pkm.ivs} "
+                 f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
+
+        is_target = bool(
+            pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
+        if is_target:
+            addr = getattr(pkm, "source_address", None)
+            if addr is not None:
+                save_target_pk6(ctx, addr, pkm,
+                                "shiny" if pkm.shiny else "lucario")
+            reason = (ctx.target.describe(pkm) if (ctx.target
+                      and ctx.target.matches(pkm))
+                      else "shiny Lucario")
+            bar = "*" * 30
+            for line in (
+                bar, f"  TARGET — attempt #{attempt}: {reason}",
+                "  Bot STOPPED — it's in your party. Decline the "
+                "nickname (B) and go SAVE!",
+                bar):
+                log.info(line)
+            ctx.dashboard.broadcast(
+                "target_hit", attempt=attempt, count=attempt,
+                reason=reason, species=pkm.species, shiny=pkm.shiny,
+                nature=pkm.nature, ivs=pkm.ivs)
+            ctx.request_stop("target hit")
+            return
+
+        _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+
+    log.info(f"Lucario soft-reset stopped after {attempt} attempt(s).")
 
 
 def _run_starters(ctx, cfg):
