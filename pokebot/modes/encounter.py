@@ -173,16 +173,15 @@ def _flee(ctx, layout, run_local, override, run_settle: float) -> None:
     log.info(f"  flee: touch RUN @ ({fx:.3f},{fy:.3f}) [{how}] "
              f"after {run_settle:.1f}s settle "
              f"-> {'sent' if ok else 'FAILED (touch unavailable)'}")
-    # "Got away!" text + battle fade-out + return-to-overworld is
-    # slower than a single-wild flee on a horde — the previous 0.3s +
-    # 3×0.12s totalled ~0.66s, which ran into the next Sweet Scent
-    # press before the overworld was fully back. Give the transition
-    # room to finish.
-    ctx._stop_evt.wait(1.5)
+    # "Got away!" text + battle fade-out + return-to-overworld can
+    # take a while, especially after a horde or a fishing battle —
+    # if we fire the next action too early it gets eaten by the
+    # lingering battle UI. Give the transition real room.
+    ctx._stop_evt.wait(2.0)                  # wait for "Got away!"
     for _ in range(3):                       # clear "Got away!" text
         ctx.input.tap("B", hold_s=0.05)
-        ctx._stop_evt.wait(0.5)
-    ctx._stop_evt.wait(0.8)                  # post-battle slide-back
+        ctx._stop_evt.wait(0.6)
+    ctx._stop_evt.wait(2.0)                  # post-battle slide-back
 
 
 def run(ctx) -> None:
@@ -203,7 +202,7 @@ def run(ctx) -> None:
     idle_action = str(rcfg.get("idle_action", "walk")).lower()
     sweet_scent_gap = float(rcfg.get("sweet_scent_gap", 1.0))
     sweet_scent_settle = float(rcfg.get("sweet_scent_settle", 4.0))
-    fish_cast_settle = float(rcfg.get("fish_cast_settle", 3.0))
+    fish_cast_settle = float(rcfg.get("fish_cast_settle", 5.0))
     screen_layout = str(rcfg.get("screen_layout",
                                  "side_by_side")).lower()
     run_local = rcfg.get("run_local") or [0.5, 0.86]

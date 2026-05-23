@@ -1381,34 +1381,6 @@ class _App(tk.Tk):
                  bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(fill="x", pady=(0, 6))
-        fish_head = tk.Frame(self._fishing_frame, bg=_PANEL2)
-        fish_head.pack(fill="x")
-        tk.Label(fish_head, text="Bite-poll timeout",
-                 bg=_PANEL2, fg=_MUTED, font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(side="left")
-        self._fish_settle_var = tk.DoubleVar(value=5.0)
-        self._fish_settle_lbl = tk.Label(
-            fish_head, text="5.0 s", bg=_PANEL2, fg=_ACCENT,
-            font=("Segoe UI", 9, "bold"))
-        self._fish_settle_lbl.pack(side="right")
-        tk.Scale(self._fishing_frame, from_=3.0, to=10.0,
-                 resolution=0.5, orient="horizontal",
-                 variable=self._fish_settle_var, showvalue=False,
-                 bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
-                 highlightthickness=0, bd=0, sliderrelief="flat",
-                 activebackground=_ACCENT,
-                 command=lambda v: self._fish_settle_lbl.config(
-                     text=f"{float(v):.1f} s")).pack(fill="x")
-        tk.Label(self._fishing_frame,
-                 text="How long to watch for the bite cue before "
-                      "giving up and recasting. The bot taps A the "
-                      "moment a bite is detected — this is just the "
-                      "upper bound. Super Rod sometimes needs longer.",
-                 bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "italic"),
-                 anchor="w", wraplength=235, justify="left"
-                 ).pack(fill="x", pady=(2, 6))
-
         # Battle wait before flee — analogous to the encounter slider
         # but separate because the fishing intro (rod-reel + leap +
         # "Oh! A bite!" dialog) is longer; default 9.0s.
@@ -1828,11 +1800,6 @@ class _App(tk.Tk):
             except Exception:
                 pass
         if method.mode == "fishing":
-            try:
-                args += ["--fish-cast-settle",
-                         f"{float(self._fish_settle_var.get()):.1f}"]
-            except Exception:
-                pass
             try:
                 args += ["--flee-delay",
                          f"{float(self._fish_flee_var.get()):.1f}"]
