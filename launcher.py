@@ -1227,7 +1227,7 @@ class _App(tk.Tk):
             fill="x", pady=(10, 8))
 
         # Target — what we're soft-resetting for (Starters / Snorlax /
-        # Lucario / Lapras for X/Y; just Starters for other games).
+        # Lapras for X/Y; just Starters for other games).
         tk.Label(self._starter_frame, text="Soft-reset target",
                  bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 9, "bold"),
@@ -1589,7 +1589,7 @@ class _App(tk.Tk):
     def _refresh_sr_target_options(self):
         """Repopulate the Soft-reset target sub-dropdown for the
         current game. X/Y get the full list (Starters / Snorlax /
-        Lucario / Lapras); other games default to just Starters."""
+        Lapras); other games default to just Starters."""
         try:
             from pokebot.games import soft_reset_targets_for
             options = soft_reset_targets_for(self._game_var.get())
@@ -1758,7 +1758,7 @@ class _App(tk.Tk):
                       "after the first starter is received (~1 min one-time "
                       "scan). Subsequent resets are full-speed.", "warn")
         # Validate starter sub-selection when soft-resetting for the
-        # lab starters (Snorlax / Lucario / Lapras don't need one).
+        # lab starters (Snorlax / Lapras don't need one).
         chosen_sr_target = None
         if method.mode == "soft_reset":
             chosen_sr_target = self._sr_target_var.get().strip().lower() \

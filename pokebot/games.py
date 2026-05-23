@@ -217,8 +217,11 @@ def starter_species(game_key: str, name: str) -> Optional[int]:
 # --------------------------------------------------------------------
 
 SOFT_RESET_TARGETS = {
-    "X-USA":  ["Starters", "Snorlax", "Lucario", "Lapras"],
-    "Y-USA":  ["Starters", "Snorlax", "Lucario", "Lapras"],
+    # Lucario (Korrina's gift at Tower of Mastery) is SHINY-LOCKED in
+    # X/Y — the cutscene script presets its PID, so soft-resetting
+    # has no chance of producing one. Omitted from the dropdown.
+    "X-USA":  ["Starters", "Snorlax", "Lapras"],
+    "Y-USA":  ["Starters", "Snorlax", "Lapras"],
 }
 
 

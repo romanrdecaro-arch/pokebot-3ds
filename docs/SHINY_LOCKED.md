@@ -13,6 +13,8 @@ start the bot, but here's the canonical list for reference (source:
 - Mewtwo (Unknown Dungeon)
 - Articuno / Zapdos / Moltres (roaming)
 - Eternal Flower Floette (event-tied; never officially released)
+- Lucario (Korrina's gift at Tower of Mastery — PID preset by the
+  Mega Ring cutscene script)
 
 ## Pokémon Omega Ruby / Alpha Sapphire
 - Groudon (Omega Ruby) / Kyogre (Alpha Sapphire)

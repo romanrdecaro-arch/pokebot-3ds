@@ -136,8 +136,12 @@ def run(ctx):
 
       ``starters`` (default) — the full starter sequence below.
       ``snorlax``  — Route 7 sleeping Snorlax (foe-window detect).
-      ``lucario``  — Tower of Mastery gift Lucario (party detect).
       ``lapras``   — X/Y stub; sequence not yet implemented.
+
+    Korrina's Lucario at the Tower of Mastery is SHINY-LOCKED in
+    X/Y (its PID is set by the cutscene script, not rolled), so
+    there's no point soft-resetting it — that target has been
+    removed from the dropdown.
     """
     ensure_targets_dir()
     # Wipe any cached party signature so the FIRST broadcast_party
@@ -153,8 +157,6 @@ def run(ctx):
         return _run_starters(ctx, cfg)
     if target == "snorlax":
         return _run_snorlax(ctx, cfg)
-    if target == "lucario":
-        return _run_lucario(ctx, cfg)
     return _run_stub(ctx, target)
 
 
@@ -289,224 +291,6 @@ def _run_snorlax(ctx, cfg):
         _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
 
     log.info(f"Snorlax soft-reset stopped after {attempt} attempt(s).")
-
-
-def _run_lucario(ctx, cfg):
-    """Lucario soft-reset (X/Y, Tower of Mastery).
-
-    Player setup (one-time, before starting the bot):
-      1. Defeat Korrina at the top of the Tower of Mastery.
-      2. Make sure your party has at least one OPEN slot.
-      3. When Korrina first offers Lucario, DECLINE. Lucario stays
-         on the rooftop as an interactable NPC — talking to it
-         re-triggers the offer dialog on every subsequent visit.
-      4. Stand directly in front of the Lucario sprite, facing it.
-         SAVE the game here — every reset returns the player to this
-         spot with Lucario still waiting to be picked up.
-
-    Per attempt the bot:
-      1. Logs the party AT START (baseline) — addresses + species.
-      2. Runs the full 5 A → 8 B sequence (1-second intervals) end
-         to end without mid-sequence polling. A's accept Lucario and
-         clear "received" text; B's decline the nickname prompt and
-         dismiss the trailing dialog.
-      3. Waits a short settle so the final dialog frame resolves
-         and the new PK6 finishes writing to RAM.
-      4. Logs the party AFTER (raw scan with addresses) so any
-         Lucario living in a non-grid buffer still surfaces here.
-      5. Finds Lucario (#448) with a key not in the baseline and
-         evaluates: target hit → stop + save .pk6; miss → reset.
-    """
-    LUCARIO_SPECIES = 448
-    log.info("Mode: soft_reset → Lucario (Tower of Mastery)")
-    log.info("  Setup: Korrina defeated · party has open slot · "
-             "Lucario previously DECLINED · standing in front of "
-             "Lucario · game saved here.")
-
-    player_ot = cfg.get("trainer_name", "Roman")
-    post_reset = float(cfg.get("post_reset_wait", 3.5))
-    post_reset_taps = int(cfg.get("post_reset_taps", 4))
-    post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
-    press_gap = float(cfg.get("lucario_press_gap", 1.0))
-    settle = float(cfg.get("lucario_settle", 1.5))
-    PATTERN = ["A"] * 5 + ["B"] * 8
-    party_base = ctx.game.offsets.party_base
-    party_stride = ctx.game.offsets.party_stride or 484
-
-    try:
-        focus_azahar()
-    except Exception:
-        pass
-
-    attempt = 0
-    while not ctx.should_stop():
-        attempt += 1
-        log.info(f"Lucario attempt #{attempt}")
-        ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
-        try:
-            focus_azahar()
-        except Exception:
-            pass
-
-        # 1. BASELINE — snapshot + log the party BEFORE the sequence.
-        # Invalidate the cached party window first so the scan
-        # re-locates the party from scratch each attempt. The Lucario
-        # gift lands in a live-party buffer that may NOT overlap the
-        # save-block cluster the cache was anchored on; the END scan
-        # below needs the broader view to spot it, and starting from
-        # a fresh cache here keeps START and END comparable.
-        if hasattr(ctx, "_party_win"):
-            ctx._party_win = None
-        baseline_disp = get_party(ctx, party_base, party_stride,
-                                  player_ot)
-        if baseline_disp:
-            broadcast_party(ctx, baseline_disp)
-        if hasattr(ctx, "_party_win"):
-            ctx._party_win = None
-        baseline = get_party(ctx, party_base, party_stride, player_ot,
-                             contiguous=False)
-        if baseline:
-            log.info(
-                f"  party at sequence START ({len(baseline)} PK6): "
-                + ", ".join(
-                    f"#{p.species}@"
-                    f"{getattr(p, 'source_address', 0):#010x}"
-                    for p in baseline))
-        else:
-            log.warning("  baseline scan returned 0 PK6 — "
-                        "trainer_name mismatch or party_base "
-                        "unlocated.")
-        baseline_keys = {p.encryption_key for p in baseline}
-
-        # 2. SEQUENCE — full 5 A + 8 B at press_gap intervals, end to
-        # end. No mid-sequence polling: we want the dialog to finish
-        # cleanly, then read the result once. (Polling between
-        # presses was racy — get_party could fire while the slot was
-        # mid-write, returning a half-baked record OR an inconsistent
-        # snapshot from one of the two live buffers.)
-        for btn in PATTERN:
-            if ctx.should_stop():
-                return
-            ctx.input.tap(btn, hold_s=0.05)
-            ctx._stop_evt.wait(press_gap)
-
-        # 3. SETTLE — let the final B-clear text finish and any
-        # remaining PK6 writes flush before we read.
-        ctx._stop_evt.wait(settle)
-
-        # 4. FINAL — snapshot + log the party AFTER the sequence.
-        # Invalidate the cached window AGAIN before re-scanning: the
-        # gift Lucario can land in a buffer the baseline window
-        # didn't cover, and reusing the cache would miss it. Pay the
-        # broad-scan cost (~1-2s) once per attempt; cheap compared
-        # to a missed hit.
-        if hasattr(ctx, "_party_win"):
-            ctx._party_win = None
-        # Raw scan first (every OT-matching PK6 in RAM — party, box,
-        # live-buffer copies).
-        final = get_party(ctx, party_base, party_stride, player_ot,
-                          contiguous=False)
-        log.info(
-            f"  party at sequence END ({len(final)} PK6): "
-            + (", ".join(
-                f"#{p.species}@"
-                f"{getattr(p, 'source_address', 0):#010x}"
-                for p in final) if final else "(empty)"))
-        # New mons = anything in the final scan whose key wasn't in
-        # the baseline. By construction that's just the gift Lucario.
-        new_mons = [p for p in final
-                    if p.encryption_key not in baseline_keys]
-
-        # Korrina's gift Lucario is fixed at Lv30 — same transient-
-        # state quirk as the starter case: byte 0xEC of the live
-        # party slot isn't the real level field yet right after the
-        # cutscene write, so reading it gives garbage (Lv89, Lv52,
-        # whatever). Override on the canonical gift level so BOTH
-        # the strip and the candidate broadcast show the right
-        # number. Mutate the live object — same instance is reused
-        # for the broadcast and the evaluation below.
-        LUCARIO_GIFT_LEVEL = 30
-        for p in new_mons:
-            if p.species == LUCARIO_SPECIES and p.party:
-                p.party = {**p.party, "level": LUCARIO_GIFT_LEVEL}
-
-        # Strip = filtered save-block party (clean, no box ghosts)
-        # PLUS any new-key record (the gift mon, wherever it lives
-        # in RAM). Shows the player exactly what changed without
-        # re-introducing the Carbink ghost in box 1.
-        if hasattr(ctx, "_party_win"):
-            ctx._party_win = None
-        clean_party = get_party(ctx, party_base, party_stride,
-                                player_ot)
-        strip = (list(clean_party) + new_mons)[:6]
-        if strip:
-            broadcast_party(ctx, strip)
-
-        # 5. EVALUATE — first new-key record is the gift mon. The
-        # species check (was: == 448) kept missing Lucario in
-        # practice — either because the game wrote it to an
-        # unexpected buffer or the species byte was transiently
-        # wrong. Either way, the new key IS the gift mon by
-        # construction (Korrina's dialog is the only thing that can
-        # introduce one), so take the first new key and let the
-        # target filter decide.
-        new_pkm = new_mons[0] if new_mons else None
-
-        if new_pkm is None:
-            log.warning(f"  attempt {attempt}: no new Pokémon in "
-                        f"party after sequence. Check that you're "
-                        f"in front of Lucario with an open slot. "
-                        f"Resetting.")
-            ctx.dashboard.broadcast(
-                "read_failure", attempt=attempt,
-                reason="no new mon in party after sequence")
-            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
-            continue
-        if new_pkm.species != LUCARIO_SPECIES:
-            log.info(f"  new Pokémon is #{new_pkm.species}, not "
-                     f"Lucario (#448) — evaluating anyway.")
-
-        pkm = new_pkm
-        ctx.dashboard.broadcast(
-            "candidate", attempt=attempt,
-            species=pkm.species, nickname=pkm.nickname,
-            shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
-            ivs=pkm.ivs, pid=pkm.pid, tsv=pkm.tsv, psv=pkm.psv,
-            ability_id=pkm.ability_id, ability_num=pkm.ability_num,
-            level=(pkm.party or {}).get("level"),
-            moves=pkm.moves)
-        log.info(f"  new mon: #{pkm.species} {pkm.nickname or ''} "
-                 f"{'★SHINY★ ' if pkm.shiny else ''}"
-                 f"nature={pkm.nature} IVs={pkm.ivs} "
-                 f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
-
-        is_target = bool(
-            pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
-        if is_target:
-            addr = getattr(pkm, "source_address", None)
-            if addr is not None:
-                save_target_pk6(ctx, addr, pkm,
-                                "shiny" if pkm.shiny else "lucario")
-            reason = (ctx.target.describe(pkm) if (ctx.target
-                      and ctx.target.matches(pkm))
-                      else "shiny Lucario")
-            bar = "*" * 30
-            for line in (
-                bar, f"  TARGET — attempt #{attempt}: {reason}",
-                "  Bot STOPPED — it's in your party. Decline the "
-                "nickname (B) and go SAVE!",
-                bar):
-                log.info(line)
-            ctx.dashboard.broadcast(
-                "target_hit", attempt=attempt, count=attempt,
-                reason=reason, species=pkm.species, shiny=pkm.shiny,
-                nature=pkm.nature, ivs=pkm.ivs)
-            ctx.request_stop("target hit")
-            return
-
-        _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
-
-    log.info(f"Lucario soft-reset stopped after {attempt} attempt(s).")
 
 
 def _run_starters(ctx, cfg):

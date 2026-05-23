@@ -149,12 +149,21 @@ game was on when slot 0 finished writing — usually the "What will
 you nickname [STARTER]?" prompt. From here it's all manual:
 nickname, walk to your house, save.
 
-## Soft-reset gift Pokémon (X/Y: Snorlax, Lucario)
+## Soft-reset gift Pokémon (X/Y: Snorlax)
 
 The **Soft reset** method has a **Target** sub-dropdown for hunting
 specific in-game gift / static encounters in addition to the starters.
 Each target needs its own one-time in-game setup, then runs unattended
 just like the starter hunt — L+R+Start until the target rolls shiny.
+
+> **Heads-up — Lucario is shiny-locked.** Korrina's gift Lucario at the
+> Tower of Mastery has a preset PID baked into the Mega Ring cutscene
+> script, so it CAN'T be shiny no matter how many times you reset. The
+> Lucario target has been removed from the dropdown for that reason —
+> Bulky Beedrill from Korrina's Lucarionite cutscene is the only legal
+> shiny path, and that's a different mon entirely. If you want a shiny
+> Riolu/Lucario, breed Riolus on Route 22 or hunt the Reflection Cave
+> wild Lucario instead (neither is locked).
 
 ### Target: Snorlax (Route 7 bridge)
 
@@ -180,37 +189,6 @@ is foe-window based.
 The bot mashes A — the first press plays the Poké Flute, the rest
 clear the wake-up dialog and start the wild battle. The moment a new
 PK6 lands in the foe window it's evaluated; non-targets soft-reset.
-
-### Target: Lucario (Tower of Mastery)
-
-Shiny rate 1/4096 (1/683 with Shiny Charm). **Gift** Pokémon —
-detection is party-slot based, the same as starters.
-
-**Setup (one-time):**
-
-1. Defeat **Korrina** at the top of the **Tower of Mastery** in
-   Shalour City (the rooftop fight, not the gym).
-2. Make sure your party has at least one **OPEN slot** — without it
-   Lucario can't be received and the bot will loop forever.
-3. When Korrina first offers Lucario, **DECLINE**. Lucario stays on
-   the rooftop as an interactable NPC, and talking to it re-triggers
-   the offer dialog. (Accepting bakes the PID; declining keeps every
-   future reset rolling a fresh one.)
-4. Walk up to Lucario and stand directly in front of it, facing it.
-5. **SAVE the game** here.
-
-**Launcher:**
-
-- **METHOD** → *Soft reset*
-- **TARGET** → *Lucario*
-- **TARGET FILTER** → *Shiny only* (or IV/nature filters).
-- Press **▶ Start Bot**.
-
-The bot mashes A — the first press talks to Lucario and re-opens the
-offer dialog, subsequent presses accept and clear dialog through to
-"received". The moment Lucario (#448) appears in the party slot it's
-evaluated; non-targets soft-reset. On a hit the bot stops at the
-nickname prompt — press **B** to decline the nickname, then save.
 
 > The **Lapras** target in the dropdown is a stub at the moment — the
 > sequence isn't populated yet.

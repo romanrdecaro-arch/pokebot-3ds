@@ -92,9 +92,9 @@ def main(argv=None):
                     help="starter to hunt in soft_reset mode "
                          "(e.g. chespin, fennekin, froakie)")
     ap.add_argument("--soft-reset-target", default=None,
-                    choices=["starters", "snorlax", "lucario", "lapras"],
+                    choices=["starters", "snorlax", "lapras"],
                     help="which soft-reset routine to run. Defaults to "
-                         "'starters'; the others are stubs for now.")
+                         "'starters'. Lapras is still a stub.")
     ap.add_argument("--movement", default=None,
                     choices=["horizontal", "vertical"],
                     help="walking axis for encounter mode "
