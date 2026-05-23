@@ -378,12 +378,21 @@ def _run_lucario(ctx, cfg):
             btn = PATTERN[i % len(PATTERN)]
             ctx.input.tap(btn, hold_s=0.05)
             ctx._stop_evt.wait(press_gap)
+            # Display path — contiguous filter strips battle-buffer
+            # ghosts so the strip stays clean (e.g. no leftover
+            # Carbink in slot 6 after the user moved it to PC).
             party = get_party(ctx, party_base, party_stride, player_ot)
-            if not party:
-                continue
-            broadcast_party(ctx, party)
-            last_party = party
-            for p in party:
+            if party:
+                broadcast_party(ctx, party)
+                last_party = party
+            # Detection path — UNFILTERED. The game writes a freshly
+            # received gift Pokémon to the live battle buffer at an
+            # address that's off-grid from the save-block cluster; the
+            # display filter would hide it. Scan the raw owned set
+            # for any Lucario whose key wasn't in the baseline.
+            party_raw = get_party(ctx, party_base, party_stride,
+                                  player_ot, contiguous=False)
+            for p in party_raw:
                 if (p.species == LUCARIO_SPECIES
                         and p.encryption_key not in baseline_keys):
                     new_luc = p
@@ -396,14 +405,29 @@ def _run_lucario(ctx, cfg):
         if new_luc is None:
             # Diagnostic — what DID we end up with? Lets you tell
             # "Lucario never joined" from "Lucario joined but the
-            # species check missed it" at a glance.
+            # species check missed it" from "Lucario joined at an
+            # off-grid address the display filter is hiding" at a
+            # glance. Dump the UNFILTERED scan with addresses; if
+            # #448 is in the list but the strip never showed it,
+            # the game wrote it to a buffer the display filter
+            # rejected as off-grid.
+            try:
+                raw_last = get_party(ctx, party_base, party_stride,
+                                     player_ot, contiguous=False)
+            except Exception:
+                raw_last = []
             species_list = (", ".join(f"#{p.species}" for p in
                                        last_party) if last_party
                             else "(empty)")
+            raw_list = (", ".join(
+                f"#{p.species}@{getattr(p, 'source_address', 0):#010x}"
+                for p in raw_last) if raw_last else "(empty)")
             log.warning(f"  attempt {attempt}: no Lucario in party "
-                        f"after {max_presses} presses. Final party: "
-                        f"{species_list}. Check that you're in front "
-                        f"of Lucario with an open slot. Resetting.")
+                        f"after {max_presses} presses. Final party "
+                        f"(filtered): {species_list}. Final raw "
+                        f"scan: {raw_list}. Check that you're in "
+                        f"front of Lucario with an open slot. "
+                        f"Resetting.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
                 reason="no Lucario in party after A/B-mash")

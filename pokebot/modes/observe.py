@@ -242,7 +242,7 @@ def _filter_contiguous_party(owned):
     return kept
 
 
-def _refine_party(ctx, owned):
+def _refine_party(ctx, owned, *, contiguous: bool = True):
     """Re-read each located party member as a 260-byte PARTY record so
     parse_pkm fills .party (level, current stats). Works for the
     in-battle / overworld party-copy slot (the normal hunt case);
@@ -253,8 +253,18 @@ def _refine_party(ctx, owned):
 
     Each returned record carries ``source_address`` (the RAM address
     of its slot) so callers — notably the .pk6 exporter — can re-read
-    the raw bytes to save a target hit."""
-    owned = _filter_contiguous_party(owned)
+    the raw bytes to save a target hit.
+
+    ``contiguous=True`` (the default, used for DISPLAY) drops
+    off-grid records — stale battle-buffer ghosts left behind after a
+    move-to-PC. ``contiguous=False`` (used for DETECTION) returns
+    every OT-matching PK6 in the scan window; a freshly-received
+    gift mon may live in the live battle buffer at an address that's
+    off-grid from the save-block party cluster (Lucario from
+    Korrina, for instance), and the contiguity filter would hide it.
+    """
+    if contiguous:
+        owned = _filter_contiguous_party(owned)
     out = []
     for addr, pkm in owned[:_PARTY_SLOTS]:
         try:
@@ -268,7 +278,8 @@ def _refine_party(ctx, owned):
     return out
 
 
-def get_party(ctx, party_base_cfg, party_stride, player_ot):
+def get_party(ctx, party_base_cfg, party_stride, player_ot,
+              *, contiguous: bool = True):
     """The live party as a list of ParsedPokemon.
 
     The party is RE-DERIVED from content every call (a stride read
@@ -276,12 +287,18 @@ def get_party(ctx, party_base_cfg, party_stride, player_ot):
     base+484 it stopped after the lead, so the strip collapsed to
     just the lead). We cache a tight WINDOW around the owned cluster
     and re-scan only that window each refresh (cheap); a broad scan
-    runs once to find it (or again if it moves)."""
+    runs once to find it (or again if it moves).
+
+    ``contiguous=True`` (default) keeps only the save-block party
+    cluster (slot-N-at-base+N*260) and drops stale battle-buffer
+    ghosts. Use ``contiguous=False`` in soft-reset detection paths
+    so a fresh gift mon (Lucario from Korrina) doesn't get hidden
+    when the game writes it to the live buffer first."""
     win = getattr(ctx, "_party_win", None)
     if win:
         owned = _scan_owned(ctx, win[0], win[1], player_ot)
         if owned:
-            return _refine_party(ctx, owned)
+            return _refine_party(ctx, owned, contiguous=contiguous)
         ctx._party_win = None                 # moved → relocate below
 
     for lo, hi in _PARTY_SCAN_RANGES:
@@ -297,7 +314,7 @@ def get_party(ctx, party_base_cfg, party_stride, player_ot):
                      f"({len(owned)} owned PK6, OT {player_ot!r}); "
                      f"window {ctx._party_win[0]:#x}-"
                      f"{ctx._party_win[1]:#x}")
-            return _refine_party(ctx, owned)
+            return _refine_party(ctx, owned, contiguous=contiguous)
     return []
 
 
