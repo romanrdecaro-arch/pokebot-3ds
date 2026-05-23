@@ -298,7 +298,7 @@ def _run_lucario(ctx, cfg):
          spot with Lucario still waiting to be picked up.
 
     Per attempt the bot:
-      1. Runs a 5 A → 5 B cycle (1-second intervals): A's drive
+      1. Runs a 5 A → 8 B cycle (1-second intervals): A's drive
          "Will you take Lucario?" → Yes → "received" → nickname
          prompt; B's decline the nickname and dismiss the trailing
          text. Cycle repeats until Lucario is detected or the cap
@@ -321,7 +321,7 @@ def _run_lucario(ctx, cfg):
     post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
     press_gap = float(cfg.get("lucario_press_gap", 1.0))
     max_presses = int(cfg.get("lucario_max_presses", 80))
-    PATTERN = ["A"] * 5 + ["B"] * 5
+    PATTERN = ["A"] * 5 + ["B"] * 8
     party_base = ctx.game.offsets.party_base
     party_stride = ctx.game.offsets.party_stride or 484
 
