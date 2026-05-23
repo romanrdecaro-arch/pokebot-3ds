@@ -342,15 +342,29 @@ def _run_lucario(ctx, cfg):
 
         # Snapshot the party BEFORE the A-mash so we can tell which
         # slot is the freshly-gifted Lucario (vs. one the player
-        # already had on the team for some reason).
+        # already had on the team for some reason). Broadcast it
+        # too — otherwise the launcher's party strip stays empty
+        # for the whole attempt.
         baseline = get_party(ctx, party_base, party_stride, player_ot)
+        if baseline:
+            broadcast_party(ctx, baseline)
+            log.info(f"  baseline party ({len(baseline)} mons): " +
+                     ", ".join(f"#{p.species}" for p in baseline))
+        else:
+            log.warning("  baseline party scan returned 0 members — "
+                        "trainer_name mismatch or party_base "
+                        "unlocated. Detection will still try but "
+                        "may not work.")
         baseline_keys = {p.encryption_key for p in baseline}
 
-        # 5A → 5B cycle at 1s gaps, polling party between each press.
-        # Detection fires the moment a Pokémon whose key wasn't
-        # already on the team appears AND its species matches Lucario.
+        # 5A → 8B cycle at 1s gaps, polling party between each press.
+        # Detection fires the moment Lucario (species 448) is in
+        # any slot with a key not in the pre-mash baseline. The party
+        # is re-broadcast each poll so the strip updates the instant
+        # Lucario lands in the open slot — even before detection
+        # confirms it, the user sees the new mon appear.
         new_luc = None
-        full_party = None
+        last_party = baseline
         for i in range(max_presses):
             if ctx.should_stop():
                 return
@@ -360,11 +374,12 @@ def _run_lucario(ctx, cfg):
             party = get_party(ctx, party_base, party_stride, player_ot)
             if not party:
                 continue
+            broadcast_party(ctx, party)
+            last_party = party
             for p in party:
                 if (p.species == LUCARIO_SPECIES
                         and p.encryption_key not in baseline_keys):
                     new_luc = p
-                    full_party = party
                     break
             if new_luc is not None:
                 log.info(f"  Lucario detected after {i + 1} "
@@ -372,22 +387,21 @@ def _run_lucario(ctx, cfg):
                 break
 
         if new_luc is None:
+            # Diagnostic — what DID we end up with? Lets you tell
+            # "Lucario never joined" from "Lucario joined but the
+            # species check missed it" at a glance.
+            species_list = (", ".join(f"#{p.species}" for p in
+                                       last_party) if last_party
+                            else "(empty)")
             log.warning(f"  attempt {attempt}: no Lucario in party "
-                        f"after {max_presses} presses. Check that "
-                        f"you're in front of Lucario with an open "
-                        f"slot. Resetting.")
+                        f"after {max_presses} presses. Final party: "
+                        f"{species_list}. Check that you're in front "
+                        f"of Lucario with an open slot. Resetting.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
-                reason="no Lucario in party after A-mash")
+                reason="no Lucario in party after A/B-mash")
             _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
             continue
-
-        # Re-broadcast the strip so the launcher shows the new
-        # Lucario in its real slot.
-        try:
-            broadcast_party(ctx, full_party)
-        except Exception:
-            pass
 
         pkm = new_luc
         ctx.dashboard.broadcast(
