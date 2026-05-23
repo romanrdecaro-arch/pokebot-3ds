@@ -249,17 +249,83 @@ patient and recasts are free.
    `targets/`. Miss → flee (Smoke Ball recommended) and recast.
 5. **Polling timed out → no bite this cast** → 1s breather, recast.
 
+### Best setup for shiny hunting
+
+For maximum hits-per-hour and to take advantage of **chain fishing**
+(stacking shiny odds across consecutive same-species hooks), set up
+your party and location like this:
+
+**1. Put a Suction Cups or Sticky Hold Pokémon in slot 1.**
+
+Both abilities **double the fishing bite rate** when the holder is
+your party lead. Easy choices in X/Y:
+
+| Ability | Species | Where |
+|---|---|---|
+| Suction Cups | **Octillery** (Remoraid evolves at Lv 25) | Fish Remoraid on Route 8 / Ambrette / Cyllage with Old/Good Rod |
+| Suction Cups | Cradily | Revive from Root Fossil → Ambrette Fossil Lab |
+| Sticky Hold | **Muk** (Grimer evolves at Lv 38) | Grimer in some Friend Safaris |
+| Sticky Hold | Garbodor (Trubbish at Lv 36) | Route 8 / Hidden Grottos |
+| Sticky Hold | Gastrodon | Shellos on Route 8 / Ambrette / Sea Spirit's Den |
+
+Octillery is the most accessible — fish a Remoraid on the same route
+you intend to bot, level it once, done.
+
+**2. Give the lead a Smoke Ball as a held item.**
+
+Smoke Ball makes every flee 100% successful regardless of Speed —
+critical because the bot flees every non-target wild, and a failed
+flee breaks the chain.
+
+**3. Pick a known shiny-hunt spot.**
+
+Some of the best in X/Y:
+- **Couriway Town dock** (Super Rod) — Dragalge, Skrelp, Bibarel
+- **Ambrette Town shore** (Good/Super Rod) — Luvdisc, Horsea, Magikarp
+- **Route 22** (any rod) — early-access; Goldeen, Magikarp, Poliwag
+- **Sea Spirit's Den** (Super Rod) — Lapras spawns (after the gift one)
+
+Save in front of the water tile so a crash / disconnect won't lose
+your chain progress.
+
+**4. Chain fishing — the actual mechanic.**
+
+Each consecutive **successful hook of the same species** at the
+**same spot** raises the shiny rate. The chain caps around **chain
+20**, where the rate is roughly **1/100** (≈ 41× base). The chain
+breaks if you:
+
+- **Miss a bite** — the "!" appeared but no A press landed in time.
+  The bot's `"!"`-detect → instant A means this should be near-zero.
+- **Move tiles** — don't walk during the hunt. The bot only presses
+  Y / A, so it can't break this on its own.
+- **Hook a different species** — if you're after a shiny Dragalge
+  and a Skrelp bites, the chain resets. Use the `species:` filter
+  in your target so the bot stops only on the right species; flees
+  on the others still hold the chain.
+- **"Not even a nibble"** — no fish bit at all. Some sources say
+  this DOESN'T break the chain (since no encounter happened); others
+  say it does. Conservative: assume it does and pick a high-bite-
+  rate spot.
+
+The bot keeps chains alive across flees because it never moves and
+the `"!"` poll means a detected bite always gets the hook — exactly
+the conditions chain fishing needs.
+
 ### Troubleshooting
 
-- **Bot casts but never hooks.** The bite-poll timeout is shorter
-  than your rod's bite delay. Raise the **Bite-poll timeout** slider
-  (or `random_encounters.fish_cast_settle` in `config.yaml`). Super
-  Rod can take 6-8s in some spots.
+- **Bot casts but never hooks.** Your rod's bite delay is longer
+  than the default 5 s timeout. Raise
+  `random_encounters.fish_cast_settle` in `config.yaml` to 7-8
+  (Super Rod sometimes needs that).
 - **Y opens the bag instead of casting.** The rod isn't registered.
   Bag → Key Items → rod → Register.
 - **"0 new wild" forever.** You're not facing fishable water, so
   the cast animation never plays — Y just bounces. Walk to a tile
   that lets you cast (Couriway dock, any beach, river edge).
+- **Chain seems to reset randomly.** Lower your `flee_delay` slider
+  a touch so the flee fires before the chain timer expires, or
+  raise it if you're seeing failed runs.
 
 ## Tips for reliable hunts
 
