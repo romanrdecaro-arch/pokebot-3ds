@@ -140,6 +140,13 @@ def run(ctx):
       ``lapras``   — X/Y stub; sequence not yet implemented.
     """
     ensure_targets_dir()
+    # Wipe any cached party signature so the FIRST broadcast_party
+    # call inside the chosen sub-mode pushes the current in-game
+    # party to the launcher's strip. Without this, the strip can
+    # stay frozen on whatever party the previous run last broadcast
+    # (broadcast_party suppresses identical-sig writes).
+    if hasattr(ctx, "_party_sig"):
+        ctx._party_sig = None
     cfg = ctx.config.get("soft_reset", {}) or {}
     target = str(cfg.get("target", "starters")).lower()
     if target == "starters":
