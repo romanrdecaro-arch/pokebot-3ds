@@ -465,6 +465,19 @@ def _run_lapras(ctx, cfg):
                  f"{'★SHINY★ ' if pkm.shiny else ''}"
                  f"nature={pkm.nature} IVs={pkm.ivs} "
                  f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
+        # Diagnostic — if two consecutive attempts log the SAME
+        # source_address + SAME enc_key, the bot's reading the
+        # exact same RAM bytes both times and the game's gift
+        # generator is reusing the buffer (so the IV pattern
+        # really is fixed). If addresses differ but IVs match,
+        # the game has a fixed IV spread for this gift. If
+        # addresses match but PIDs/IVs differ, the buffer is being
+        # rewritten between reads.
+        addr_log = getattr(pkm, "source_address", 0)
+        log.info(f"  diag: addr={addr_log:#010x} "
+                 f"enc_key={pkm.encryption_key:08X} "
+                 f"nature_id={pkm.nature_id} "
+                 f"ivs_word={(pkm.ivs['HP'] | pkm.ivs['Atk']<<5 | pkm.ivs['Def']<<10 | pkm.ivs['Spe']<<15 | pkm.ivs['SpA']<<20 | pkm.ivs['SpD']<<25):08X}")
 
         is_target = bool(
             pkm.shiny or (ctx.target and ctx.target.matches(pkm)))
