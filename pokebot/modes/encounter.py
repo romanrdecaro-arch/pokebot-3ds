@@ -123,7 +123,14 @@ def _use_fishing_rod(ctx, foe_base: int, foe_len: int,
             log.info("  Fishing: bite detected → A (hook)")
             ctx.input.tap("A", hold_s=0.05)
             return
-    log.info(f"  Fishing: no bite within {poll_timeout:.1f}s — recast")
+    # No bite — the game shows "Not even a nibble..." (or similar).
+    # Tap A once to dismiss it so the next iteration's Y press lands
+    # in the overworld instead of being eaten by the dialog box.
+    log.info(f"  Fishing: no bite within {poll_timeout:.1f}s — "
+             f"A to clear, recast")
+    if ctx.should_stop():
+        return
+    ctx.input.tap("A", hold_s=0.05)
 
 
 def _use_sweet_scent(ctx, gap: float) -> None:
