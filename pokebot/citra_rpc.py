@@ -62,12 +62,13 @@ POKEMON_TITLE_IDS = {
     0x0004000000175E00: ("Moon",       "USA"),
     0x00040000001B5000: ("UltraSun",   "USA"),
     0x00040000001B5100: ("UltraMoon",  "USA"),
-    # EUR variants share TIDs with USA on 3DS for these games.
-    # JPN variants:
-    0x0004000000055D00: ("X",          "JPN"),  # placeholder; verify
-    # NOTE: The dict above intentionally has duplicates keyed by TID
-    # because regions sometimes share IDs; refine after observing real
-    # ProcessList output from your console/dump.
+    # EUR variants share these USA title IDs on 3DS. JPN variants use
+    # DIFFERENT title IDs (e.g. X-JPN is 0x0004000000055C00, not the USA
+    # 0x...55D00) — do NOT re-key an existing USA entry with a JPN label
+    # or the dict literal silently collapses and the surviving entry
+    # mislabels the USA game's region (quick_status would print
+    # "X (JPN)" for a USA cart). Add JPN rows under their own real TIDs
+    # once verified against ProcessList output.
 }
 
 
@@ -300,13 +301,22 @@ def wait_for_emulator(host: str = "127.0.0.1", port: int = CITRA_PORT,
     last_err = None
     while time.monotonic() < deadline:
         rpc = CitraRPC(host=host, port=port, timeout=0.5)
+        ok = False
         try:
             if rpc.ping():
                 rpc.timeout = 1.0
                 rpc.sock.settimeout(1.0)
+                ok = True
                 return rpc
         except Exception as e:
             last_err = e
+        finally:
+            # Close the probe socket on every non-success path so a long
+            # wait for a down emulator doesn't churn through abandoned
+            # UDP sockets. The successful `return rpc` sets ok=True first,
+            # so its still-open socket is handed to the caller intact.
+            if not ok:
+                rpc.close()
         time.sleep(0.5)
     raise RPCError(f"Azahar RPC at {host}:{port} did not respond within "
                    f"{timeout}s. Make sure Azahar is running with a ROM "

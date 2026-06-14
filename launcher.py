@@ -2036,6 +2036,13 @@ class _App(tk.Tk):
 
     def _on_close(self):
         self._poll_alive = False
+        # Don't leave an orphaned offset-scan subprocess running in the
+        # background if the user closes the launcher mid-scan.
+        if self._offset_proc and self._offset_proc.poll() is None:
+            try:
+                self._offset_proc.terminate()
+            except Exception:
+                pass
         if self._bot.running:
             if messagebox.askyesno("Quit", "The bot is running. Stop it and quit?"):
                 self._bot.stop()

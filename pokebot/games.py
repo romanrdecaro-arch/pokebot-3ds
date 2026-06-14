@@ -439,6 +439,12 @@ def party_base_candidates(game_key: str) -> list[int]:
             b1 - 0xE400,
             b1 - 0xC58C,
         ]
-    # Gen 7 save layout differs significantly; provide a few reasonable
-    # guesses around the trainer block.
+    # Gen 7 (SM / USUM) save layout differs significantly. These are
+    # UNVERIFIED guesses around the trainer block — none has been
+    # confirmed against a running game yet (unlike Y-USA's tb+0x16C
+    # above). Each is single-read validated by is_likely_pk7() before
+    # use, so a wrong guess is harmless: it's rejected and discovery
+    # falls through to the trainer-name anchor path / manual
+    # Memory-Viewer steps.
+    # TODO: confirm one on a live SM/USUM session and mark it CONFIRMED.
     return [tb + 0xC0, tb + 0x140, b1 - 0x3000]

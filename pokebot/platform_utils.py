@@ -117,11 +117,14 @@ def click_window_at(hwnd: int, x_frac: float, y_frac: float,
     WM_LBUTTONUP   = 0x0202
     MK_LBUTTON     = 0x0001
     lparam = (cx & 0xFFFF) | ((cy & 0xFFFF) << 16)
-    user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+    down = user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
     import time as _t
     _t.sleep(hold_s)
-    user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
-    return True
+    up = user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
+    # Report failure (PostMessageW returns 0) so the caller drops its
+    # cached hwnd and re-acquires it next call instead of assuming the
+    # click landed.
+    return bool(down and up)
 
 
 def _send_mouse_click(screen_x: int, screen_y: int, hold_s: float) -> None:

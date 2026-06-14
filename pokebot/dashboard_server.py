@@ -22,7 +22,10 @@ from queue import Queue
 log = logging.getLogger(__name__)
 
 
-_IV_ORDER = ("HP", "Atk", "Def", "SpA", "SpD", "Spe")
+# PK6 canonical stat order (matches launcher.py and parser's EV/IV
+# dicts) so the terminal IV string lines up column-for-column with the
+# launcher's Recently Seen table instead of swapping Spe/SpA/SpD.
+_IV_ORDER = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
 
 
 def _format_encounter(f: dict) -> str:

@@ -537,8 +537,12 @@ def run(ctx) -> None:
                 enc_count += 1
                 _report_encounter(ctx, p, a, enc_count, "new-key")
 
-        # Bound memory without re-reporting current stale records.
-        if len(seen) > 512:
+        # Bound memory without re-reporting current stale records. Only
+        # rebuild from the live window when it's non-empty — rebuilding
+        # from an empty `cands` would wipe `seen` entirely and then
+        # re-report a wild still lingering in the foe buffer as if it
+        # were brand new.
+        if len(seen) > 512 and cands:
             seen = {p.encryption_key for _, p in cands}
 
         ctx._stop_evt.wait(_POLL_INTERVAL_S)
