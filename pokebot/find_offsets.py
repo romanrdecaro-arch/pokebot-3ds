@@ -30,13 +30,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from .citra_rpc import CitraRPC, wait_for_emulator
 from .games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS
-from .parser import decrypt_pkm, parse_pkm
+from .parser import decrypt_pkm
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +89,6 @@ def write_offsets_to_config(cfg_path: Path, offsets: dict) -> list[str]:
     in_offsets_block = False
     block_indent: str | None = None
     out: list[str] = []
-    last_block_line_idx: int | None = None
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -120,11 +121,18 @@ def write_offsets_to_config(cfg_path: Path, offsets: dict) -> list[str]:
             key = stripped.split(":", 1)[0].strip()
             if key in pending:
                 v = pending.pop(key)
-                out.append(f"{block_indent}{key}: {v:#010x}\n")
+                # Keep any trailing "# ..." note on the line we replace;
+                # the docstring promises comments survive, and lines like
+                # "in_battle_flag: 0x0  # TODO: not yet located" lose
+                # real information when the note is dropped.
+                _, _, after = line.partition(":")
+                comment = ""
+                if "#" in after:
+                    comment = "  " + after[after.index("#"):].strip()
+                out.append(f"{block_indent}{key}: {v:#010x}{comment}\n")
                 written.append(key)
             else:
                 out.append(line)
-            last_block_line_idx = len(out) - 1
             continue
         out.append(line)
 
@@ -139,8 +147,30 @@ def write_offsets_to_config(cfg_path: Path, offsets: dict) -> list[str]:
             out.append(f"{block_indent}{k}: {v:#010x}\n")
             written.append(k)
 
-    cfg_path.write_text("".join(out), encoding="utf-8")
+    _atomic_write(cfg_path, "".join(out))
     return written
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Replace ``path`` atomically, so an interrupted scan can't truncate it.
+
+    A direct ``write_text`` that dies partway through (launcher closed,
+    machine sleeps, disk full) leaves the user's hand-tuned config
+    half-written and unparseable. Write a sibling temp file, flush it to
+    disk, then rename — ``os.replace`` is atomic on Windows and POSIX.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent),
+                                    prefix=path.name + ".", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def is_likely_pk7(raw: bytes) -> tuple[bool, dict | None]:

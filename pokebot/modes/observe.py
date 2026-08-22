@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 
+from ..games import DEFAULT_OT_NAME
 from ..parser import calc_checksum, decrypt_pkm, encounter_payload, parse_pkm
 
 log = logging.getLogger(__name__)
@@ -465,7 +466,7 @@ def run(ctx) -> None:
     foe_base = o.foe_base
     foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
     player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
-        "trainer_name", "Roman")
+        "trainer_name", DEFAULT_OT_NAME)
 
     from ..pk6_export import ensure_targets_dir
     ensure_targets_dir()                    # targets/ shows up now

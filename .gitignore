@@ -72,3 +72,14 @@ last_events.log
 htmlcov/
 .tox/
 .nox/
+
+# Caught-Pokemon exports (user save data — never commit)
+targets/
+*.pk6
+*.pk7
+*.ek6
+*.ek7
+
+# Per-run bot statistics and scratch diagnostics
+.pokebot_stats.json
+check_bounds.txt

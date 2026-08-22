@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import logging
 
+from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
-from .observe import (scan_nonparty, pick_opponent, get_party,
+from .observe import (scan_nonparty, get_party,
                        broadcast_party, _report_encounter,
                        _level_from_exp)
 
@@ -195,7 +196,7 @@ def run(ctx) -> None:
     if movement not in _BTN:
         movement = "horizontal"
     player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
-        "trainer_name", "Roman")
+        "trainer_name", DEFAULT_OT_NAME)
     walk_hold = float(rcfg.get("walk_hold", 0.35))
     flee_delay = float(rcfg.get("flee_delay", 5.0))
     run_settle = float(rcfg.get("run_settle", 1.5))
@@ -249,7 +250,11 @@ def run(ctx) -> None:
     log.info(f"  baseline: {len(seen)} pre-existing non-party PK6 "
              f"ignored. Walking…")
 
-    a, b = _BTN[movement]
+    # Named, not "a, b": these live for the whole run loop and used to
+    # be clobbered by the "for a, p in ordered" encounter loop below,
+    # which rebound `a` to a PK6 *address*. The next walk step then
+    # passed an int as a button name and killed the run.
+    walk_a, walk_b = _BTN[movement]
     step = 0
     encounters = 0
 
@@ -275,17 +280,22 @@ def run(ctx) -> None:
             log.info(f"  encounter: {n} new wild "
                      f"{'(horde)' if n > 1 else '(single)'}")
             target_hit = None
-            for a, p in ordered:
+            for addr, p in ordered:
                 seen.add(p.encryption_key)
                 encounters += 1
-                _report_encounter(ctx, p, a, encounters, "new-key")
+                _report_encounter(ctx, p, addr, encounters, "new-key")
                 if target_hit is None and _is_target(ctx, p):
-                    target_hit = (a, p)
-            if len(seen) > 512:
+                    target_hit = (addr, p)
+            # "and cands" matters: rebuilding from an empty scan wipes
+            # `seen` entirely, and the next poll re-reports a wild still
+            # lingering in the foe buffer as a brand-new encounter.
+            # observe.py has carried this guard for a while; this copy
+            # did not.
+            if len(seen) > 512 and cands:
                 seen = {p.encryption_key for _, p in cands}
             if target_hit is not None:
-                a, p = target_hit
-                _alert(ctx, p, a, encounters)
+                addr, p = target_hit
+                _alert(ctx, p, addr, encounters)
                 ctx.request_stop("shiny / target found")
                 return
             if not dry:
@@ -327,7 +337,7 @@ def run(ctx) -> None:
             continue
         # Hold B while moving so the player RUNS (covers grass faster
         # → more encounters per minute).
-        ctx.input.move_running(a if step % 2 == 0 else b,
+        ctx.input.move_running(walk_a if step % 2 == 0 else walk_b,
                                hold_s=walk_hold)
         step += 1
         ctx._stop_evt.wait(0.12)

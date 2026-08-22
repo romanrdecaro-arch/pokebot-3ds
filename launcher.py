@@ -117,13 +117,25 @@ _AUTO_INSTALLED = _ensure_deps()
 # ---------------------------------------------------------------------------
 
 def _load_config() -> dict:
+    """Read config.yaml, tolerating a broken file so the GUI still opens.
+
+    A parse failure used to return ``{}`` in total silence, which looks
+    exactly like a config with no offsets set — the user sees their
+    pasted offsets "disappear" with nothing explaining why. Keep the
+    empty-dict fallback (the launcher must still start so the file can
+    be fixed) but say loudly what went wrong.
+    """
     cfg_path = ROOT / "config.yaml"
     if not cfg_path.exists():
         return {}
     try:
-        import yaml  # type: ignore
-        return yaml.safe_load(cfg_path.read_text()) or {}
-    except Exception:
+        from pokebot.config_io import load_config
+        return load_config(cfg_path)
+    except Exception as exc:
+        print(f"[config] WARNING: could not parse {cfg_path}: "
+              f"{type(exc).__name__}: {exc}")
+        print("[config] Starting with empty settings. Fix the file above "
+              "to restore your saved offsets.")
         return {}
 
 

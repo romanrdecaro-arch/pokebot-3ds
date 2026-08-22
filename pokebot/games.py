@@ -323,6 +323,14 @@ def methods_for(game_key: str) -> list[Method]:
 # Scanning the right range matters: targeting the linear heap on X/Y
 # (which the bot did pre-2026-05-10) returns zero hits because the
 # data simply isn't there.
+#: Fallback in-game OT name, used as a RAM anchor when the config
+#: does not set ``trainer_name``. This was the maintainer's own name
+#: hardcoded in eight places; it is a placeholder, not a useful
+#: default — set ``trainer_name`` in config.yaml to your real OT name
+#: so the anchor scan can actually find your party.
+DEFAULT_OT_NAME = "TRAINER"
+
+
 HEAP_RANGE_3DS         = (0x08000000, 0x40000000)   # all-3DS catch-all
 APP_HEAP_RANGE_3DS     = (0x08000000, 0x10000000)   # Gen 6 save-block region
 APP_HEAP_HOT_3DS       = (0x08000000, 0x0A000000)   # Gen 6 hot 32 MB

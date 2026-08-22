@@ -13,54 +13,7 @@ import logging
 import sys
 from pathlib import Path
 
-# minimal yaml loader that handles the subset we use; falls back to
-# the real PyYAML if installed
-try:
-    import yaml
-    def _load_yaml(path: Path) -> dict:
-        return yaml.safe_load(path.read_text()) or {}
-except ImportError:
-    import json
-    def _load_yaml(path: Path) -> dict:
-        # accept JSON as a degenerate yaml dialect for our config
-        text = path.read_text()
-        if path.suffix.lower() == ".json":
-            return json.loads(text)
-        # very small yaml parser: only top-level scalars + 1-level dicts
-        # for users who don't want to install PyYAML. Use JSON for full power.
-        out: dict = {}
-        stack = [(0, out)]
-        for raw_line in text.splitlines():
-            line = raw_line.split("#", 1)[0].rstrip()
-            if not line.strip():
-                continue
-            indent = len(line) - len(line.lstrip())
-            while stack and indent < stack[-1][0]:
-                stack.pop()
-            head = line.strip()
-            if ":" not in head:
-                continue
-            k, _, v = head.partition(":")
-            k = k.strip()
-            v = v.strip()
-            cur = stack[-1][1]
-            if v == "":
-                new: dict = {}
-                cur[k] = new
-                stack.append((indent + 2, new))
-            else:
-                if v.lower() in ("true", "false"):
-                    cur[k] = (v.lower() == "true")
-                elif v.startswith("0x"):
-                    cur[k] = int(v, 16)
-                else:
-                    try:
-                        cur[k] = int(v)
-                    except ValueError:
-                        try: cur[k] = float(v)
-                        except ValueError:
-                            cur[k] = v.strip("'\"")
-        return out
+from pokebot.config_io import load_config as _load_yaml
 
 
 _TARGET_PRESETS = {
@@ -140,23 +93,36 @@ def main(argv=None):
         logging.warning(f"{cfg_path} not found; using defaults")
         config = {}
 
+    def section(name: str) -> dict:
+        """Fetch a config section, healing a present-but-empty one.
+
+        A section written as bare ``input:`` with nothing under it
+        parses to None, not {}. ``setdefault`` then hands back that
+        None and the subscript raises TypeError, so any CLI override
+        crashed against a perfectly legal config file.
+        """
+        existing = config.get(name)
+        if not isinstance(existing, dict):
+            existing = {}
+            config[name] = existing
+        return existing
+
     if args.mode:     config["mode"] = args.mode
     if args.game:     config["game"] = args.game
-    if args.dry_run:  config.setdefault("input", {})["dry_run"] = True
-    if args.starter:  config.setdefault("soft_reset", {})["starter"] = args.starter
+    if args.dry_run:  section("input")["dry_run"] = True
+    if args.starter:  section("soft_reset")["starter"] = args.starter
     if args.soft_reset_target:
-        config.setdefault("soft_reset", {})["target"] = args.soft_reset_target
+        section("soft_reset")["target"] = args.soft_reset_target
     if args.movement:
-        config.setdefault("random_encounters", {})["movement"] = args.movement
+        section("random_encounters")["movement"] = args.movement
     if args.flee_delay is not None:
-        config.setdefault("random_encounters", {})["flee_delay"] = args.flee_delay
+        section("random_encounters")["flee_delay"] = args.flee_delay
     if args.fish_cast_settle is not None:
-        config.setdefault(
-            "random_encounters", {})["fish_cast_settle"] = args.fish_cast_settle
+        section("random_encounters")["fish_cast_settle"] = args.fish_cast_settle
     if args.trainer_name:
-        config.setdefault("soft_reset", {})["trainer_name"] = args.trainer_name
+        section("soft_reset")["trainer_name"] = args.trainer_name
     if args.press_speed is not None:
-        sr = config.setdefault("soft_reset", {})
+        sr = section("soft_reset")
         sr["advance_gap"] = args.press_speed
         sr["xy_receive_gap"] = args.press_speed
     if args.target:   config["target"] = _target_preset(args.target)

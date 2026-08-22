@@ -42,6 +42,16 @@ import time
 from typing import Optional
 
 from .citra_rpc import CitraRPC, wait_for_emulator
+from .games import DEFAULT_OT_NAME
+
+#: Ceilings on values the connected client declares. Everything the
+#: NTR protocol carries is a raw u32 off the wire, so without these a
+#: single malformed or desynced packet can pin the process on memory
+#: or wedge it on a read that never completes. PKHeX's largest real
+#: request is one box (~7 KB) and its writes are a few hundred bytes.
+_MAX_READ = 0x10000            # 64 KB — generous vs. a ~7 KB box read
+_MAX_PAYLOAD = 0x10000         # 64 KB — generous vs. a ~232 B write
+_RECV_BODY_TIMEOUT_S = 30.0    # a body must finish arriving within this
 
 log = logging.getLogger(__name__)
 
@@ -97,19 +107,30 @@ def _pack_packet(seq: int, type_: int, cmd: int,
     return bytes(buf) + data
 
 
-def _recv_exact(sock: socket.socket, n: int,
-                stop=None) -> Optional[bytes]:
+def _recv_exact(sock: socket.socket, n: int, stop=None,
+                max_wait: float = _RECV_BODY_TIMEOUT_S) -> Optional[bytes]:
     """Read exactly ``n`` bytes. A recv timeout is NOT a disconnect —
     the client legitimately goes quiet between requests while it waits
     for our replies. Keep waiting through timeouts; only give up on a
-    real EOF / error or when ``stop()`` is True. (socket.timeout is an
-    OSError subclass, so it MUST be caught before the generic OSError —
+    real EOF / error, when ``stop()`` is True, or when ``max_wait``
+    elapses without the body completing. (socket.timeout is an OSError
+    subclass, so it MUST be caught before the generic OSError —
     otherwise the bridge closes the connection after one idle second,
     which is exactly the ~1 s drop that was happening.)
+
+    ``max_wait`` is what keeps a half-sent body from wedging the
+    bridge permanently: the listener handles one client inline, so a
+    peer that announces a body and then goes silent used to block
+    every future LiveHeX connection forever.
     """
     out = bytearray()
+    deadline = time.monotonic() + max_wait
     while len(out) < n:
         if stop is not None and stop():
+            return None
+        if time.monotonic() > deadline:
+            log.warning(f"gave up waiting for {n} bytes "
+                        f"(got {len(out)} in {max_wait:.0f}s)")
             return None
         try:
             chunk = sock.recv(n - len(out))
@@ -163,7 +184,7 @@ _PARTY_SCAN_HI = 0x08E00000
 class NTRBridge:
     def __init__(self, rpc: CitraRPC, title_id: int,
                  host: str = "127.0.0.1", port: int = 8000,
-                 trainer_name: str = "Roman"):
+                 trainer_name: str = DEFAULT_OT_NAME):
         self.rpc = rpc
         self.title_id = title_id
         self.host = host
@@ -193,7 +214,7 @@ class NTRBridge:
         trainer_block = hit - 0x48 and delta = trainer_block -
         PKHeX-Plugins' expected address. Sets self.delta.
         """
-        name = self.trainer_name or "Roman"
+        name = self.trainer_name or DEFAULT_OT_NAME
         pat = name.encode("utf-16-le") + b"\x00\x00"
         log.info(f"Anchoring save block: scanning "
                  f"[{_SAVE_WIN_LO:#x}, {_SAVE_WIN_HI:#x}) for OT "
@@ -551,6 +572,15 @@ class NTRBridge:
                 cmd  = struct.unpack_from("<I", hdr, 0x0C)[0]
                 args = struct.unpack_from("<16I", hdr, 0x10)
                 data_len = struct.unpack_from("<I", hdr, 0x50)[0]
+                # data_len is a raw u32 off the wire. Uncapped, one
+                # desynced byte turns garbage into a multi-gigabyte
+                # body and the read loop grows a bytearray until the
+                # process dies. Real LiveHeX writes are a few hundred
+                # bytes.
+                if data_len > _MAX_PAYLOAD:
+                    log.warning(f"absurd data_len {data_len}; "
+                                f"dropping client")
+                    break
                 payload = b""
                 if data_len:
                     payload = _recv_exact(sock, data_len,
@@ -573,6 +603,15 @@ class NTRBridge:
     def _do_read(self, send, seq: int, args) -> None:
         req_addr = args[1]
         size = args[2]
+        # Unvalidated, `size` drives both a zero-fill allocation
+        # and size/1024 UDP round-trips to the emulator: a single small
+        # packet declaring ~300 MB was measured allocating ~4.9 GB, and
+        # 0xFFFFFFFF means 4.2 million round-trips with no stop check.
+        # PKHeX's largest real read is one box, ~7 KB.
+        if size == 0 or size > _MAX_READ:
+            log.warning(f"rejecting read of {size} bytes @ {req_addr:#x}")
+            send(_pack_packet(seq, 0, 9, data=b""))
+            return
         addr = self._rebase(req_addr)
         rebased = addr != req_addr
         try:

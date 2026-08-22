@@ -182,6 +182,37 @@ def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:
     or when the hwnd is invalid. Not affected by which window the user
     is currently looking at — keys go straight into Azahar's message
     queue.
+
+    The return value matters: ``InputDriver`` drops its cached window
+    handle when this returns False, which is the only way the bot
+    notices Azahar was restarted. This function used to ignore
+    ``PostMessageW``'s result and unconditionally return True, so a
+    destroyed handle looked like a successful keypress and an
+    unattended hunt would keep "pressing" keys into a dead window
+    forever, with no error and no encounters.
+    """
+    if not _window_is_alive(hwnd):
+        return False
+    import ctypes
+    user32 = ctypes.windll.user32
+    WM_KEYDOWN = 0x0100
+    WM_KEYUP   = 0x0101
+    # lParam encoding: bit 0-15 repeat count, 16-23 scan code (0 OK),
+    # 30 prev key state (0=up→down for KEYDOWN, 1 for KEYUP).
+    down = user32.PostMessageW(hwnd, WM_KEYDOWN, vk_code, 0x00000001)
+    import time as _t
+    _t.sleep(hold_s)
+    up = user32.PostMessageW(hwnd, WM_KEYUP, vk_code, 0xC0000001)
+    return bool(down) and bool(up)
+
+
+def _window_is_alive(hwnd: int) -> bool:
+    """True only on Windows, for a handle that still names a window.
+
+    ``IsWindow`` guards against a handle that was destroyed *and* one
+    that has since been recycled onto an unrelated window — posting
+    keystrokes into some other app's message queue is worse than
+    failing.
     """
     if not hwnd or not sys.platform.startswith("win"):
         return False
@@ -189,42 +220,27 @@ def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:
         import ctypes
     except Exception:
         return False
-    user32 = ctypes.windll.user32
-    WM_KEYDOWN = 0x0100
-    WM_KEYUP   = 0x0101
-    # lParam encoding: bit 0-15 repeat count, 16-23 scan code (0 OK),
-    # 30 prev key state (0=up→down for KEYDOWN, 1 for KEYUP).
-    user32.PostMessageW(hwnd, WM_KEYDOWN, vk_code, 0x00000001)
-    import time as _t
-    _t.sleep(hold_s)
-    user32.PostMessageW(hwnd, WM_KEYUP,   vk_code, 0xC0000001)
-    return True
+    return bool(ctypes.windll.user32.IsWindow(hwnd))
 
 
 def post_key_down(hwnd: int, vk_code: int) -> bool:
     """PostMessage a WM_KEYDOWN only (no release) — for holding a key
     while other keys are pressed (e.g. B held to run)."""
-    if not hwnd or not sys.platform.startswith("win"):
+    if not _window_is_alive(hwnd):
         return False
-    try:
-        import ctypes
-    except Exception:
-        return False
-    ctypes.windll.user32.PostMessageW(hwnd, 0x0100, vk_code, 0x00000001)
-    return True
+    import ctypes
+    return bool(ctypes.windll.user32.PostMessageW(
+        hwnd, 0x0100, vk_code, 0x00000001))
 
 
 def post_key_up(hwnd: int, vk_code: int) -> bool:
     """PostMessage a WM_KEYUP only — release a key held by
     ``post_key_down``."""
-    if not hwnd or not sys.platform.startswith("win"):
+    if not _window_is_alive(hwnd):
         return False
-    try:
-        import ctypes
-    except Exception:
-        return False
-    ctypes.windll.user32.PostMessageW(hwnd, 0x0101, vk_code, 0xC0000001)
-    return True
+    import ctypes
+    return bool(ctypes.windll.user32.PostMessageW(
+        hwnd, 0x0101, vk_code, 0xC0000001))
 
 
 _SPECIAL_VK = {

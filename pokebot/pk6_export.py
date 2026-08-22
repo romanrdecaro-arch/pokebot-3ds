@@ -80,6 +80,24 @@ def save_target_pk6(ctx, addr: int, pkm, label: str) -> Path | None:
                     f"not saving.")
         return None
 
+    # The record is re-read from RAM here, but the filename is built
+    # from the ALREADY-PARSED pkm. For a wild encounter, `addr` points
+    # into a foe buffer the game reuses — if it turned over between
+    # detection and this read, the checksum still passes (it is a
+    # perfectly valid Pokemon, just a different one) and we would write
+    # someone else's record under a "shiny" filename. Refuse instead:
+    # a missing file is recoverable, a mislabelled one is a lie.
+    found_species = int.from_bytes(plain[0x08:0x0A], "little")
+    found_pid = int.from_bytes(plain[0x18:0x1C], "little")
+    if found_species != pkm.species or found_pid != pkm.pid:
+        log.warning(
+            f"  .pk6 save: the record at {addr:#010x} changed under us "
+            f"(expected species {pkm.species} PID {pkm.pid:08X}, found "
+            f"species {found_species} PID {found_pid:08X}); NOT saving. "
+            f"The buffer was reused before the save completed."
+        )
+        return None
+
     ensure_targets_dir()
     nick = _safe(pkm.nickname, f"sp{pkm.species}")
     fname = (f"{label}_{pkm.species:03d}_{nick}"

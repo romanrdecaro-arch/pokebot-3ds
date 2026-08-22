@@ -24,19 +24,26 @@ phase) but the loop is patient — misses just recast.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from .encounter import run as _encounter_run
 
 log = logging.getLogger(__name__)
 
+#: Fishing-specific defaults. flee_delay matches horde's — the
+#: fishing intro has its own cutscene (rod reel + fish leap + "Oh! A
+#: bite!" text) needing the same headroom before the RUN touch lands.
+_DEFAULTS = {
+    "idle_action": "fish",
+    "flee_delay": 9.0,
+}
+
 
 def run(ctx):
-    rcfg = ctx.config.setdefault("random_encounters", {})
-    rcfg.setdefault("idle_action", "fish")
-    # Match the horde default — the fishing battle intro has its own
-    # cutscene (rod reel + fish leap + "Oh! A bite!" text) that needs
-    # the same 9s of headroom before the RUN touch lands.
-    rcfg.setdefault("flee_delay", 9.0)
+    # See horde.run: never setdefault into the shared ctx.config.
+    rcfg = ctx.config.get("random_encounters") or {}
+    merged = {**ctx.config, "random_encounters": {**_DEFAULTS, **rcfg}}
+    ctx = replace(ctx, config=merged)
     log.info("Mode: fishing (Y → A-spam, foe-window detection; "
              "stops on shiny / target)")
     log.info("  Setup: rod registered to Y, standing facing water.")

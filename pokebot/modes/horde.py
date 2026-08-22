@@ -34,21 +34,32 @@ action differs (Sweet Scent instead of walking).
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from .encounter import run as _encounter_run
 
 log = logging.getLogger(__name__)
 
+#: Horde-specific defaults. The intro is longer than a single
+#: encounter, so flee_delay gets headroom for the command menu to
+#: draw before RUN, and the idle action becomes Sweet Scent.
+_DEFAULTS = {
+    "flee_delay": 9.0,
+    "idle_action": "sweet_scent",
+    "sweet_scent_gap": 1.5,
+    "sweet_scent_settle": 4.0,
+}
+
 
 def run(ctx):
-    rcfg = ctx.config.setdefault("random_encounters", {})
-    # Horde intro is longer than a single encounter — bump default
-    # flee_delay so the command menu is actually drawn before RUN.
-    rcfg.setdefault("flee_delay", 9.0)
-    # Switch the encounter loop's idle action to Sweet Scent.
-    rcfg.setdefault("idle_action", "sweet_scent")
-    rcfg.setdefault("sweet_scent_gap", 1.5)
-    rcfg.setdefault("sweet_scent_settle", 4.0)
+    # Build a new config rather than setdefault-ing into ctx.config.
+    # That dict is the process-wide config object, and horde and
+    # fishing write DIFFERENT defaults to the SAME keys — whichever
+    # mode ran first would silently win for the other.
+    # {**defaults, **existing} preserves setdefault's "existing wins".
+    rcfg = ctx.config.get("random_encounters") or {}
+    merged = {**ctx.config, "random_encounters": {**_DEFAULTS, **rcfg}}
+    ctx = replace(ctx, config=merged)
     log.info("Mode: horde encounters (Sweet Scent → guaranteed 5-mon "
              "horde; stops on ANY shiny / target in the horde)")
     log.info("  Slot 1 MUST hold a Sweet Scent user; Smoke Ball "

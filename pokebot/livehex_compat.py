@@ -226,7 +226,6 @@ def verify_compatibility(rpc, game_key: str) -> VerificationResult:
     block + single box1 slot1 + optional party probe). Cheap and safe.
     """
     from .find_offsets import is_likely_pk7
-    from .parser import calc_checksum, decrypt_pkm
 
     lv = livehex_version_for(game_key)
     notes: list = []
@@ -255,12 +254,17 @@ def verify_compatibility(rpc, game_key: str) -> VerificationResult:
         except Exception as e:
             notes.append(f"Trainer block read failed: {e}")
 
-    # Box 1 Slot 1 (260 bytes covers slot size + party-stat padding)
+    # Box 1 Slot 1. Read exactly one slot — reading 260 bytes at a
+    # 232-byte 3DS box slot pulls in 28 bytes of the NEXT slot, which
+    # decrypt as noise under this slot's key. is_likely_pk7 then takes
+    # its party-format branch (len >= 260) and rejects the record when
+    # those junk bytes fail the level sanity check, so a correctly
+    # configured setup reported "didn't parse" most of the time.
     b1_addr = get_b1s1_offset(lv)
     result.box1_slot1_addr = b1_addr
     if b1_addr:
         try:
-            raw = rpc.read(b1_addr, 260)
+            raw = rpc.read(b1_addr, get_slot_size(lv))
             ok, _ = is_likely_pk7(raw)
             if ok:
                 result.box1_slot1_ok = True

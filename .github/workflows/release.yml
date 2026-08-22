@@ -23,11 +23,16 @@ on:
 permissions:
   contents: write
 
+# Actions are pinned to full commit SHAs, not floating v4/v2 tags.
+# A major tag is a movable ref: whoever controls the upstream repo can
+# repoint it at any commit, and this workflow hands the action a
+# contents:write token plus control of the artifact every user
+# downloads. The trailing comment records which release each SHA is.
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0
 
@@ -53,6 +58,7 @@ jobs:
                "config.local.yaml" \
                "*.local.yaml" \
                "dist/*"
+          sha256sum dist/pokebot-3ds.zip | tee dist/SHA256SUMS.txt
           ls -la dist/
 
       # Reusing one rolling release keeps GitHub's original publish
@@ -76,7 +82,7 @@ jobs:
             "https://api.github.com/repos/$repo/git/refs/tags/latest" || true
 
       - name: Update rolling "latest" release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda  # v2.2.1
         with:
           tag_name: latest
           target_commitish: ${{ github.sha }}
@@ -98,7 +104,9 @@ jobs:
             run if they're missing, then opens the GUI. See the
             project README and `docs/TUTORIAL.md` (both included in
             the zip) for the full walkthrough.
-          files: dist/pokebot-3ds.zip
+          files: |
+            dist/pokebot-3ds.zip
+            dist/SHA256SUMS.txt
           make_latest: true
           # Re-use the same tag every push. Without this the action
           # would refuse to overwrite an existing release.

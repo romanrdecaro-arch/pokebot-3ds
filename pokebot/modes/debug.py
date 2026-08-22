@@ -29,7 +29,7 @@ from pathlib import Path
 from .. import find_offsets as fo
 from .. import livehex_compat as lhx
 from ..games import (heap_range_for, EXT_HEAP_RANGE_N3DS,
-                      LINEAR_HEAP_RANGE_3DS, HEAP_RANGE_3DS,
+                      LINEAR_HEAP_RANGE_3DS,
                       party_base_candidates, LIVEHEX_REFERENCES)
 from ..parser import decrypt_pkm, parse_pkm
 

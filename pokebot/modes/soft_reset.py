@@ -17,14 +17,13 @@ starter in the launcher, then per attempt the bot:
      reset (L+R+Start) and repeat.
 
 config.yaml soft_reset.trainer_name MUST match your in-game OT (it's
-how the party is found). Default "Roman".
+how the party is found). Defaults to games.DEFAULT_OT_NAME.
 """
 from __future__ import annotations
 
 import logging
-import time
 
-from ..games import starter_species, starters_for
+from ..games import DEFAULT_OT_NAME, starter_species, starters_for
 from ..pk6_export import ensure_targets_dir, save_target_pk6
 from ..platform_utils import focus_azahar
 from .observe import (get_party, broadcast_party, quick_get_party,
@@ -203,7 +202,7 @@ def _run_snorlax(ctx, cfg):
     foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
     party_base = o.party_base
     party_stride = o.party_stride or 484
-    player_ot = cfg.get("trainer_name", "Roman")
+    player_ot = cfg.get("trainer_name", DEFAULT_OT_NAME)
     post_reset = float(cfg.get("post_reset_wait", 3.5))
     post_reset_taps = int(cfg.get("post_reset_taps", 4))
     post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
@@ -324,7 +323,7 @@ def _run_lapras(ctx, cfg):
     log.info("  Setup: party has open slot · standing in front of "
              "the Route 12 Hiker · game saved here.")
 
-    player_ot = cfg.get("trainer_name", "Roman")
+    player_ot = cfg.get("trainer_name", DEFAULT_OT_NAME)
     post_reset = float(cfg.get("post_reset_wait", 3.5))
     post_reset_taps = int(cfg.get("post_reset_taps", 4))
     post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
@@ -520,7 +519,7 @@ def _run_starters(ctx, cfg):
     except Exception as e:
         log.warning(f"  couldn't focus Azahar: {e}")
 
-    player_ot = cfg.get("trainer_name", "Roman")
+    player_ot = cfg.get("trainer_name", DEFAULT_OT_NAME)
     advance_taps = int(cfg.get("advance_taps", 60))
     advance_gap = float(cfg.get("advance_gap", 1.0))
     post_reset = float(cfg.get("post_reset_wait", 3.5))
@@ -543,7 +542,6 @@ def _run_starters(ctx, cfg):
     all_starters = starters_for(ctx.game.key) or {}
     log.info(f"  {ctx.game.key} starters: " + ", ".join(
         f"{n.title()}=#{i}" for n, i in all_starters.items()) or "(none)")
-    valid_starter_ids = set(all_starters.values())
 
     starter_id = None
     if starter_name:

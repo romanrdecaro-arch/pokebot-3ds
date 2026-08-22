@@ -23,7 +23,7 @@ This module wraps the protocol with:
 from __future__ import annotations
 
 import enum
-import random
+import secrets
 import socket
 import struct
 import time
@@ -33,6 +33,11 @@ from typing import Optional
 CITRA_PORT = 45987
 REQUEST_VERSION = 1
 MAX_DATA_SIZE = 1024
+#: One ProcessList record: u32 pid + u64 title id + 8-byte name.
+_PROCESS_REC_SIZE = 0x14
+#: Sanity ceilings for ProcessList, which is driven by reply contents.
+_MAX_PROCESSES = 512
+_MAX_PROCESS_ROUNDS = 64
 MAX_PACKET = MAX_DATA_SIZE + 0x10
 HEADER_FMT = "<IIII"  # little-endian explicitly; Azahar uses host-endian
                       # but x86/ARM Azahar targets are all LE in practice
@@ -85,6 +90,15 @@ class CitraRPC:
         self.retries = retries
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(timeout)
+        # An unbound, unconnected UDP socket auto-binds to the wildcard
+        # address and recv() accepts a datagram from ANY source, so a
+        # forged reply could feed fabricated memory contents into the
+        # parser. Binding to loopback (when the emulator is local) makes
+        # the socket unreachable off-host, and connect() tells the
+        # kernel to drop datagrams from any peer but the emulator.
+        if host in ("127.0.0.1", "localhost", "::1"):
+            self.sock.bind(("127.0.0.1", 0))
+        self.sock.connect((host, port))
         self._attached_pid: Optional[int] = None
         self._attached_title: Optional[int] = None
 
@@ -110,11 +124,11 @@ class CitraRPC:
         """
         last_err = None
         for _ in range(self.retries):
-            req_id = random.getrandbits(32)
+            req_id = secrets.randbits(32)
             header = struct.pack(HEADER_FMT, REQUEST_VERSION, req_id,
                                  int(req_type), len(payload))
             try:
-                self.sock.sendto(header + payload, (self.host, self.port))
+                self.sock.send(header + payload)
             except OSError as e:
                 last_err = e
                 continue
@@ -163,27 +177,45 @@ class CitraRPC:
         """Returns {pid: (title_id, name)}."""
         result: dict[int, tuple[int, str]] = {}
         start = 0
-        while True:
+        # Bounded on every axis. The loop used to exit only on
+        # count == 0, so a responder that keeps returning records (or
+        # ignores start_index) spun it forever while `result` grew
+        # without limit. `count` was also trusted over the actual reply
+        # length, and a truncated datagram then raised struct.error out
+        # of a function whose callers only catch RPCError.
+        for _round in range(_MAX_PROCESS_ROUNDS):
             payload = struct.pack("<II", start, 0x7FFFFFFF)
             body = self._send_request(RequestType.ProcessList, payload)
+            if len(body) < 4:
+                raise RPCError(
+                    f"process list reply too short ({len(body)} bytes)")
             count = struct.unpack("<I", body[:4])[0]
             body = body[4:]
             if count == 0:
-                break
+                return result
+            count = min(count, len(body) // _PROCESS_REC_SIZE)
+            if count == 0:
+                raise RPCError("process list declared records but sent none")
             for i in range(count):
-                rec = body[i*0x14:(i+1)*0x14]
+                rec = body[i * _PROCESS_REC_SIZE:(i + 1) * _PROCESS_REC_SIZE]
                 pid, tid, raw_name = struct.unpack("<IQ8s", rec)
                 name = raw_name.rstrip(b"\x00").decode("ascii", "replace")
                 result[pid] = (tid, name)
+            if len(result) > _MAX_PROCESSES:
+                raise RPCError(
+                    f"process list exceeded {_MAX_PROCESSES} entries; "
+                    f"bad responder")
             start += count
-        return result
+        raise RPCError("process list did not terminate")
 
     def get_process(self) -> Optional[int]:
         body = self._send_request(RequestType.SetGetProcess,
                                   struct.pack("<II", 0, 0))
-        if not body:
+        if len(body) < 4:
+            # struct.unpack demands exactly 4 bytes; a short reply used
+            # to raise struct.error past every RPCError handler.
             return None
-        pid = struct.unpack("<I", body)[0]
+        pid = struct.unpack("<I", body[:4])[0]
         return pid if pid != 0 else None
 
     def set_process(self, pid: int) -> None:
@@ -229,6 +261,14 @@ class CitraRPC:
             )
             if not body:
                 raise RPCError(f"read {chunk}@{cur:#x} returned empty")
+            # Every caller assumes len(read(a, n)) == n. Nothing here
+            # used to check it, so a reply longer than the request was
+            # appended wholesale: read(addr, 4) could return 1024 bytes
+            # and read_u32 an 8000-bit integer, which then gets used as
+            # an address. `remaining` could even go negative.
+            if len(body) != chunk:
+                raise RPCError(
+                    f"read {chunk}@{cur:#x} returned {len(body)} bytes")
             out += body
             remaining -= len(body)
             cur += len(body)
@@ -258,7 +298,11 @@ class CitraRPC:
         try:
             self.list_processes()
             return True
-        except RPCError:
+        except Exception:
+            # Deliberately broad: this is a liveness probe and its
+            # contract is "True or False, never raise". A truncated
+            # reply surfaces here as struct.error, which is not an
+            # RPCError, and used to escape as a startup traceback.
             return False
 
 

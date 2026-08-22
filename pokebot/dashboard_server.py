@@ -28,6 +28,22 @@ log = logging.getLogger(__name__)
 _IV_ORDER = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
 
 
+def _strip_controls(text: str) -> str:
+    """Remove C0/C1 control characters before printing to a terminal.
+
+    Nicknames come straight out of game RAM and are UTF-16-decoded
+    without filtering, so a hacked save or ROM can put an ANSI escape
+    in one. Written raw, that lets a Pokemon's name repaint the
+    terminal, erase earlier log lines, or set the window title. The
+    JSON channel is already safe (json.dumps escapes them); this is
+    the human-readable half.
+    """
+    return "".join(
+        ch for ch in text
+        if ch == "\t" or not (ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F)
+    )
+
+
 def _format_encounter(f: dict) -> str:
     sp = f.get("species", "?")
     lvl = f.get("level")
@@ -149,7 +165,7 @@ class DashboardServer:
                 line = f"  [{msg_type}] (format error: {e})"
             if line:
                 try:
-                    sys.stdout.write(line + "\n")
+                    sys.stdout.write(_strip_controls(line) + "\n")
                     sys.stdout.flush()
                 except Exception:
                     pass

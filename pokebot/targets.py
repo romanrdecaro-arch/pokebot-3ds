@@ -117,14 +117,85 @@ class Target:
         return " | ".join(bits)
 
 
+#: Rule fields that accept a list of allowed values. YAML users
+#: naturally write ``species: 25`` rather than ``species: [25]``, and
+#: a bare string like ``nature: Adamant`` must not be treated as an
+#: iterable of characters.
+_LIST_FIELDS = ("species", "nature", "gender", "ability_num", "held_item")
+
+#: Rule fields that map a stat name to a number.
+_IV_DICT_FIELDS = ("iv_min", "iv_max", "iv_exact")
+
+#: The canonical PK6 stat keys, as produced by ``parser.parse_pkm``.
+_STAT_NAMES = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
+
+
+def _as_list(value) -> list:
+    """Wrap a lone scalar so ``set()`` over it means what the user meant."""
+    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+        return [value]
+    return list(value)
+
+
+def _check_iv_dict(field_name: str, value) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"target rule '{field_name}' must be a mapping of stat to "
+            f"number, e.g. {{HP: 31, Atk: 31}} — got {value!r}"
+        )
+    unknown = [k for k in value if k not in _STAT_NAMES]
+    if unknown:
+        raise ValueError(
+            f"target rule '{field_name}' has unknown stat name(s) "
+            f"{unknown}; valid names are: {', '.join(_STAT_NAMES)}"
+        )
+    return dict(value)
+
+
 def target_from_dict(d: dict) -> Target:
-    """Build a Target from a dict (typically loaded from YAML)."""
+    """Build a Target from a dict (typically loaded from YAML).
+
+    Validates strictly, and deliberately so. Every mistake this catches
+    used to fail *silently at hunt time*: a typo'd key like ``shinny``
+    produced a rule with no constraints, which matches every Pokemon
+    and halts the hunt on the first encounter; a scalar ``species: 25``
+    raised deep inside ``Rule.matches`` and swallowed the shiny save;
+    and ``nature: Adamant`` became a set of seven characters that
+    nothing ever matched. Failing loudly at startup is the whole point.
+    """
     if not d:
         return Target(mode="all", rules=[])
+
+    mode = d.get("mode", "all")
+    if mode not in ("all", "any"):
+        raise ValueError(
+            f"target 'mode' must be 'all' or 'any' — got {mode!r}")
+
     rules_in = d.get("rules", [])
+    if isinstance(rules_in, dict):        # tolerate a single rule
+        rules_in = [rules_in]
+
     rules: list[Rule] = []
-    for r in rules_in:
-        # tolerate single dict instead of list
-        rules.append(Rule(**{k: v for k, v in r.items()
-                             if k in Rule.__dataclass_fields__}))
-    return Target(mode=d.get("mode", "all"), rules=rules)
+    for i, r in enumerate(rules_in):
+        if not isinstance(r, dict):
+            raise ValueError(
+                f"target rule #{i + 1} must be a mapping — got {r!r}")
+        unknown = [k for k in r if k not in Rule.__dataclass_fields__]
+        if unknown:
+            raise ValueError(
+                f"target rule #{i + 1} has unknown key(s) {unknown}; "
+                f"valid keys are: "
+                f"{', '.join(sorted(Rule.__dataclass_fields__))}"
+            )
+        kwargs = {}
+        for key, value in r.items():
+            if value is None:
+                continue
+            if key in _LIST_FIELDS:
+                kwargs[key] = _as_list(value)
+            elif key in _IV_DICT_FIELDS:
+                kwargs[key] = _check_iv_dict(key, value)
+            else:
+                kwargs[key] = value
+        rules.append(Rule(**kwargs))
+    return Target(mode=mode, rules=rules)

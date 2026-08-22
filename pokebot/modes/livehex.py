@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+from ..games import DEFAULT_OT_NAME
 from ..ntr_bridge import NTRBridge
 
 log = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ def run(ctx) -> None:
     host = rpc_cfg.get("livehex_host", "127.0.0.1")
     port = int(rpc_cfg.get("livehex_port", 8000))
     tname = (ctx.config.get("soft_reset", {}) or {}).get(
-        "trainer_name", "Roman")
+        "trainer_name", DEFAULT_OT_NAME)
     bridge = NTRBridge(ctx.rpc, tid, host=host, port=port,
                        trainer_name=tname)
 
