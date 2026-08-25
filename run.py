@@ -91,6 +91,14 @@ def main(argv=None):
                     help="Azahar scripting port for this instance "
                          "(each emulator needs its own; overrides "
                          "rpc.port in the config)")
+    ap.add_argument("--mouse-mode", default=None,
+                    choices=["restore", "post", "cursor"],
+                    help="how the RUN touch is delivered. restore "
+                         "(default) clicks for real then puts your "
+                         "pointer back; post sends no mouse events at "
+                         "all but Azahar may ignore it; cursor is the "
+                         "old behaviour that leaves the pointer on the "
+                         "button.")
     args = ap.parse_args(argv)
 
     logging.basicConfig(
@@ -152,6 +160,18 @@ def main(argv=None):
         from pokebot.platform_utils import set_target_window
         set_target_window(pid=args.window_pid,
                           title_match=args.window_title)
+
+    # Click delivery. Default "post" keeps the physical pointer where
+    # the user left it, so a hunt can run for hours without stealing
+    # the mouse and two instances never fight over it.
+    mouse_mode = args.mouse_mode or str(
+        (config.get("input") or {}).get("mouse_mode", "restore")).lower()
+    from pokebot.platform_utils import set_mouse_mode
+    try:
+        set_mouse_mode(mouse_mode)
+    except ValueError as exc:
+        logging.warning(f"{exc}; falling back to 'restore'")
+        set_mouse_mode("restore")
 
     # delayed import so --help works without dependencies
     from pokebot.bot import Bot

@@ -28,6 +28,41 @@ log = logging.getLogger(__name__)
 _TARGET_PID: int | None = None
 _TARGET_TITLE: str | None = None
 
+#: How synthetic clicks are delivered.
+#:
+#: "restore" — real hardware click, then the pointer is put straight
+#:             back where it was. Default. Azahar (Qt) reliably honours
+#:             a real click; posted mouse messages it may ignore
+#:             entirely, so this is the option that both works and
+#:             leaves your mouse where you left it. The pointer does
+#:             jump for the duration of the click (~50 ms).
+#: "post"    — PostMessage WM_LBUTTONDOWN/UP to the window only. The
+#:             pointer genuinely never moves, but the app may ignore
+#:             the messages: verified NOT delivered to a Tk window
+#:             here, and untested against Azahar. Try it, and if
+#:             fleeing stops working, go back to "restore".
+#: "cursor"  — legacy: click and LEAVE the pointer on the button.
+_MOUSE_MODE = "restore"
+
+
+def set_mouse_mode(mode: str) -> None:
+    """Choose how clicks are delivered. See ``_MOUSE_MODE``."""
+    global _MOUSE_MODE
+    if mode not in ("post", "cursor", "restore"):
+        raise ValueError(
+            f"mouse mode must be restore/post/cursor, got {mode!r}")
+    _MOUSE_MODE = mode
+    note = {
+        "restore": "  (pointer is returned to where you left it)",
+        "post": "  (no mouse events at all; may not register in Azahar)",
+        "cursor": "  (legacy: the pointer is left on the RUN button)",
+    }[mode]
+    log.info(f"click delivery: {mode}{note}")
+
+
+def get_mouse_mode() -> str:
+    return _MOUSE_MODE
+
 
 def set_target_window(pid: int | None = None,
                       title_match: str | None = None) -> None:
@@ -143,15 +178,19 @@ def click_window_at(hwnd: int, x_frac: float, y_frac: float,
     """Synthetic left-click at fractional coords (0..1) of the window.
 
     Used both to "wake up" Qt's input routing and to drive 3DS touch
-    input. Tries two paths:
+    input. Delivery depends on the mouse mode (see ``_MOUSE_MODE``):
 
-      1. SendInput hardware mouse click: SetCursorPos to the target
-         then SendInput LBUTTONDOWN/UP. Cursor briefly moves but the
-         click is real-mouse-equivalent so Qt always processes it.
-      2. PostMessage WM_LBUTTONDOWN/UP fallback (no cursor move).
+      * "restore" (default) — SetCursorPos + SendInput, a real
+        hardware-equivalent click Qt always processes, then the
+        pointer is put back where it was.
+      * "post" — PostMessage WM_LBUTTONDOWN/UP only; the pointer never
+        moves, but the app may ignore the messages entirely.
+      * "cursor" — as "restore" but the pointer is left on the button.
 
-    Returns True when at least one path posted, False on non-Windows
-    or when the hwnd is invalid.
+    Returns True when a path reported success, False on non-Windows or
+    when the hwnd is invalid. Note that "reported success" for the
+    posted path means the API accepted the message, NOT that the
+    application acted on it.
     """
     if not hwnd or not sys.platform.startswith("win"):
         return False
@@ -176,29 +215,41 @@ def click_window_at(hwnd: int, x_frac: float, y_frac: float,
     cx = max(1, min(w - 1, int(round(w * float(x_frac)))))
     cy = max(1, min(h - 1, int(round(h * float(y_frac)))))
 
-    # --- Path 1: SendInput hardware mouse click ----------------------------
-    # Convert client (cx, cy) → screen coords for SetCursorPos.
-    pt = wintypes.POINT(cx, cy)
-    if user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+    def _post_click() -> bool:
+        """WM_LBUTTONDOWN/UP straight to the window. No cursor movement."""
+        WM_LBUTTONDOWN = 0x0201
+        WM_LBUTTONUP   = 0x0202
+        WM_MOUSEMOVE   = 0x0200
+        MK_LBUTTON     = 0x0001
+        lparam = (cx & 0xFFFF) | ((cy & 0xFFFF) << 16)
+        import time as _t
+        # A move first: Qt tracks the pointer position from the message
+        # stream, and a press at a position it has never seen can be
+        # dropped as spurious.
+        user32.PostMessageW(hwnd, WM_MOUSEMOVE, 0, lparam)
+        down = user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+        _t.sleep(hold_s)
+        up = user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
+        # PostMessageW returns 0 on failure, so the caller drops its
+        # cached hwnd and re-acquires instead of assuming it landed.
+        return bool(down and up)
+
+    def _cursor_click() -> bool:
+        """SetCursorPos + SendInput — moves the real pointer."""
+        pt = wintypes.POINT(cx, cy)
+        if not user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+            return False
         try:
             _send_mouse_click(pt.x, pt.y, hold_s)
             return True
         except Exception:
-            pass  # fall through to PostMessage
+            return False
 
-    # --- Path 2: PostMessage fallback --------------------------------------
-    WM_LBUTTONDOWN = 0x0201
-    WM_LBUTTONUP   = 0x0202
-    MK_LBUTTON     = 0x0001
-    lparam = (cx & 0xFFFF) | ((cy & 0xFFFF) << 16)
-    down = user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
-    import time as _t
-    _t.sleep(hold_s)
-    up = user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
-    # Report failure (PostMessageW returns 0) so the caller drops its
-    # cached hwnd and re-acquires it next call instead of assuming the
-    # click landed.
-    return bool(down and up)
+    if _MOUSE_MODE == "post":
+        return _post_click()      # never emits a real mouse event
+    # "restore" and "cursor" both send a real click; _send_mouse_click
+    # puts the pointer back unless the mode is "cursor".
+    return _cursor_click() or _post_click()
 
 
 def _send_mouse_click(screen_x: int, screen_y: int, hold_s: float) -> None:
@@ -229,6 +280,14 @@ def _send_mouse_click(screen_x: int, screen_y: int, hold_s: float) -> None:
     MOUSEEVENTF_LEFTUP   = 0x0004
 
     user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+
+    # Remember where the pointer was BEFORE we move it. A hunt fires
+    # this on every flee — for hours — and leaving the cursor parked on
+    # Azahar's RUN button makes the machine unusable alongside the bot
+    # and makes two instances fight over the pointer.
+    origin = wintypes.POINT()
+    have_origin = bool(user32.GetCursorPos(ctypes.byref(origin)))
+
     user32.SetCursorPos(int(screen_x), int(screen_y))
     _t.sleep(0.02)
 
@@ -242,11 +301,17 @@ def _send_mouse_click(screen_x: int, screen_y: int, hold_s: float) -> None:
                                  ctypes.POINTER(INPUT), ctypes.c_int]
     user32.SendInput.restype  = ctypes.c_uint
 
-    arr = (INPUT * 1)(_make_input(MOUSEEVENTF_LEFTDOWN))
-    user32.SendInput(1, arr, ctypes.sizeof(INPUT))
-    _t.sleep(hold_s)
-    arr = (INPUT * 1)(_make_input(MOUSEEVENTF_LEFTUP))
-    user32.SendInput(1, arr, ctypes.sizeof(INPUT))
+    try:
+        arr = (INPUT * 1)(_make_input(MOUSEEVENTF_LEFTDOWN))
+        user32.SendInput(1, arr, ctypes.sizeof(INPUT))
+        _t.sleep(hold_s)
+        arr = (INPUT * 1)(_make_input(MOUSEEVENTF_LEFTUP))
+        user32.SendInput(1, arr, ctypes.sizeof(INPUT))
+    finally:
+        # Restore in a finally: a half-done click must not strand the
+        # pointer somewhere the user didn't put it.
+        if have_origin and _MOUSE_MODE != "cursor":
+            user32.SetCursorPos(origin.x, origin.y)
 
 
 def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:
@@ -476,6 +541,10 @@ def _focus_windows(title_substrings) -> bool:
     # gate keyboard input routing on having received an actual click;
     # without this, the user has to click into Azahar manually before
     # the bot's keypresses register.
+    #
+    # This honours the mouse mode, so on the default "post" it is a
+    # posted click and the physical pointer stays where you left it.
+    # It fires on every soft-reset attempt, which is why it mattered.
     click_window(target[0])
 
     if not ok:

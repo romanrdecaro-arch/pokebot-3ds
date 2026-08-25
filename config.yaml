@@ -17,6 +17,14 @@ rpc:
 # Azahar must remain focused for keystrokes to register.
 input:
   dry_run: false
+  # How the RUN touch (and the focus click) is delivered:
+  #   restore - real click, then your pointer is put straight back.
+  #             Default. The pointer jumps for ~50 ms per flee.
+  #   post    - no mouse events at all. Azahar may ignore posted
+  #             clicks entirely, so only use this if fleeing still
+  #             works for you.
+  #   cursor  - legacy: leaves the pointer on the RUN button.
+  mouse_mode: restore
   binds:
     A:        a
     B:        s

@@ -140,6 +140,82 @@ def test_no_windows_returns_zero(monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------
+# Click delivery — the bot must not run off with the user's pointer
+# --------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_mouse_mode():
+    yield
+    pu.set_mouse_mode("restore")
+
+
+def test_default_mode_restores_the_pointer() -> None:
+    assert pu.get_mouse_mode() == "restore"
+
+
+def test_mode_round_trips() -> None:
+    for mode in ("post", "cursor", "restore"):
+        pu.set_mouse_mode(mode)
+        assert pu.get_mouse_mode() == mode
+
+
+def test_bad_mode_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        pu.set_mouse_mode("clicky")
+
+
+def test_click_is_a_noop_without_a_window() -> None:
+    assert pu.click_window_at(0, 0.5, 0.5) is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows click paths")
+def test_restore_mode_puts_the_pointer_back(tk_root) -> None:
+    """The hunt clicks RUN on every flee, for hours.
+
+    Leaving the pointer parked on Azahar's RUN button makes the machine
+    unusable alongside the bot, and makes two instances fight over it.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+
+    def cursor():
+        pt = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        return (pt.x, pt.y)
+
+    top = tk_root.winfo_toplevel()
+    top.geometry("420x320+280+280")
+    top.update()
+    hwnd = user32.GetParent(top.winfo_id()) or top.winfo_id()
+
+    pu.set_mouse_mode("restore")
+    user32.SetCursorPos(200, 200)
+    before = cursor()
+    pu.click_window_at(hwnd, 0.5, 0.5, hold_s=0.02)
+    assert cursor() == before, "restore mode moved the user's pointer"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows click paths")
+def test_post_mode_emits_no_pointer_movement(tk_root) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    top = tk_root.winfo_toplevel()
+    top.update()
+    hwnd = user32.GetParent(top.winfo_id()) or top.winfo_id()
+
+    pu.set_mouse_mode("post")
+    user32.SetCursorPos(200, 200)
+    pu.click_window_at(hwnd, 0.5, 0.5, hold_s=0.02)
+    pt = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    assert (pt.x, pt.y) == (200, 200)
+
+
+# --------------------------------------------------------------------
 # Per-instance stats scoping
 # --------------------------------------------------------------------
 
