@@ -78,6 +78,19 @@ def main(argv=None):
                              "shiny+perfect4"],
                     help="override target filter (else use config.yaml)")
     ap.add_argument("--verbose", "-v", action="store_true")
+    # --- multi-instance: which emulator does THIS bot drive? ---------
+    ap.add_argument("--window-pid", type=int, default=None,
+                    help="process id of the Azahar window to drive. "
+                         "Required when more than one emulator is open, "
+                         "otherwise the bot targets whichever it finds "
+                         "first and two bots fight over one game.")
+    ap.add_argument("--window-title", default=None,
+                    help="window-title fragment used to re-acquire the "
+                         "emulator if it restarts and its pid changes")
+    ap.add_argument("--rpc-port", type=int, default=None,
+                    help="Azahar scripting port for this instance "
+                         "(each emulator needs its own; overrides "
+                         "rpc.port in the config)")
     args = ap.parse_args(argv)
 
     logging.basicConfig(
@@ -128,6 +141,17 @@ def main(argv=None):
     if args.target:   config["target"] = _target_preset(args.target)
     if args.verify_address:
         config["verify_address"] = int(args.verify_address, 0)
+    if args.rpc_port is not None:
+        section("rpc")["port"] = args.rpc_port
+
+    # Pin this process to one emulator window BEFORE the bot starts, so
+    # every keypress, touch and focus call in every mode targets the
+    # same instance. Set once here rather than threaded through each
+    # call site: one bot process drives exactly one window.
+    if args.window_pid or args.window_title:
+        from pokebot.platform_utils import set_target_window
+        set_target_window(pid=args.window_pid,
+                          title_match=args.window_title)
 
     # delayed import so --help works without dependencies
     from pokebot.bot import Bot

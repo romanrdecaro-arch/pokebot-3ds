@@ -28,6 +28,31 @@ ROOT = Path(__file__).parent
 #           shiny-hunting parlance); resets to 0 on a target hit.
 _STATS_FILE = ROOT / ".pokebot_stats.json"
 
+#: Label for "don't pin a window", and the scope of the stats file.
+#: Two launchers driving two emulators are two separate processes
+#: writing this file, so an unscoped path means each one's totals
+#: clobber the other's. Scoping by the chosen window keeps them apart
+#: while leaving the single-instance path on the original file.
+_AUTO_WINDOW = "Auto — first Azahar found"
+_stats_scope: str = ""
+
+
+def _slug(text: str) -> str:
+    keep = [c if (c.isalnum() or c in "-_") else "_" for c in (text or "")]
+    return "".join(keep).strip("_")[:48]
+
+
+def set_stats_scope(name: str) -> None:
+    """Point the stats file at a per-instance path (or back to shared)."""
+    global _stats_scope
+    _stats_scope = _slug(name)
+
+
+def _stats_path() -> Path:
+    if not _stats_scope:
+        return _STATS_FILE
+    return ROOT / f".pokebot_stats_{_stats_scope}.json"
+
 
 _STATS_DEFAULT = {
     "total": 0,
@@ -42,7 +67,7 @@ def _load_stats() -> dict:
     s = dict(_STATS_DEFAULT)
     try:
         import json as _j
-        d = _j.loads(_STATS_FILE.read_text())
+        d = _j.loads(_stats_path().read_text())
         s["total"] = int(d.get("total", 0))
         s["phase"] = int(d.get("phase", 0))
         s["shinies"] = int(d.get("shinies", 0))
@@ -58,7 +83,7 @@ def _load_stats() -> dict:
 def _save_stats(stats: dict) -> None:
     try:
         import json as _j
-        _STATS_FILE.write_text(_j.dumps(stats))
+        _stats_path().write_text(_j.dumps(stats))
     except Exception:
         pass
 
@@ -193,6 +218,7 @@ class _BotProcess:
 # GUI
 # ---------------------------------------------------------------------------
 
+import queue
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
 
@@ -449,17 +475,169 @@ def _animate(widget: tk.Label, frames: list, idx: int) -> None:
         90, _animate, widget, frames, (idx + 1) % len(frames))
 
 
+class _SpritePool:
+    """A tiny fixed pool of DAEMON workers for sprite fetches.
+
+    Sprite fetches used to spawn one OS thread per call — a 30-row
+    table meant 30 threads doing network I/O and then piling their
+    results onto the Tk thread at once.
+
+    This is hand-rolled rather than a ``ThreadPoolExecutor`` for one
+    specific reason: the executor's workers are non-daemon and it
+    registers an atexit hook that joins them, so closing the launcher
+    while a sprite fetch was still waiting on the network hung the
+    process instead of exiting. Daemon threads let the interpreter
+    exit whenever the user closes the window.
+
+    Results come back through a queue that the Tk thread drains on a
+    timer, NOT by having the worker call ``widget.after``. Tk is not
+    thread-safe: touching a widget from a worker raises "main thread is
+    not in main loop" (or silently corrupts the interpreter), and the
+    per-sprite threads this replaces did exactly that.
+    """
+
+    #: How often the Tk thread drains finished fetches, and how many it
+    #: takes per tick — enough to keep up, small enough not to stall a
+    #: frame when 30 rows finish at once.
+    PUMP_MS = 60
+    PUMP_BATCH = 6
+
+    def __init__(self, workers: int = 4):
+        self._jobs: "queue.Queue" = queue.Queue()
+        self._results: "queue.Queue" = queue.Queue()
+        self._started = False
+        self._pumping = False
+        self._workers = workers
+        self._lock = threading.Lock()
+
+    def _ensure_started(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+            for i in range(self._workers):
+                threading.Thread(target=self._run, daemon=True,
+                                 name=f"sprite-{i}").start()
+
+    def _run(self) -> None:
+        while True:
+            fetch, on_done = self._jobs.get()
+            try:
+                value = fetch()
+            except Exception:
+                value = None          # one bad sprite must not kill a worker
+            finally:
+                self._jobs.task_done()
+            self._results.put((on_done, value))
+
+    def submit(self, fetch, on_done) -> None:
+        """``fetch()`` runs on a worker; ``on_done(value)`` on the Tk thread."""
+        self._ensure_started()
+        self._jobs.put((fetch, on_done))
+
+    def ensure_pump(self, widget) -> None:
+        """Start the Tk-side drain loop. Call from the Tk thread only."""
+        if self._pumping:
+            return
+        self._pumping = True
+        self._schedule(widget)
+
+    def _schedule(self, widget) -> None:
+        try:
+            widget.after(self.PUMP_MS, self._pump, widget)
+        except Exception:
+            self._pumping = False     # window went away; allow a restart
+
+    def _pump(self, widget) -> None:
+        for _ in range(self.PUMP_BATCH):
+            try:
+                on_done, value = self._results.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                on_done(value)
+            except Exception:
+                pass
+        self._schedule(widget)
+
+
+_SPRITE_POOL = _SpritePool(workers=4)
+
+
+def _sprite_sources(species_id: int, shiny: bool) -> list:
+    """Resolve every sprite source we can, in priority order.
+
+    Safe to call off the Tk thread: this only does network/disk work
+    and returns paths. Decoding into a PhotoImage must happen on the
+    Tk thread, because Tk image objects belong to an interpreter and
+    are not thread-safe.
+    """
+    sources = []
+    try:
+        from pokebot.sprites import (get_animated_sprite_path,
+                                     get_sprite_path,
+                                     get_menu_sprite_path)
+        for fn, kind in ((get_animated_sprite_path, "gif"),
+                         (get_sprite_path, "static"),
+                         (get_menu_sprite_path, "static")):
+            try:
+                p = fn(species_id, shiny=shiny)
+            except Exception:
+                p = None
+            if p:
+                sources.append((kind, str(p)))
+    except Exception:
+        return []
+    return sources
+
+
+def _submit_sprite_job(widget, species_id: int, shiny: bool,
+                       max_w: int, max_h: int, on_done) -> None:
+    """Fetch a sprite off-thread, then hand ``on_done`` a PhotoImage.
+
+    ``on_done(img_or_None)`` is always invoked on the Tk thread.
+
+    Only the path lookup happens on a worker. Decoding builds a Tk
+    image object, which must happen on the Tk thread — that is why the
+    worker returns paths and the install step runs from the pump.
+    """
+    def _install(sources) -> None:
+        for kind, path in sources or []:
+            try:
+                if kind == "gif":
+                    frames = _prep_gif(path, max_w, max_h, _PANEL2)
+                    img = frames[0] if frames else None
+                    if img is None:
+                        img = tk.PhotoImage(file=path,
+                                            format="gif -index 0")
+                else:
+                    img = _prep_icon(path, max_w, max_h)
+                    if img is None:
+                        img = tk.PhotoImage(file=path)
+                on_done(img)
+                return
+            except Exception:
+                continue
+        on_done(None)
+
+    _SPRITE_POOL.ensure_pump(widget)
+    _SPRITE_POOL.submit(lambda: _sprite_sources(species_id, shiny),
+                        _install)
+
+
 def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
                       cache: dict, empty_text: str = "—") -> None:
-    """Fetch + display a species sprite on ``widget`` (worker thread for
-    the network/IO, Tk calls marshalled back via .after). Animated GIF
-    preferred; static PNG fallback; ``#id`` text if neither resolves.
-    ``cache`` maps a per-(species,shiny) key to a PhotoImage or a
-    frame-list so we never re-decode.
+    """Fetch + display a species sprite on ``widget``.
+
+    The path lookup runs on a pooled worker; everything that touches
+    Tk — including building the PhotoImage — runs on the Tk thread via
+    the pool's pump. Animated GIF preferred; static PNG fallback;
+    ``#id`` text if neither resolves. ``cache`` maps a
+    per-(species,shiny) key to a PhotoImage so we never re-decode.
     """
     if not species_id:
         widget.config(text=empty_text, fg=_MUTED, width=4, height=2,
-                       font=("Segoe UI", 12))
+                      font=("Segoe UI", 12))
         return
     key = species_id * 2 + (1 if shiny else 0)
     cached = cache.get(key)
@@ -480,77 +658,43 @@ def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
         # eventual success sticky).
         try:
             widget.config(text=f"#{species_id}", fg=_MUTED,
-                           font=("Consolas", 8))
+                          font=("Consolas", 8))
         except Exception:
             pass
 
-    def _worker():
-        # Resolve EVERY source we can, in priority order, so one
-        # failing (e.g. Showdown name lookup) just falls through:
-        #   animated GIF → static front PNG → menu icon.
-        sources = []
-        try:
-            from pokebot.sprites import (get_animated_sprite_path,
-                                         get_sprite_path,
-                                         get_menu_sprite_path)
-            for fn, kind in ((get_animated_sprite_path, "gif"),
-                             (get_sprite_path, "static"),
-                             (get_menu_sprite_path, "static")):
-                try:
-                    p = fn(species_id, shiny=shiny)
-                except Exception:
-                    p = None
-                if p:
-                    sources.append((kind, str(p)))
-        except Exception:
-            sources = []
+    def _install(sources) -> None:
         if not sources:
-            widget.after(0, _fail)
-            return
-
-        def _install():
-            try:
-                _bg = widget.cget("bg")
-            except Exception:
-                _bg = "#1c1c1e"
-            for kind, p in sources:
-                try:
-                    if kind == "gif":
-                        # Static mode — animating 6 + N Recently Seen
-                        # sprites at 11 FPS each (widget.after(90,…))
-                        # was the main source of UI frame drops. Keep
-                        # using Showdown's GIF for its higher-quality
-                        # art (vs PokeAPI's static set) but render only
-                        # frame 0 and cache it as a single PhotoImage.
-                        frames = _prep_gif(p, 76, 66, _bg)
-                        if not frames:        # raw Tk frame-0 fallback
-                            try:
-                                img = tk.PhotoImage(
-                                    file=p, format="gif -index 0")
-                                cache[key] = img
-                                _apply_sprite(widget, img)
-                                return
-                            except tk.TclError:
-                                continue
-                        img = frames[0]       # discard frames 1..N
-                        cache[key] = img
-                        _apply_sprite(widget, img)
-                        return
-                    else:
-                        img = _prep_icon(p, 76, 66)
-                        if img is None:
-                            img = tk.PhotoImage(file=p)
-                        cache[key] = img
-                        _apply_sprite(widget, img)
-                        return
-                except Exception:
-                    continue
             _fail()
+            return
+        try:
+            bg = widget.cget("bg")
+        except Exception:
+            bg = "#1c1c1e"
+        for kind, path in sources:
+            try:
+                if kind == "gif":
+                    # Static mode — animating 6 + N Recently Seen
+                    # sprites at 11 FPS each (widget.after(90,…)) was a
+                    # source of UI frame drops. Keep Showdown's GIF for
+                    # its higher-quality art (vs PokeAPI's static set)
+                    # but render only frame 0 and cache it.
+                    frames = _prep_gif(path, 76, 66, bg)
+                    img = frames[0] if frames else tk.PhotoImage(
+                        file=path, format="gif -index 0")
+                else:
+                    img = _prep_icon(path, 76, 66)
+                    if img is None:
+                        img = tk.PhotoImage(file=path)
+                cache[key] = img
+                _apply_sprite(widget, img)
+                return
+            except Exception:
+                continue
+        _fail()
 
-        widget.after(0, _install)
-
-    threading.Thread(target=_worker, daemon=True).start()
-
+    _SPRITE_POOL.ensure_pump(widget)
+    _SPRITE_POOL.submit(lambda: _sprite_sources(species_id, shiny),
+                        _install)
 
 class _PartyStrip(tk.Frame):
     """A horizontal row of six slot tiles showing the player's party.
@@ -672,48 +816,43 @@ class _PartyStrip(tk.Frame):
 
 
 class _RecentlySeen(tk.Frame):
-    """Sprite-rich encounter table that mirrors the pokebot-gen3 dashboard.
+    """Encounter table backed by a single ``ttk.Treeview``.
 
-    Each row is a Frame containing: sprite, gender icon, level, PID,
-    Shiny Value (PSV), ability id, nature, IV breakdown with per-stat
-    colour, and Hidden Power type/power.
+    This used to build ~19 Tk widgets per row (a Frame, a sprite box, a
+    label per column, plus nested frames for the IV and Hidden-Power
+    cells). At the 30-row cap that is ~570 widgets, and Tk lays out and
+    repaints every one of them whenever the window geometry changes —
+    measured at ~420 ms per resize step versus ~150 ms with the table
+    hidden, i.e. the table was roughly two thirds of the UI's cost.
+
+    A Treeview is ONE native widget that draws its own rows, so the
+    widget count no longer grows with the number of encounters. The
+    trade-offs versus the old hand-built rows, both deliberate:
+
+      * per-cell colour is gone — a Treeview colours a whole row, so
+        the shiny tint is a row tag and the per-stat IV colouring
+        became plain text.
+      * the sprite is a small row icon rather than a 76x66 cell.
     """
 
-    MAX_ROWS = 30   # how many recent encounters to keep on screen
+    MAX_ROWS = 30       # how many recent encounters to keep on screen
+    SPRITE_W = 46       # row icon box; keep in step with ROW_HEIGHT
+    SPRITE_H = 36
+    ROW_HEIGHT = 40
 
-    # Column layout: (label, fixed_width_px, anchor). Fixed pixel
-    # widths, NO uniform group (a shared uniform forces every column
-    # to the widest one's size — that overflowed the panel). minsize
-    # + weight 0 keeps each column its own width and identical
-    # between the header and every row, so they line up.
-    _HEADERS = (
-        ("Species",      76, "center"),
-        ("Gender",       52, "center"),
-        ("Level",        56, "center"),
-        ("PID",          82, "center"),
-        ("Shiny Value",  86, "center"),
-        ("Ability",     122, "center"),
-        ("Nature",       76, "center"),
-        ("IVs",         178, "center"),
-        ("Hidden Power", 96, "center"),
+    #: (column id, heading, width px, anchor)
+    _COLUMNS = (
+        ("gender",  "Gender",        62, "center"),
+        ("level",   "Level",         62, "center"),
+        ("pid",     "PID",           92, "center"),
+        ("sv",      "Shiny Value",   98, "center"),
+        ("ability", "Ability",      140, "w"),
+        ("nature",  "Nature",        86, "center"),
+        ("ivs",     "IVs",          186, "center"),
+        ("hp",      "Hidden Power", 118, "center"),
     )
 
-    # Data columns live at grid index 1..N. Columns 0 and N+1 are
-    # flexible spacers (weight 1) so the fixed block is CENTRED in
-    # the panel instead of jammed left with dead space on the right.
-    @classmethod
-    def _config_cols(cls, frame) -> None:
-        n = len(cls._HEADERS)
-        frame.grid_columnconfigure(0, weight=1, minsize=0)
-        for i, (_, w, _) in enumerate(cls._HEADERS):
-            frame.grid_columnconfigure(i + 1, minsize=w, weight=0)
-        frame.grid_columnconfigure(n + 1, weight=1, minsize=0)
-
-    @staticmethod
-    def _col(i: int) -> int:
-        """Grid column for data column ``i`` (0-based) — offset by the
-        left spacer."""
-        return i + 1
+    _IV_ORDER = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
 
     def __init__(self, parent):
         super().__init__(parent, bg=_PANEL)
@@ -735,55 +874,87 @@ class _RecentlySeen(tk.Frame):
             bg=_PANEL, fg=_MUTED, font=("Segoe UI", 9))
         self._counter_lbl.pack(side="right")
 
-        # Header row
-        header = tk.Frame(self, bg=_PANEL)
-        header.pack(fill="x", padx=8)
-        self._config_cols(header)
-        for i, (text, _, anchor) in enumerate(self._HEADERS):
-            tk.Label(header, text=text, bg=_PANEL, fg=_MUTED,
-                     font=("Segoe UI", 9, "bold"),
-                     anchor=anchor).grid(row=0, column=self._col(i),
-                                         pady=(0, 6), sticky="nsew")
-        tk.Frame(self, bg=_BORDER, height=1).pack(fill="x", padx=8)
+        self._install_style()
 
-        # Scrollable rows area
-        scroll_frame = tk.Frame(self, bg=_PANEL)
-        scroll_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
-        self._canvas = tk.Canvas(scroll_frame, bg=_PANEL,
-                                 highlightthickness=0)
-        self._canvas.pack(side="left", fill="both", expand=True)
-        sb = ttk.Scrollbar(scroll_frame, orient="vertical",
-                           command=self._canvas.yview)
+        holder = tk.Frame(self, bg=_PANEL)
+        holder.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+
+        self._tree = ttk.Treeview(
+            holder,
+            columns=[c[0] for c in self._COLUMNS],
+            show="tree headings",
+            selectmode="browse",
+            style="Seen.Treeview",
+        )
+        # "#0" is the built-in tree column; it carries the sprite.
+        self._tree.heading("#0", text="Species", anchor="center")
+        self._tree.column("#0", width=self.SPRITE_W + 24,
+                          minwidth=self.SPRITE_W + 24,
+                          stretch=False, anchor="center")
+        for cid, text, width, anchor in self._COLUMNS:
+            self._tree.heading(cid, text=text, anchor="center")
+            self._tree.column(cid, width=width, minwidth=width,
+                              anchor=anchor, stretch=False)
+
+        sb = ttk.Scrollbar(holder, orient="vertical",
+                           command=self._tree.yview)
+        self._tree.configure(yscrollcommand=sb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self._canvas.configure(yscrollcommand=sb.set)
-        self._rows_frame = tk.Frame(self._canvas, bg=_PANEL)
-        self._rows_frame_id = self._canvas.create_window(
-            (0, 0), window=self._rows_frame, anchor="nw")
-        self._rows_frame.bind(
-            "<Configure>",
-            lambda e: self._canvas.configure(
-                scrollregion=self._canvas.bbox("all")))
-        self._canvas.bind(
-            "<Configure>",
-            lambda e: self._canvas.itemconfigure(
-                self._rows_frame_id, width=e.width))
-        # Mouse wheel scroll
-        self._canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: self._canvas.yview_scroll(int(-1 * (e.delta / 120)),
-                                                "units"))
 
-        self._rows: list[tk.Frame] = []
-        self._sprites: dict[int, tk.PhotoImage] = {}  # keep refs alive
+        # Whole-row tints. A shiny row is the one thing worth spotting
+        # from across the room, so it keeps its warm gold treatment.
+        self._tree.tag_configure("shiny", background="#2a230a",
+                                 foreground="#ffd86b")
+        self._tree.tag_configure("normal", background=_PANEL2,
+                                 foreground=_TEXT)
 
-        # Empty placeholder
-        self._empty = tk.Label(self._rows_frame,
-                               text="No encounters yet — start a hunt.",
-                               bg=_PANEL, fg=_MUTED,
-                               font=("Segoe UI", 10, "italic"))
-        self._empty.pack(pady=24)
+        # Treeview does NOT keep a reference to row images, so every
+        # PhotoImage must stay alive here or it is garbage-collected
+        # and the row silently renders blank.
+        self._sprites: dict = {}
+        #: species key -> rows waiting on that species' fetch
+        self._pending: dict = {}
+        self._iids: list = []
+        self._placeholder = self._tree.insert(
+            "", "end", text="",
+            values=("", "", "", "No encounters yet — start a hunt.",
+                    "", "", "", ""),
+            tags=("normal",))
 
-    # ---- public API --------------------------------------------------------
+    # ---- ttk styling -------------------------------------------------------
+
+    def _install_style(self) -> None:
+        """Dark-theme the Treeview to match the rest of the launcher.
+
+        ttk widgets ignore the tk bg/fg options the rest of this file
+        uses, so the palette has to be reapplied through a named style.
+        """
+        style = ttk.Style()
+        style.configure(
+            "Seen.Treeview",
+            background=_PANEL2,
+            fieldbackground=_PANEL2,
+            foreground=_TEXT,
+            rowheight=self.ROW_HEIGHT,
+            borderwidth=0,
+            font=("Segoe UI", 10),
+        )
+        style.configure(
+            "Seen.Treeview.Heading",
+            background=_PANEL,
+            foreground=_MUTED,
+            font=("Segoe UI", 9, "bold"),
+            borderwidth=0,
+            relief="flat",
+        )
+        style.map("Seen.Treeview.Heading", background=[("active", _PANEL)])
+        # Keep a selected row readable instead of the default blue.
+        style.map("Seen.Treeview",
+                  background=[("selected", "#33343a")],
+                  foreground=[("selected", _TEXT)])
+
+    # ---- counters ----------------------------------------------------------
 
     def _counter_text(self) -> str:
         s = self._stats
@@ -798,8 +969,20 @@ class _RecentlySeen(tk.Frame):
         return (f"Phase {s['phase']}  ·  Total {s['total']}  ·  "
                 f"★ Shinies {s.get('shinies', 0)}  ·  "
                 f"Best SV {bsv if bsv is not None else '—'}  ·  "
-                f"Best IVs {biv if biv is not None else '—'}  ·  "
-                f"{rate}")
+                f"Best IV {biv if biv is not None else '—'}  ·  {rate}")
+
+    def reload_stats(self) -> None:
+        """Re-read the counters after the stats scope changed.
+
+        Selecting a different emulator switches to that instance's own
+        totals; without this the header would keep showing the previous
+        instance's phase and shiny counts.
+        """
+        self._stats = _load_stats()
+        self._sess_start = time.time()
+        self._sess_n = 0
+        self._counter_lbl.config(text=self._counter_text(),
+                                 fg=_MUTED, font=("Segoe UI", 9))
 
     @staticmethod
     def _evt_psv(evt: dict):
@@ -809,18 +992,16 @@ class _RecentlySeen(tk.Frame):
             psv = ((pid >> 16) ^ (pid & 0xFFFF)) if pid else None
         return int(psv) if psv is not None else None
 
-    @staticmethod
-    def _evt_ivsum(evt: dict):
+    @classmethod
+    def _evt_ivsum(cls, evt: dict):
         ivs = evt.get("ivs") or {}
         if not ivs:
             return None
-        return sum(int(ivs.get(s, 0)) for s in
-                   ("HP", "Atk", "Def", "Spe", "SpA", "SpD"))
+        return sum(int(ivs.get(s, 0)) for s in cls._IV_ORDER)
+
+    # ---- public API --------------------------------------------------------
 
     def add_pokemon(self, evt: dict):
-        if self._empty:
-            self._empty.destroy()
-            self._empty = None
         # A shiny/target emits a separate 'target_hit' after its
         # 'encounter' — that encounter already bumped the counters, so
         # target_hit only CLOSES the phase (reset phase + per-phase
@@ -851,141 +1032,111 @@ class _RecentlySeen(tk.Frame):
             text=self._counter_text(),
             fg=_ACCENT, font=("Segoe UI", 9, "bold"))
 
-        # Insert ONLY the new row, at the top, without touching the
-        # existing rows. The old approach pack_forgot + re-packed every
-        # row each encounter — that "reloaded" the whole list and
-        # flickered every animating sprite. `before=` puts the new row
-        # first; existing rows (and their animations) are undisturbed.
-        prev_first = self._rows[0] if self._rows else None
-        row = self._build_row(evt)
-        if prev_first is not None and prev_first.winfo_exists():
-            row.pack(fill="x", padx=0, pady=2, before=prev_first)
-        else:
-            row.pack(fill="x", padx=0, pady=2)
-        self._rows.insert(0, row)
-        # Trim only the overflow tail (destroy at most a few).
-        while len(self._rows) > self.MAX_ROWS:
-            self._rows.pop().destroy()
-        self._canvas.yview_moveto(0.0)
+        if self._placeholder is not None:
+            try:
+                self._tree.delete(self._placeholder)
+            except tk.TclError:
+                pass
+            self._placeholder = None
 
-    # ---- row construction --------------------------------------------------
-
-    def _build_row(self, evt: dict) -> tk.Frame:
+        shiny = bool(evt.get("shiny"))
         species_id = int(evt.get("species") or 0)
+        iid = self._tree.insert(
+            "", 0,
+            values=self._row_values(evt),
+            tags=("shiny" if shiny else "normal",),
+        )
+        self._iids.insert(0, iid)
+        self._load_sprite_async(species_id, shiny, iid)
+
+        # Trim the overflow tail. Deleting the row is enough — the
+        # Treeview owns its own drawing, so there are no child widgets
+        # to destroy, and the sprite cache is keyed by species and
+        # shared across rows rather than owned by one.
+        while len(self._iids) > self.MAX_ROWS:
+            try:
+                self._tree.delete(self._iids.pop())
+            except tk.TclError:
+                pass
+        self._tree.yview_moveto(0.0)
+
+    # ---- row rendering -----------------------------------------------------
+
+    @classmethod
+    def _row_values(cls, evt: dict) -> tuple:
         shiny = bool(evt.get("shiny"))
         gender = evt.get("gender") or "G"
         level = evt.get("level")
         pid = int(evt.get("pid") or 0)
-        psv = evt.get("psv")
-        if psv is None and pid:
-            psv = (pid >> 16) ^ (pid & 0xFFFF)
-        ability_id = evt.get("ability_id")
-        ability_num = evt.get("ability_num")
+        psv = cls._evt_psv(evt)
         nature = evt.get("nature") or ""
         ivs = evt.get("ivs") or {}
         hp_type, hp_power = _hidden_power(ivs)
 
-        bg = _PANEL2 if not shiny else "#2a230a"  # warm tint for shiny rows
-        row = tk.Frame(self._rows_frame, bg=bg, padx=0, pady=4,
-                       highlightthickness=1,
-                       highlightbackground="#ffd86b" if shiny else _BORDER)
-        self._config_cols(row)
-
-        # Sprite (Species) — locked in a fixed box so an odd-sized
-        # menu icon can't widen column 0 and shove the row out of
-        # alignment; the icon is centred inside the box.
-        sp_w = self._HEADERS[0][1]
-        sp_box = tk.Frame(row, bg=bg, width=sp_w, height=58)
-        sp_box.grid(row=0, column=self._col(0), sticky="nsew")
-        sp_box.grid_propagate(False)
-        sp_box.pack_propagate(False)
-        sprite_lbl = tk.Label(sp_box, bg=bg, bd=0,
-                               highlightthickness=0)
-        sprite_lbl.place(relx=0.5, rely=0.5, anchor="center")
-        self._load_sprite_async(species_id, shiny, sprite_lbl)
-
-        # Gender
-        sex_color = {"M": "#5fa9ff", "F": "#ff7eb6", "G": _MUTED}.get(gender, _MUTED)
-        sex_glyph = {"M": "♂", "F": "♀", "G": "—"}.get(gender, "—")
-        tk.Label(row, text=sex_glyph, bg=bg, fg=sex_color,
-                 font=("Segoe UI", 12, "bold")).grid(
-                     row=0, column=self._col(1), sticky="nsew")
-
-        # Level
+        sex_glyph = {"M": "♂", "F": "♀", "G": "—"}.get(
+            gender, "—")
         lvl = f"Lv {level}" if level is not None else "Lv ?"
-        tk.Label(row, text=lvl, bg=bg, fg=_TEXT,
-                 font=("Segoe UI", 10, "bold")).grid(
-                     row=0, column=self._col(2), sticky="nsew")
+        psv_text = f"{psv:05d}" if psv is not None else "—"
+        sv = f"★ {psv_text}" if shiny else f"— {psv_text}"
+        nat_text = nature if isinstance(nature, str) and nature else (
+            _NATURE_NAMES[int(nature)]
+            if isinstance(nature, int) and 0 <= int(nature) < 25 else "?")
+        iv_vals = [int(ivs.get(s, 0)) for s in cls._IV_ORDER]
+        iv_text = f"{'/'.join(str(v) for v in iv_vals)} ({sum(iv_vals)})"
+        hp_text = f"{hp_type.upper()} · {hp_power}"
 
-        # PID
-        tk.Label(row, text=f"{pid:08X}", bg=bg, fg=_TEXT,
-                 font=("Consolas", 10)).grid(
-                     row=0, column=self._col(3), sticky="nsew")
-
-        # Shiny Value (PSV) — gold if shiny, muted otherwise
-        psv_text = f"{int(psv):05d}" if psv is not None else "—"
-        if shiny:
-            sv_lbl = tk.Label(row, text=f"★ {psv_text}", bg=bg,
-                              fg="#ffd86b", font=("Consolas", 10, "bold"))
-        else:
-            sv_lbl = tk.Label(row, text=f"— {psv_text}", bg=bg,
-                              fg=_MUTED, font=("Consolas", 10))
-        sv_lbl.grid(row=0, column=self._col(4), sticky="nsew")
-
-        # Ability
-        ab_text = self._ability_text(ability_id, ability_num)
-        tk.Label(row, text=ab_text, bg=bg, fg=_TEXT,
-                 font=("Segoe UI", 10)).grid(
-                     row=0, column=self._col(5), sticky="nsew")
-
-        # Nature
-        nat_text = nature if isinstance(nature, str) and nature else \
-            (_NATURE_NAMES[int(nature)] if isinstance(nature, int)
-             and 0 <= int(nature) < 25 else "?")
-        tk.Label(row, text=nat_text, bg=bg, fg=_TEXT,
-                 font=("Segoe UI", 10)).grid(
-                     row=0, column=self._col(6), sticky="nsew")
-
-        # IVs — per-stat coloured (red=31, blue=0, white otherwise),
-        # centred in the column.
-        iv_outer = tk.Frame(row, bg=bg)
-        iv_outer.grid(row=0, column=self._col(7), sticky="nsew")
-        iv_frame = tk.Frame(iv_outer, bg=bg)
-        iv_frame.place(relx=0.5, rely=0.5, anchor="center")
-        order = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
-        for i, stat in enumerate(order):
-            v = int(ivs.get(stat, 0))
-            color = _DANGER if v == 31 else (_ACCENT2 if v == 0 else _TEXT)
-            weight = "bold" if v in (0, 31) else "normal"
-            tk.Label(iv_frame, text=str(v), bg=bg, fg=color,
-                     font=("Consolas", 10, weight),
-                     width=2, anchor="center").pack(side="left", padx=1)
-        iv_sum = sum(int(ivs.get(s, 0)) for s in order)
-        tk.Label(iv_frame, text=f"({iv_sum})", bg=bg, fg=_MUTED,
-                 font=("Consolas", 10)).pack(side="left", padx=(6, 0))
-
-        # Hidden Power (type pill + power), centred in the column
-        hp_outer = tk.Frame(row, bg=bg)
-        hp_outer.grid(row=0, column=self._col(8), sticky="nsew")
-        hp_frame = tk.Frame(hp_outer, bg=bg)
-        hp_frame.place(relx=0.5, rely=0.5, anchor="center")
-        hp_color = _TYPE_COLORS.get(hp_type, "#888")
-        pill = tk.Label(hp_frame, text=hp_type.upper(),
-                        bg=hp_color, fg="#000",
-                        font=("Segoe UI", 8, "bold"),
-                        padx=6, pady=1)
-        pill.pack(side="top", anchor="w")
-        tk.Label(hp_frame, text=f"{hp_power} Power", bg=bg, fg=_MUTED,
-                 font=("Segoe UI", 9)).pack(side="top", anchor="w")
-
-        return row
+        return (sex_glyph, lvl, f"{pid:08X}", sv,
+                cls._ability_text(evt.get("ability_id"),
+                                  evt.get("ability_num")),
+                nat_text, iv_text, hp_text)
 
     # ---- async sprite loading ----------------------------------------------
 
     def _load_sprite_async(self, species_id: int, shiny: bool,
-                           target: tk.Label):
-        _load_sprite_into(target, species_id, shiny,
-                          self._sprites, empty_text="?")
+                           iid: str) -> None:
+        """Put this species' icon on row ``iid``, fetching if needed.
+
+        Requests are de-duplicated per species while one is in flight.
+        That is not just an efficiency nicety: a Tk image lives only as
+        long as a Python reference to it, and ``_sprites`` holds one
+        entry per species. Letting several rows of the same species
+        each build their own PhotoImage meant every one but the last
+        was garbage-collected, and those rows silently went blank.
+        """
+        if not species_id:
+            return
+        key = species_id * 2 + (1 if shiny else 0)
+        cached = self._sprites.get(key)
+        if cached is not None:
+            if cached is not False:
+                self._set_row_image(iid, cached)
+            return
+
+        waiting = self._pending.get(key)
+        if waiting is not None:          # already being fetched
+            waiting.append(iid)
+            return
+        self._pending[key] = [iid]
+
+        def _done(img) -> None:
+            # Back on the Tk thread. Rows may have been trimmed off the
+            # bottom by now, which _set_row_image tolerates.
+            rows = self._pending.pop(key, [])
+            if img is None:
+                return
+            self._sprites[key] = img
+            for row in rows:
+                self._set_row_image(row, img)
+
+        _submit_sprite_job(self._tree, species_id, shiny,
+                           self.SPRITE_W, self.SPRITE_H, _done)
+
+    def _set_row_image(self, iid: str, img) -> None:
+        try:
+            if self._tree.exists(iid):
+                self._tree.item(iid, image=img)
+        except tk.TclError:
+            pass
 
     # ---- small helpers -----------------------------------------------------
 
@@ -1208,6 +1359,39 @@ class _App(tk.Tk):
             wraplength=235, justify="left")
         self._game_detect_lbl.pack(fill="x")
         self._game_var.trace_add("write", self._on_game_change)
+
+        # ── Which emulator does THIS launcher drive? ────────────────
+        # With one Azahar open this stays on "Auto" and behaves exactly
+        # as before. With several open, every instance MUST be pinned:
+        # otherwise each bot targets whichever window it enumerated
+        # first, and two of them end up driving the same game while the
+        # other runs unattended.
+        tk.Frame(status_card, bg=_BORDER, height=1).pack(
+            fill="x", pady=(8, 6))
+        hdr = tk.Frame(status_card, bg=_PANEL2)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="EMULATOR WINDOW", bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 8, "bold"), anchor="w").pack(side="left")
+        tk.Button(hdr, text="⟳", command=self._refresh_windows,
+                  bg=_PANEL2, fg=_MUTED, bd=0, relief="flat",
+                  activebackground=_PANEL2, activeforeground=_TEXT,
+                  font=("Segoe UI", 9), cursor="hand2",
+                  padx=4, pady=0).pack(side="right")
+        self._window_var = tk.StringVar(value=_AUTO_WINDOW)
+        self._window_menu = ttk.Combobox(
+            status_card, textvariable=self._window_var,
+            state="readonly", values=[_AUTO_WINDOW],
+            font=("Segoe UI", 9))
+        self._window_menu.pack(fill="x", pady=(3, 0))
+        self._window_choices: dict = {}
+        self._window_hint = tk.Label(
+            status_card, text="", bg=_PANEL2, fg=_MUTED,
+            font=("Segoe UI", 8), anchor="w",
+            wraplength=235, justify="left")
+        self._window_hint.pack(fill="x", pady=(2, 0))
+        self._window_menu.bind("<<ComboboxSelected>>",
+                               self._on_window_change)
+        self._refresh_windows()
 
         # ── Card: Hunt setup (Method / Starter / Target) ────────────────────
         hunt_card = self._card(p, "Hunt")
@@ -1686,6 +1870,64 @@ class _App(tk.Tk):
                 return
             time.sleep(2.0)
 
+    def _refresh_windows(self):
+        """Re-enumerate the open emulator windows into the dropdown."""
+        try:
+            from pokebot.platform_utils import list_azahar_windows
+            wins = list_azahar_windows()
+        except Exception as exc:
+            self._window_hint.config(
+                text=f"Could not list windows: {exc}", fg=_WARN)
+            return
+
+        previous = self._window_var.get()
+        labels = [_AUTO_WINDOW]
+        self._window_choices = {}
+        for w in wins:
+            label = f"{w['title']}  (pid {w['pid']})"
+            labels.append(label)
+            self._window_choices[label] = w
+        self._window_menu.config(values=labels)
+        # Keep the current pick if that window is still open; a
+        # selection silently reverting to Auto is how a restarted
+        # emulator would quietly re-point this launcher at the wrong
+        # instance.
+        self._window_var.set(previous if previous in labels
+                             else _AUTO_WINDOW)
+        self._apply_window_scope()
+
+        n = len(wins)
+        if n == 0:
+            self._window_hint.config(text="No emulator window detected.",
+                                     fg=_MUTED)
+        elif n == 1:
+            self._window_hint.config(text="1 emulator window detected.",
+                                     fg=_MUTED)
+        elif self._window_var.get() == _AUTO_WINDOW:
+            self._window_hint.config(
+                text=f"{n} windows open — pick one, or two bots will "
+                     f"drive the same game.", fg=_WARN)
+        else:
+            self._window_hint.config(
+                text=f"{n} windows open — this launcher drives the one "
+                     f"selected above.", fg=_MUTED)
+
+    def _apply_window_scope(self) -> None:
+        """Scope persisted stats to the selected window."""
+        sel = self._window_choices.get(self._window_var.get())
+        set_stats_scope(sel["title"] if sel else "")
+
+    def _on_window_change(self, _evt=None) -> None:
+        """User picked a different emulator: re-scope and reload totals."""
+        self._apply_window_scope()
+        seen = getattr(self, "_seen", None)
+        if seen is not None:
+            seen.reload_stats()
+        self._refresh_windows()
+
+    def _selected_window(self):
+        return self._window_choices.get(self._window_var.get())
+
     def _apply_status(self, status: dict):
         state = status.get("state", "no_rpc")
         if state == "no_rpc":
@@ -1833,6 +2075,25 @@ class _App(tk.Tk):
             args += ["--dry-run"]
         if self._verb_var.get():
             args += ["--verbose"]
+        # Pin the bot to this launcher's emulator. Both selectors are
+        # passed: the pid is exact, and the title lets the bot
+        # re-acquire the same window if Azahar restarts mid-hunt.
+        window = self._selected_window()
+        if window:
+            args += ["--window-pid", str(window["pid"]),
+                     "--window-title", window["title"]]
+            self._log(f"Driving window: {window['title']} "
+                      f"(pid {window['pid']})", "muted")
+        elif len(self._window_choices) > 1:
+            if not messagebox.askyesno(
+                    "Several emulators are open",
+                    f"{len(self._window_choices)} Azahar windows are open "
+                    f"but this launcher is set to "
+                    f"“{_AUTO_WINDOW}”.\n\n"
+                    "The bot will drive whichever it finds first, which "
+                    "may be the one another instance is already using.\n\n"
+                    "Start anyway?"):
+                return
         self._log(f"Starting bot — {method.label}", "accent")
         if method.shiny_locked:
             self._log("Note: target is shiny-locked. Bot will run but "

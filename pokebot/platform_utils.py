@@ -15,29 +15,64 @@ import sys
 log = logging.getLogger(__name__)
 
 
-def find_azahar_hwnd(title_substrings=("Azahar", "Citra")) -> int:
-    """Return Azahar's top-level window handle, or 0 if not found.
+# ---------------------------------------------------------------------------
+# Which Azahar window does THIS process drive?
+#
+# One bot process drives exactly one emulator window, so the target is
+# process-wide state rather than an argument threaded through every
+# call site. run.py sets it once from --window-pid / --window-title;
+# every find_azahar_hwnd() and focus_azahar() call then honours it
+# automatically. Left unset, behaviour is unchanged: first match wins.
+# ---------------------------------------------------------------------------
 
-    Used by the input driver to PostMessage key events directly to
-    Azahar without needing it to be the foreground window.
-    Windows-only; returns 0 on other platforms.
+_TARGET_PID: int | None = None
+_TARGET_TITLE: str | None = None
+
+
+def set_target_window(pid: int | None = None,
+                      title_match: str | None = None) -> None:
+    """Pin this process to one emulator window.
+
+    ``pid`` is the preferred selector — it is stable while Azahar runs
+    and unambiguous between two copies of the same build. ``title_match``
+    is the fallback used when the pid is gone (Azahar restarted), so a
+    long hunt can re-acquire its window instead of silently driving the
+    other instance.
+    """
+    global _TARGET_PID, _TARGET_TITLE
+    _TARGET_PID = int(pid) if pid else None
+    _TARGET_TITLE = title_match or None
+    log.info(f"input target window: pid={_TARGET_PID or 'any'} "
+             f"title~{_TARGET_TITLE or 'any'}")
+
+
+def get_target_window() -> tuple[int | None, str | None]:
+    return _TARGET_PID, _TARGET_TITLE
+
+
+def list_azahar_windows(title_substrings=("Azahar", "Citra")) -> list[dict]:
+    """Every visible emulator window: ``{hwnd, pid, title}``.
+
+    The launcher uses this to offer one window per bot instance.
+    Windows-only; an empty list on other platforms.
     """
     if not sys.platform.startswith("win"):
-        return 0
+        return []
     try:
         import ctypes
         from ctypes import wintypes
     except Exception:
-        return 0
+        return []
     user32 = ctypes.windll.user32
     user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-    user32.GetWindowTextLengthW.restype  = ctypes.c_int
-    user32.GetWindowTextW.argtypes  = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    user32.GetWindowTextW.restype   = ctypes.c_int
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR,
+                                      ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
-    user32.IsWindowVisible.restype  = wintypes.BOOL
+    user32.IsWindowVisible.restype = wintypes.BOOL
 
-    found = [0]
+    out: list[dict] = []
 
     def _cb(hwnd, _l):
         if not user32.IsWindowVisible(hwnd):
@@ -48,15 +83,54 @@ def find_azahar_hwnd(title_substrings=("Azahar", "Citra")) -> int:
         buf = ctypes.create_unicode_buffer(n + 1)
         user32.GetWindowTextW(hwnd, buf, n + 1)
         title = buf.value or ""
-        if any(s in title for s in title_substrings) and "pokebot" not in title.lower():
-            found[0] = int(hwnd)
-            return False
+        if (any(s in title for s in title_substrings)
+                and "pokebot" not in title.lower()):
+            pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            out.append({"hwnd": int(hwnd), "pid": int(pid.value),
+                        "title": title})
         return True
 
     EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool,
                                   wintypes.HWND, wintypes.LPARAM)
     user32.EnumWindows(EnumProc(_cb), 0)
-    return found[0]
+    out.sort(key=lambda w: w["pid"])
+    return out
+
+
+def find_azahar_hwnd(title_substrings=("Azahar", "Citra")) -> int:
+    """Return the target Azahar window handle, or 0 if not found.
+
+    Used by the input driver to PostMessage key events directly to
+    Azahar without needing it to be the foreground window.
+    Windows-only; returns 0 on other platforms.
+
+    When ``set_target_window`` has pinned this process to one window,
+    only that window can be returned — with several emulators open,
+    returning "whichever matched first" would have two bots fighting
+    over one game while the other ran unattended.
+    """
+    windows = list_azahar_windows(title_substrings)
+    if not windows:
+        return 0
+    if _TARGET_PID is not None:
+        for w in windows:
+            if w["pid"] == _TARGET_PID:
+                return w["hwnd"]
+        # The pid is gone (Azahar restarted). Fall back to the title,
+        # but never to "any window" — that is how a bot ends up
+        # driving the instance belonging to a different hunt.
+        if _TARGET_TITLE:
+            for w in windows:
+                if _TARGET_TITLE in w["title"]:
+                    return w["hwnd"]
+        return 0
+    if _TARGET_TITLE:
+        for w in windows:
+            if _TARGET_TITLE in w["title"]:
+                return w["hwnd"]
+        return 0
+    return windows[0]["hwnd"]
 
 
 def click_window(hwnd: int) -> bool:
@@ -342,40 +416,29 @@ def _focus_windows(title_substrings) -> bool:
     user32.IsIconic.restype  = wintypes.BOOL
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
-    target = [None]
-    seen_titles = []
-
-    def _enum_callback(hwnd, _lparam):
-        if not user32.IsWindowVisible(hwnd):
-            return True
-        length = user32.GetWindowTextLengthW(hwnd)
-        if length <= 0:
-            return True
-        buf = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buf, length + 1)
-        title = buf.value or ""
-        if any(s in title for s in title_substrings):
-            seen_titles.append(title)
-            # Skip our own launcher / file-explorer windows; we want the
-            # one that has the game running (it'll have the version + ROM).
-            lo = title.lower()
-            if "pokebot" in lo:
-                return True
-            target[0] = hwnd
-            return False
-        return True
-
-    EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool,
-                                  wintypes.HWND, wintypes.LPARAM)
-    user32.EnumWindows(EnumProc(_enum_callback), 0)
+    # Resolve through find_azahar_hwnd so focusing honours the same
+    # per-process window target the keypresses use. Focusing one
+    # instance while typing into another is exactly the bug that made
+    # two concurrent hunts unusable.
+    candidates = list_azahar_windows(title_substrings)
+    target = [find_azahar_hwnd(title_substrings)]
+    seen_titles = [w["title"] for w in candidates]
 
     if not target[0]:
-        log.warning(f"Could not find an Azahar window to focus. "
-                    f"Visible matches considered: {seen_titles!r}")
+        pid, title_match = get_target_window()
+        if pid or title_match:
+            log.warning(
+                f"Target Azahar window (pid={pid or 'any'}, "
+                f"title~{title_match or 'any'}) is not open. "
+                f"Visible matches: {seen_titles!r}")
+        else:
+            log.warning(f"Could not find an Azahar window to focus. "
+                        f"Visible matches considered: {seen_titles!r}")
         return False
 
-    log.info(f"Focusing Azahar window: hwnd={target[0]} "
-             f"title={seen_titles[-1] if seen_titles else '?'!r}")
+    chosen = next((w["title"] for w in candidates
+                   if w["hwnd"] == target[0]), "?")
+    log.info(f"Focusing Azahar window: hwnd={target[0]} title={chosen!r}")
 
     # 1. ALT key press: gives us 'foreground-grant' rights.
     #    keybd_event with KEYEVENTF_KEYUP=2 to release.
