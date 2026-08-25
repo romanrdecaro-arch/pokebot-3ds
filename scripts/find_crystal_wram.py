@@ -25,81 +25,15 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pokebot.citra_rpc import CitraRPC, wait_for_emulator      # noqa: E402
 from pokebot.games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS  # noqa: E402
-from pokebot import gen2                                        # noqa: E402
+from pokebot.crystal import scan_range                          # noqa: E402
 
 log = logging.getLogger("find_crystal_wram")
-
-#: Bytes needed to validate a party block: count + list + 6 records.
-SIGNATURE_LEN = 8 + gen2.PARTY_STRUCT_SIZE * 6
-
-#: Read size per RPC round trip. Chunks overlap by SIGNATURE_LEN so a
-#: block straddling a boundary is not missed.
-CHUNK = 0x8000
-
-
-def scan_range(rpc: CitraRPC, start: int, end: int,
-               stop_after: int = 0) -> list[dict]:
-    """Scan [start, end) for Crystal party blocks."""
-    hits: list[dict] = []
-    cur = start
-    t0 = time.monotonic()
-    last_report = t0
-
-    while cur < end:
-        size = min(CHUNK, end - cur)
-        if size < SIGNATURE_LEN:
-            break
-        try:
-            buf = rpc.read(cur, size)
-        except Exception:
-            # Unmapped page: skip past it rather than aborting the run.
-            cur += CHUNK
-            continue
-
-        limit = len(buf) - SIGNATURE_LEN
-        off = 0
-        while off <= limit:
-            if gen2.looks_like_party(buf, off):
-                addr = cur + off
-                party = gen2.read_party(buf, off)
-                hits.append({
-                    "party_addr": addr,
-                    "wram_base": addr - gen2.PARTY_COUNT_FROM_WRAM,
-                    "party": party,
-                })
-                log.info(f"  hit @ {addr:#010x} "
-                         f"(implied WRAM base {addr - gen2.PARTY_COUNT_FROM_WRAM:#010x})")
-                for p in party:
-                    log.info(f"      #{p.species} Lv{p.level} "
-                             f"DVs={p.dvs}{'  *SHINY*' if p.shiny else ''}")
-                if stop_after and len(hits) >= stop_after:
-                    return hits
-                off += SIGNATURE_LEN
-                continue
-            off += 1
-
-        now = time.monotonic()
-        if now - last_report > 10:
-            done = cur - start
-            total = end - start
-            rate = done / max(1e-6, now - t0) / 1024 / 1024
-            log.info(f"  {done / total:5.1%}  {cur:#010x}  "
-                     f"{rate:.2f} MB/s  hits={len(hits)}")
-            last_report = now
-
-        # Advance by the chunk MINUS the overlap, but always by at
-        # least one byte: at the tail of a range `size` can equal
-        # SIGNATURE_LEN exactly, and a step of 0 spins here forever.
-        cur += max(1, size - SIGNATURE_LEN)
-
-    return hits
 
 
 def main(argv=None) -> int:

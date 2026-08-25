@@ -279,7 +279,7 @@ def _planted_space(party_at: int, span: int = 0x30000) -> tuple:
 
 
 def test_scanner_finds_a_block_mid_chunk() -> None:
-    from find_crystal_wram import scan_range
+    from pokebot.crystal import scan_range
     base = 0x30000000
     at = 0x12000
     rpc = _FakeRPC(base, _planted_space(at))
@@ -290,7 +290,7 @@ def test_scanner_finds_a_block_mid_chunk() -> None:
 
 def test_scanner_finds_a_block_straddling_a_chunk_boundary() -> None:
     """The overlap exists for exactly this case."""
-    from find_crystal_wram import scan_range, CHUNK
+    from pokebot.crystal import scan_range, CHUNK
     base = 0x30000000
     at = CHUNK - 40                     # header in chunk 0, records in 1
     rpc = _FakeRPC(base, _planted_space(at))
@@ -300,7 +300,7 @@ def test_scanner_finds_a_block_straddling_a_chunk_boundary() -> None:
 
 
 def test_scanner_reports_the_implied_wram_base() -> None:
-    from find_crystal_wram import scan_range
+    from pokebot.crystal import scan_range
     base = 0x30000000
     at = 0x8000
     rpc = _FakeRPC(base, _planted_space(at))
@@ -310,7 +310,7 @@ def test_scanner_reports_the_implied_wram_base() -> None:
 
 def test_scanner_survives_unmapped_pages() -> None:
     """An unmapped read must skip, not abort the whole scan."""
-    from find_crystal_wram import scan_range
+    from pokebot.crystal import scan_range
     base = 0x30000000
     rpc = _FakeRPC(base, _planted_space(0x8000))
     hits = scan_range(rpc, base, base + 0x80000)   # runs past the data
@@ -324,7 +324,7 @@ def test_scanner_terminates_at_an_awkward_range_tail() -> None:
     SIGNATURE_LEN at the tail of a range; advancing by
     `size - SIGNATURE_LEN` was then 0 and the loop never progressed.
     """
-    from find_crystal_wram import scan_range, SIGNATURE_LEN
+    from pokebot.crystal import scan_range, SIGNATURE_LEN
     base = 0x30000000
     rpc = _FakeRPC(base, _planted_space(0x100, span=0x2000))
     for extra in (0, 1, 2, SIGNATURE_LEN):
