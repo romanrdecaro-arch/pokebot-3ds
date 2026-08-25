@@ -54,11 +54,20 @@ def _stats_path() -> Path:
     return ROOT / f".pokebot_stats_{_stats_scope}.json"
 
 
+#: Bumped when a stored field changes meaning, so the old value can be
+#: discarded rather than silently compared against a different metric.
+_STATS_VERSION = 2
+
 _STATS_DEFAULT = {
+    "version": _STATS_VERSION,
     "total": 0,
     "phase": 0,
     "shinies": 0,            # lifetime shiny-encounter count
-    "phase_best_sv": None,   # lowest PSV seen this phase (rarer = lower)
+    # Closest this phase has come to a shiny: min(psv ^ tsv), where
+    # anything under 16 IS shiny. Version 1 stored the lowest bare PSV,
+    # which says nothing about closeness — a Pokemon is shiny when its
+    # PSV is near YOUR TSV, not when it is near zero.
+    "phase_best_sv": None,
     "phase_best_iv": None,   # highest IV-sum seen this phase
 }
 
@@ -71,10 +80,18 @@ def _load_stats() -> dict:
         s["total"] = int(d.get("total", 0))
         s["phase"] = int(d.get("phase", 0))
         s["shinies"] = int(d.get("shinies", 0))
-        bsv = d.get("phase_best_sv")
         biv = d.get("phase_best_iv")
-        s["phase_best_sv"] = int(bsv) if bsv is not None else None
         s["phase_best_iv"] = int(biv) if biv is not None else None
+
+        # phase_best_sv changed meaning in v2 (bare PSV -> psv ^ tsv).
+        # The two are not comparable, and an old small PSV would sit
+        # there unbeatable forever, so drop it and start measuring
+        # again from this phase.
+        if int(d.get("version", 1)) >= 2:
+            bsv = d.get("phase_best_sv")
+            s["phase_best_sv"] = int(bsv) if bsv is not None else None
+        else:
+            s["phase_best_sv"] = None
     except Exception:
         return dict(_STATS_DEFAULT)
     return s
@@ -83,7 +100,8 @@ def _load_stats() -> dict:
 def _save_stats(stats: dict) -> None:
     try:
         import json as _j
-        _stats_path().write_text(_j.dumps(stats))
+        _stats_path().write_text(
+            _j.dumps({**stats, "version": _STATS_VERSION}))
     except Exception:
         pass
 
@@ -968,7 +986,7 @@ class _RecentlySeen(tk.Frame):
             rate = "…/hr"
         return (f"Phase {s['phase']}  ·  Total {s['total']}  ·  "
                 f"★ Shinies {s.get('shinies', 0)}  ·  "
-                f"Best SV {bsv if bsv is not None else '—'}  ·  "
+                f"Closest {bsv if bsv is not None else '—'}  ·  "
                 f"Best IV {biv if biv is not None else '—'}  ·  {rate}")
 
     def reload_stats(self) -> None:
@@ -986,11 +1004,27 @@ class _RecentlySeen(tk.Frame):
 
     @staticmethod
     def _evt_psv(evt: dict):
+        """The Pokemon's own shiny value (shown per row)."""
         psv = evt.get("psv")
         if psv is None:
             pid = int(evt.get("pid") or 0)
             psv = ((pid >> 16) ^ (pid & 0xFFFF)) if pid else None
         return int(psv) if psv is not None else None
+
+    @classmethod
+    def _evt_shiny_distance(cls, evt: dict):
+        """How close this encounter came: ``psv ^ tsv``, shiny under 16.
+
+        This — not the bare PSV — is the meaningful "best of the phase"
+        number. A Pokemon is shiny when its PSV lands near YOUR TSV, so
+        a low PSV on its own says nothing; tracking it just reported
+        whichever encounter happened to roll a small value.
+        """
+        psv = cls._evt_psv(evt)
+        tsv = evt.get("tsv")
+        if psv is None or tsv is None:
+            return None
+        return int(psv) ^ int(tsv)
 
     @classmethod
     def _evt_ivsum(cls, evt: dict):
@@ -1017,11 +1051,11 @@ class _RecentlySeen(tk.Frame):
             if evt.get("shiny"):
                 self._stats["shinies"] = (
                     int(self._stats.get("shinies", 0)) + 1)
-            psv = self._evt_psv(evt)
-            if psv is not None:
+            dist = self._evt_shiny_distance(evt)
+            if dist is not None:
                 cur = self._stats["phase_best_sv"]
                 self._stats["phase_best_sv"] = (
-                    psv if cur is None else min(cur, psv))
+                    dist if cur is None else min(cur, dist))
             ivs = self._evt_ivsum(evt)
             if ivs is not None:
                 cur = self._stats["phase_best_iv"]

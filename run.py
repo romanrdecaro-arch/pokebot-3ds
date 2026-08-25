@@ -161,6 +161,22 @@ def main(argv=None):
         set_target_window(pid=args.window_pid,
                           title_match=args.window_title)
 
+    # Durable event log. Scoped per emulator when a window is pinned,
+    # so two instances hunting side by side keep separate histories.
+    from pokebot import event_log
+    log_cfg = (config.get("logging") or {})
+    if log_cfg.get("event_log", True):
+        name = "events"
+        if args.window_pid:
+            name = f"events-pid{args.window_pid}"
+        event_log.configure(
+            log_cfg.get("event_log_path")
+            or (Path(__file__).parent / "logs" / f"{name}.jsonl"))
+        event_log.session_marker(str(config.get("mode", "?")),
+                                 {"window_pid": args.window_pid})
+    else:
+        event_log.configure(enabled=False)
+
     # Click delivery. Default "post" keeps the physical pointer where
     # the user left it, so a hunt can run for hours without stealing
     # the mouse and two instances never fight over it.

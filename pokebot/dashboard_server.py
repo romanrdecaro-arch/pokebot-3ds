@@ -174,6 +174,17 @@ class DashboardServer:
         # rendering. Skip status/ready/party to keep the JSON channel
         # focused on encounter data only.
         body = {"type": msg_type, "ts": time.time(), **fields}
+
+        # Durable copy first, before anything that can fail. The
+        # launcher's table keeps only the last 30 encounters in memory,
+        # so without this there is no way to answer "was a shiny missed
+        # 4,000 encounters ago?" after the fact.
+        try:
+            from .event_log import append as _log_event
+            _log_event(body)
+        except Exception:
+            pass                    # logging must never break a hunt
+
         try:
             payload = json.dumps(body, default=str)
         except Exception as e:

@@ -60,8 +60,11 @@ config.local.yaml
 offsets_*.txt
 ram_dump_*.bin
 
-# Diagnostic event log (created by pokebot.dashboard_server every run)
+# Durable event log written by pokebot.event_log (logs/ is ignored
+# above). last_events.log is a leftover from the removed websocket
+# dashboard — nothing writes it any more.
 last_events.log
+*.jsonl
 
 # Accessor-address cache (per-game, written by observe mode)
 .pokebot_accessors.json

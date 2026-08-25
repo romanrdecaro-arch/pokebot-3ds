@@ -139,3 +139,17 @@ random_encounters:
 # Target / filter is configured in the launcher (Hunt → Target filter).
 # Default is "Shiny only". To override from the CLI: pass --target shiny
 # (or any|perfect5|perfect6|shiny+perfect4) to run.py.
+
+# Durable event log. One JSON object per line, written as the bot runs
+# (CLI runs included), rotated at 5 MB keeping 3 old files.
+#
+# This is what makes "was a shiny missed 4,000 encounters ago?"
+# answerable — the launcher's table only holds the last 30 encounters
+# in memory. Audit it with:
+#
+#     python scripts/audit_log.py
+#
+logging:
+  event_log: true
+  # event_log_path: logs/events.jsonl   # default; pinned windows get
+  #                                     # logs/events-pid<PID>.jsonl

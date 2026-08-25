@@ -238,6 +238,52 @@ def test_stats_scope_separates_instances(launcher_mod) -> None:
         assert not set(p.name) & set('<>:"/\\|?*')
 
 
+def test_closest_metric_is_the_xor_not_the_bare_psv(launcher_mod) -> None:
+    """"Best SV" used to track the lowest PSV, which says nothing.
+
+    Shininess is psv ^ tsv < 16, so closeness is that xor. A tiny PSV
+    against a large TSV is nowhere near shiny, and used to be reported
+    as the phase's best result.
+    """
+    RS = launcher_mod._RecentlySeen
+    far = {"psv": 3, "tsv": 60000}        # tiny PSV, nowhere near shiny
+    near = {"psv": 3657, "tsv": 3648}     # xor 9 — one roll off shiny
+    assert RS._evt_shiny_distance(far) == 3 ^ 60000
+    assert RS._evt_shiny_distance(near) == 9
+    assert RS._evt_shiny_distance(near) < RS._evt_shiny_distance(far)
+
+
+def test_closest_metric_needs_a_tsv(launcher_mod) -> None:
+    assert launcher_mod._RecentlySeen._evt_shiny_distance(
+        {"psv": 100}) is None
+
+
+def test_v1_stats_discard_the_incomparable_best_sv(
+        launcher_mod, tmp_path) -> None:
+    """The stored number changed meaning, so it must not carry over.
+
+    A small v1 PSV would otherwise sit there as an unbeatable "best"
+    forever, since the v2 metric measures something else entirely.
+    """
+    import json
+    (tmp_path / "stats.json").write_text(json.dumps({
+        "total": 7388, "phase": 5868, "shinies": 13,
+        "phase_best_sv": 36, "phase_best_iv": 163}))     # no version = v1
+    s = launcher_mod._load_stats()
+    assert s["total"] == 7388, "unrelated counters must survive"
+    assert s["phase"] == 5868
+    assert s["phase_best_iv"] == 163
+    assert s["phase_best_sv"] is None, "stale v1 metric carried over"
+
+
+def test_v2_stats_are_kept(launcher_mod, tmp_path) -> None:
+    import json
+    (tmp_path / "stats.json").write_text(json.dumps({
+        "version": 2, "total": 10, "phase": 5, "shinies": 1,
+        "phase_best_sv": 42, "phase_best_iv": 100}))
+    assert launcher_mod._load_stats()["phase_best_sv"] == 42
+
+
 def test_slug_is_filesystem_safe(launcher_mod) -> None:
     slug = launcher_mod._slug('Azahar | "X" <v2>/beta')
     assert not set(slug) & set('<>:"/\\|?* ')
