@@ -79,20 +79,33 @@ def scan_range(rpc, start: int, end: int, stop_after: int = 0,
             continue
 
         limit = len(buf) - SIGNATURE_LEN
-        off = 0
-        while off <= limit:
-            if gen2.looks_like_party(buf, off):
-                addr = cur + off
-                hits.append({
-                    "party_addr": addr,
-                    "wram_base": addr - gen2.PARTY_COUNT_FROM_WRAM,
-                    "party": gen2.read_party(buf, off),
-                })
-                if stop_after and len(hits) >= stop_after:
-                    return hits
-                off += SIGNATURE_LEN
+        # Prefilter in C rather than calling looks_like_party on every
+        # byte: the species list always ends with an 0xFF terminator at
+        # off+7, so bytes.find jumps straight between candidates. Over a
+        # multi-hundred-megabyte heap this is the difference between a
+        # scan that finishes and one that does not.
+        pos = 0
+        while True:
+            idx = buf.find(b"\xff", pos)
+            if idx < 0:
+                break
+            off = idx - 7
+            pos = idx + 1
+            if off < 0 or off > limit:
                 continue
-            off += 1
+            if not 1 <= buf[off] <= 6:        # party count, cheap reject
+                continue
+            if not gen2.looks_like_party(buf, off):
+                continue
+            addr = cur + off
+            hits.append({
+                "party_addr": addr,
+                "wram_base": addr - gen2.PARTY_COUNT_FROM_WRAM,
+                "party": gen2.read_party(buf, off),
+            })
+            if stop_after and len(hits) >= stop_after:
+                return hits
+            pos = off + SIGNATURE_LEN
 
         now = time.monotonic()
         if progress_every and now - last_report > progress_every:

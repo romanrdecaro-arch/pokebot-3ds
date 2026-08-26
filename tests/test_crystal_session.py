@@ -164,3 +164,28 @@ def test_watcher_reports_shiny_presence() -> None:
     assert crystal_watch.report([shiny], None) is True
     assert crystal_watch.report([plain], None) is False
     assert crystal_watch.report([], None) is False
+
+
+def test_scan_prefilter_still_finds_blocks_it_must() -> None:
+    """The 0xFF-terminator prefilter is an optimisation, not a filter.
+
+    Scanning every byte position in Python could not finish over a
+    ~900 MB heap, so the scan jumps between 0xFF bytes instead. That
+    must not change WHICH blocks are found.
+    """
+    far = 0x21000
+    space = build_space([make_mon(251, 30, dv_word=0xAAAA)], wram_at=far)
+    rpc = FakeRPC(BASE, space)
+    hits = crystal.scan_range(rpc, BASE, BASE + 0x30000)
+    assert [h["wram_base"] for h in hits] == [BASE + far]
+    assert hits[0]["party"][0].shiny
+
+
+def test_scan_prefilter_handles_a_party_count_of_six() -> None:
+    """Six slots means no 0xFF inside the species list itself."""
+    mons = [make_mon(150 + i, 20 + i) for i in range(6)]
+    space = build_space(mons, wram_at=0x1000)
+    rpc = FakeRPC(BASE, space)
+    hits = crystal.scan_range(rpc, BASE, BASE + 0x30000)
+    assert len(hits) == 1
+    assert [p.species for p in hits[0]["party"]] == [150 + i for i in range(6)]
