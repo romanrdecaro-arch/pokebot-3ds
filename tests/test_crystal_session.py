@@ -103,9 +103,12 @@ def test_located_base_is_cached_and_reused(monkeypatch) -> None:
 
     rpc2 = FakeRPC(BASE, space, live_at=BASE + far)
     assert crystal.locate_wram(rpc2, [(BASE, BASE + 0x30000)]) == BASE + far
-    assert rpc2.reads < scan_reads, "cached run re-scanned the whole heap"
-    assert rpc2.reads <= 4, ("a cached base should cost a verify plus a "
-                             "liveness probe, not a rescan")
+    # A cached lookup still probes the cached base's NEIGHBOURHOOD, so
+    # it can tell the live region from a save buffer sitting beside it —
+    # which an absolute liveness threshold provably cannot. It must
+    # still cost far less than sweeping the heap.
+    assert rpc2.bytes_read < scan_rpc_bytes, (
+        "cached run cost as much as a full sweep")
 
 
 def test_stale_cached_base_is_rescanned_not_trusted() -> None:
