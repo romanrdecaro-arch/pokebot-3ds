@@ -349,15 +349,31 @@ def test_crystal_title_id_is_recognised() -> None:
     assert CRYSTAL_TID in POKEMON_TITLE_IDS, "attach would not recognise it"
 
 
-def test_crystal_offers_no_gen6_hunt_methods() -> None:
-    """Registering the title must not imply the modes work on it.
+def test_crystal_offers_only_its_own_manual_mode() -> None:
+    """Crystal gets a mode it can actually run, and nothing else.
 
-    Every mode reads PK6/PK7 over Azahar RPC at 3DS addresses. A VC
-    title has neither, so offering them would let the launcher start a
-    hunt that cannot possibly work.
+    Every Gen 6/7 mode reads PK6/PK7 over Azahar RPC at 3DS addresses.
+    A VC title has neither, so offering one would let the launcher
+    start a hunt that cannot possibly work.
     """
     from pokebot.games import methods_for
-    assert methods_for("CRYSTAL-USA") == []
+    from pokebot.modes import MODES
+    methods = methods_for("CRYSTAL-USA")
+    assert [m.mode for m in methods] == ["crystal_observe"]
+    assert methods[0].mode in MODES, "offered a mode the bot cannot run"
+
+    gen6_modes = {"observe", "encounter", "horde", "fishing",
+                  "soft_reset", "livehex", "debug"}
+    assert not {m.mode for m in methods} & gen6_modes
+
+
+def test_every_offered_method_is_a_real_mode() -> None:
+    """A dropdown entry with no matching mode fails only at Start."""
+    from pokebot.games import GAMES, methods_for
+    from pokebot.modes import MODES
+    for key in GAMES:
+        for m in methods_for(key):
+            assert m.mode in MODES, f"{key}: '{m.mode}' is not a mode"
 
 
 def test_gen6_games_still_offer_their_methods() -> None:

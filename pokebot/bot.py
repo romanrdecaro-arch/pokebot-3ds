@@ -103,7 +103,19 @@ class Bot:
             log.info(f"Game: {self.game.display}")
 
         # Apply per-run offset overrides from config.yaml [offsets:] section.
+        #
+        # Skipped for Generation 2: the offsets block holds 3DS addresses
+        # for PK6/PK7 structures, and a Virtual Console title has
+        # neither. Applying X/Y's party_base to Crystal only produced a
+        # confusing log line about offsets it will never use — its WRAM
+        # base is discovered at runtime instead.
         offset_cfg = self.config.get("offsets") or {}
+        if offset_cfg and self.game.generation < 6:
+            log.info(f"Ignoring the config 'offsets' block: "
+                     f"{self.game.title} is generation "
+                     f"{self.game.generation} and does not use 3DS "
+                     f"addresses.")
+            offset_cfg = {}
         if offset_cfg:
             applied = []
             for key, val in offset_cfg.items():
@@ -115,7 +127,13 @@ class Bot:
             if applied:
                 log.info(f"Config offset overrides: {', '.join(applied)}")
 
-        if not (self.game.offsets.party_base or self.game.offsets.foe_base):
+        if self.game.generation < 6:
+            # Gen 2 locates its own memory; the Gen 6 offset advice
+            # (and find_offsets, which hunts for PK7 records) does not
+            # apply and would send the user down a dead end.
+            log.info("Generation 2 title: memory is located at runtime, "
+                     "so no offsets need configuring.")
+        elif not (self.game.offsets.party_base or self.game.offsets.foe_base):
             # soft_reset will auto-discover after the first starter pickup,
             # so this isn't fatal — keep it informational, not a warning.
             log.info("No memory offsets configured yet. soft_reset will "

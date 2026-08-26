@@ -106,7 +106,7 @@ def _register(g: Game):
     GAMES[g.key] = g
 
 
-# ---- Gen 6: X / Y ------------------------------------------------------
+# ---- Gen 2: Crystal (3DS Virtual Console) ------------------------------
 _register(Game(
     key="CRYSTAL-USA",
     title="Pokémon Crystal (US, Virtual Console)",
@@ -123,6 +123,8 @@ _register(Game(
            "structures and shininess is DV-based — none of the "
            "PK6/PK7 offsets above apply."),
 ))
+
+# ---- Gen 6: X / Y ------------------------------------------------------
 _register(Game(
     key="X-USA",
     title="Pokémon X (US)",
@@ -287,6 +289,18 @@ def methods_for(game_key: str) -> list[Method]:
     work; Crystal is read with scripts/crystal_watch.py for now.
     """
     game = GAMES.get(game_key)
+    if game is not None and game.generation == 2:
+        # Gen 2 gets its own manual mode. The Gen 6/7 methods below all
+        # read PK6/PK7 records at 3DS addresses; a Virtual Console title
+        # has neither, so offering them would start a hunt that cannot
+        # work. Automated Gen 2 hunting is not built yet.
+        return [
+            Method("Manual control", "crystal_observe",
+                   notes="Bot sends NO inputs — you play normally. It "
+                         "watches Crystal's memory and reports your "
+                         "party, wild battles, and anything shiny "
+                         "(Gen 2 shininess is DV-based, 1 in 8192)."),
+        ]
     if game is not None and game.generation < 6:
         return []
 
