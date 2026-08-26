@@ -27,8 +27,33 @@ def test_mode_and_both_axes_are_registered() -> None:
 
 
 def test_axes_map_to_the_right_buttons() -> None:
-    assert ce._AXES["horizontal"] == ("DpadLeft", "DpadRight")
-    assert ce._AXES["vertical"] == ("DpadUp", "DpadDown")
+    assert ce._AXES["dpad"]["horizontal"] == ("DpadLeft", "DpadRight")
+    assert ce._AXES["dpad"]["vertical"] == ("DpadUp", "DpadDown")
+
+
+def test_vertical_really_is_up_and_down() -> None:
+    """Reported: the vertical method walked side to side."""
+    for pad in ("dpad", "circle"):
+        vert = _AXES_flat(pad, "vertical")
+        assert all(d in ("Up", "Down") for d in vert), vert
+        horiz = _AXES_flat(pad, "horizontal")
+        assert all(d in ("Left", "Right") for d in horiz), horiz
+
+
+def _AXES_flat(pad: str, axis: str):
+    return [b.replace("Dpad", "").replace("Circle", "")
+            for b in ce._AXES[pad][axis]]
+
+
+def test_circle_pad_axis_is_available() -> None:
+    """Azahar binds the Circle Pad to different keys than the D-pad, and
+    a VC title may act on only one of them."""
+    assert ce._AXES["circle"]["vertical"] == ("CircleUp", "CircleDown")
+    from pokebot.input_driver import BUTTON_NAMES
+    for pad in ce._AXES.values():
+        for axis in pad.values():
+            for button in axis:
+                assert button in BUTTON_NAMES, button
 
 
 # --------------------------------------------------------------------

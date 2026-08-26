@@ -42,9 +42,18 @@ from ..games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS
 
 log = logging.getLogger(__name__)
 
-#: Walk axes, as 3DS d-pad buttons (the VC layer maps them to the GB pad).
-_AXES = {"horizontal": ("DpadLeft", "DpadRight"),
-         "vertical": ("DpadUp", "DpadDown")}
+#: Walk axes. Azahar binds the D-pad and the Circle Pad to DIFFERENT
+#: keys (F/H/T/G versus the arrow keys), and a Virtual Console title
+#: may only act on one of them, so which pad to use is configurable:
+#:
+#:     random_encounters:
+#:       movement_pad: dpad     # dpad | circle
+_AXES = {
+    "dpad": {"horizontal": ("DpadLeft", "DpadRight"),
+             "vertical": ("DpadUp", "DpadDown")},
+    "circle": {"horizontal": ("CircleLeft", "CircleRight"),
+               "vertical": ("CircleUp", "CircleDown")},
+}
 
 #: The opponent's region, per Data Crystal's Crystal RAM map. Paranoid
 #: mode treats every 2-byte window in here as a possible DV word.
@@ -95,16 +104,19 @@ def _flee(ctx, settle: float) -> None:
 def run(ctx) -> None:
     cfg = (ctx.config.get("random_encounters") or {})
     movement = str(cfg.get("movement", "horizontal")).lower()
-    if movement not in _AXES:
+    pad = str(cfg.get("movement_pad", "dpad")).lower()
+    if pad not in _AXES:
+        pad = "dpad"
+    if movement not in _AXES[pad]:
         movement = "horizontal"
     walk_hold = float(cfg.get("walk_hold", 0.20))
     flee_settle = float(cfg.get("flee_settle", 1.2))
     check = str(cfg.get("enemy_dv_check", "paranoid")).lower()
-    step_a, step_b = _AXES[movement]
+    step_a, step_b = _AXES[pad][movement]
 
     session = CrystalSession(ctx.rpc, [HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS])
-    log.info(f"Mode: Crystal random encounters ({movement}, "
-             f"{walk_hold:.2f}s steps)")
+    log.info(f"Mode: Crystal random encounters ({movement} on the "
+             f"{pad}, {walk_hold:.2f}s steps: {step_a}/{step_b})")
     base = session.ensure_base()
     if base is None:
         log.error("Could not find Crystal's WRAM — is the game loaded "

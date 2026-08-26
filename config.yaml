@@ -120,6 +120,11 @@ random_encounters:
   #              once every 200 encounters.
   #   strict   - trust the single configured offset. Use this after
   #              scripts/find_enemy_dvs.py confirms it (1 in 8192).
+  # Which pad walks. Azahar binds the D-pad and the Circle Pad to
+  # different keys (F/H/T/G vs the arrow keys) and a Virtual Console
+  # title may act on only one. Run scripts/test_input.py to find out
+  # which one Azahar actually responds to.
+  movement_pad: dpad         # dpad | circle
   enemy_dv_check: paranoid
   flee_settle: 1.2           # pause before the RUN sequence (Gen 2)
   movement: horizontal       # horizontal (Left/Right) | vertical (Up/Down)
