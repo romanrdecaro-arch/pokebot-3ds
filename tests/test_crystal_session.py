@@ -548,3 +548,60 @@ def test_a_confirmed_attach_succeeds() -> None:
 
     pid, tid, name = Attached().attach_to_pokemon_game()
     assert (pid, name) == (7, "Crystal")
+
+
+def test_candidates_are_churned_over_one_shared_window() -> None:
+    """Every candidate must be sampled BEFORE the sleep, not after it.
+
+    Probing serially compares samples taken at different moments:
+    candidate A gets watched over 0.0-0.4s and B over 0.4-0.8s. The game
+    is not equally busy in both, so a quiet first window and a busy
+    second one hands the verdict to whichever copy happened to be
+    measured second, whatever its liveness. That coin flip is what put
+    the base on a stale copy and cost a 15-second Celebi battle.
+
+    Asserted on read ORDER rather than on timing, because the property
+    that matters is structural: serial probing reads A,A,B,B and shared
+    probing reads A,B,A,B.
+    """
+    A, B = 0x08a2ffac, 0x08a3bf1a
+    order = []
+
+    class Recording:
+        def read(self, addr, size):
+            order.append("A" if addr == A else "B")
+            return bytes(size)
+
+    crystal.churn_many(Recording(), [A, B], size=8, gap=0.01)
+    assert order == ["A", "B", "A", "B"], (
+        f"read order {order} — candidates were sampled in separate "
+        f"windows, so their churn is not comparable")
+
+
+def test_shared_window_costs_one_gap_not_one_per_candidate() -> None:
+    """The probe blocks the poll loop, so its cost must not scale."""
+    import time as _t
+
+    class Flat:
+        def read(self, addr, size):
+            return bytes(size)
+
+    bases = [0x1000 * i for i in range(1, 6)]     # five candidates
+    t0 = _t.monotonic()
+    crystal.churn_many(Flat(), bases, size=8, gap=0.3)
+    elapsed = _t.monotonic() - t0
+    assert elapsed < 0.3 * 2, (
+        f"five candidates took {elapsed:.2f}s; serial probing would be 1.5s")
+
+
+def test_churn_many_survives_an_unreadable_candidate() -> None:
+    """A base that has gone away must score last, not raise."""
+
+    class Half:
+        def read(self, addr, size):
+            if addr == 0x2000:
+                raise RuntimeError("unmapped")
+            return bytes(size)
+
+    scores = crystal.churn_many(Half(), [0x1000, 0x2000], size=8, gap=0.01)
+    assert scores[0x2000] == -1 and scores[0x1000] == 0

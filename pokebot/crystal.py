@@ -249,6 +249,48 @@ def churn(rpc, base: int, size: int = 0x2000,
     return sum(1 for i in range(min(len(a), len(b))) if a[i] != b[i])
 
 
+def churn_many(rpc, bases, size: int = 0x2000,
+               gap: float = 0.4) -> dict:
+    """Churn for several bases, sampled over ONE shared window.
+
+    Probing them one after another compares samples taken at different
+    moments: the first candidate is watched over 0.0-0.4s and the second
+    over 0.4-0.8s. The game is not equally busy in both, so a quiet
+    first window and a busy second one hands the verdict to whichever
+    copy happened to be measured second, whatever its liveness. That is
+    a coin flip dressed up as a measurement, and losing it cost a
+    15-second Celebi battle on 2026-08-26.
+
+    Reading every candidate, sleeping ONCE, then reading them all again
+    makes the comparison fair — and takes one ``gap`` in total rather
+    than one per candidate, so the poll loop stalls for 0.4s instead of
+    0.4s x N.
+    """
+    bases = list(bases)
+
+    def snapshot() -> dict:
+        out = {}
+        for b in bases:
+            try:
+                out[b] = rpc.read(b, size)
+            except Exception:
+                out[b] = None
+        return out
+
+    first = snapshot()
+    time.sleep(gap)
+    second = snapshot()
+
+    scores = {}
+    for b in bases:
+        a, c = first[b], second[b]
+        if a is None or c is None:
+            scores[b] = -1
+            continue
+        scores[b] = sum(1 for i in range(min(len(a), len(c))) if a[i] != c[i])
+    return scores
+
+
 def is_live_base(rpc, base: int, min_churn: int = 1) -> bool:
     """Is this the LIVE WRAM rather than a save buffer copy?
 
@@ -328,9 +370,10 @@ def _pick_live(rpc, hits) -> int | None:
     """
     if not hits:
         return None
+    scores = churn_many(rpc, [h["wram_base"] for h in hits])
     scored = []
     for h in hits:
-        c = churn(rpc, h["wram_base"])
+        c = scores.get(h["wram_base"], -1)
         scored.append((c, h))
         log.info(f"  candidate {h['wram_base']:#010x}  churn={c}")
 
@@ -408,13 +451,14 @@ class CrystalSession:
             rivals = [b for b in self._candidates if b != self.base]
             if not rivals:
                 return self.base
-            mine = churn(self.rpc, self.base)
+            alive = [b for b in rivals if verify_base(self.rpc, b)]
+            scores = churn_many(self.rpc, [self.base] + alive)
+            mine = scores.get(self.base, -1)
             best_base, best_churn = self.base, mine
-            for other in rivals:
-                if verify_base(self.rpc, other):
-                    c = churn(self.rpc, other)
-                    if c > best_churn:
-                        best_base, best_churn = other, c
+            for other in alive:
+                c = scores.get(other, -1)
+                if c > best_churn:
+                    best_base, best_churn = other, c
             if best_base != self.base:
                 log.warning(
                     f"base {self.base:#010x} churns {mine} but "
