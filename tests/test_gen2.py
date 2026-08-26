@@ -380,3 +380,37 @@ def test_gen6_games_still_offer_their_methods() -> None:
     from pokebot.games import methods_for
     assert len(methods_for("X-USA")) > 0
     assert len(methods_for("USUM-USA-1.2")) > 0
+
+
+# --------------------------------------------------------------------
+# The enemy-DV correlation, which must not be fooled by a coincidence
+# --------------------------------------------------------------------
+
+def test_dv_word_round_trips_through_the_correlator() -> None:
+    from find_enemy_dvs import dv_word
+    dvs = gen2.parse_dvs(0xEAAA)
+    assert dv_word(dvs) == 0xEAAA
+
+
+def test_correlator_locates_a_planted_dv_word() -> None:
+    """The whole method: find a known DV word inside a WRAM snapshot."""
+    from find_enemy_dvs import find_all
+    buf = bytearray(0x2000)
+    buf[0x0210:0x0212] = (0xEAAA).to_bytes(2, "big")   # GB 0xC210
+    hits = find_all(bytes(buf), 0xEAAA)
+    assert hits == [0xC210]
+
+
+def test_correlator_reports_every_copy() -> None:
+    """Party and battle copies both matter — the caller decides which
+    region each address falls in."""
+    from find_enemy_dvs import find_all
+    buf = bytearray(0x2000)
+    for off in (0x0210, 0x1CF4):
+        buf[off:off + 2] = (0x1234).to_bytes(2, "big")
+    assert find_all(bytes(buf), 0x1234) == [0xC210, 0xDCF4]
+
+
+def test_correlator_finds_nothing_when_absent() -> None:
+    from find_enemy_dvs import find_all
+    assert find_all(bytes(0x2000), 0xBEEF) == []
