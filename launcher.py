@@ -97,7 +97,21 @@ def _load_stats() -> dict:
     return s
 
 
+#: Set POKEBOT_STATS_RO=1 to make stats read-only for this process.
+#:
+#: add_pokemon() persists on every call, so ANY script that builds an
+#: _App — a screenshot harness, a benchmark — silently rewrites the
+#: user's real lifetime counters, and a synthetic shiny row even resets
+#: their phase. Tests redirect the path; this is the blunt switch for
+#: everything else.
+def _stats_read_only() -> bool:
+    import os
+    return os.environ.get("POKEBOT_STATS_RO", "") not in ("", "0")
+
+
 def _save_stats(stats: dict) -> None:
+    if _stats_read_only():
+        return
     try:
         import json as _j
         _stats_path().write_text(
@@ -582,7 +596,8 @@ class _SpritePool:
 _SPRITE_POOL = _SpritePool(workers=4)
 
 
-def _sprite_sources(species_id: int, shiny: bool) -> list:
+def _sprite_sources(species_id: int, shiny: bool,
+                    generation: int = 6) -> list:
     """Resolve every sprite source we can, in priority order.
 
     Safe to call off the Tk thread: this only does network/disk work
@@ -595,11 +610,21 @@ def _sprite_sources(species_id: int, shiny: bool) -> list:
         from pokebot.sprites import (get_animated_sprite_path,
                                      get_sprite_path,
                                      get_menu_sprite_path)
-        for fn, kind in ((get_animated_sprite_path, "gif"),
-                         (get_sprite_path, "static"),
-                         (get_menu_sprite_path, "static")):
+        # Gen 2 uses the Game Boy Color art. Showdown's animated set
+        # and the menu icons are Gen 5+ styling, so for a Gen 2 game
+        # only the era-correct still is used.
+        if generation == 2:
+            candidates = [(get_sprite_path, "static")]
+        else:
+            candidates = [(get_animated_sprite_path, "gif"),
+                          (get_sprite_path, "static"),
+                          (get_menu_sprite_path, "static")]
+        for fn, kind in candidates:
             try:
-                p = fn(species_id, shiny=shiny)
+                if fn is get_sprite_path:
+                    p = fn(species_id, shiny=shiny, generation=generation)
+                else:
+                    p = fn(species_id, shiny=shiny)
             except Exception:
                 p = None
             if p:
@@ -610,7 +635,8 @@ def _sprite_sources(species_id: int, shiny: bool) -> list:
 
 
 def _submit_sprite_job(widget, species_id: int, shiny: bool,
-                       max_w: int, max_h: int, on_done) -> None:
+                       max_w: int, max_h: int, on_done,
+                       generation: int = 6) -> None:
     """Fetch a sprite off-thread, then hand ``on_done`` a PhotoImage.
 
     ``on_done(img_or_None)`` is always invoked on the Tk thread.
@@ -639,8 +665,9 @@ def _submit_sprite_job(widget, species_id: int, shiny: bool,
         on_done(None)
 
     _SPRITE_POOL.ensure_pump(widget)
-    _SPRITE_POOL.submit(lambda: _sprite_sources(species_id, shiny),
-                        _install)
+    _SPRITE_POOL.submit(
+        lambda: _sprite_sources(species_id, shiny, generation),
+        _install)
 
 
 def _load_sprite_into(widget: tk.Label, species_id: int, shiny: bool,
@@ -1073,6 +1100,8 @@ class _RecentlySeen(tk.Frame):
                 pass
             self._placeholder = None
 
+        generation = int(evt.get("generation") or 6)
+        self._apply_generation(generation)
         shiny = bool(evt.get("shiny"))
         species_id = int(evt.get("species") or 0)
         iid = self._tree.insert(
@@ -1081,7 +1110,7 @@ class _RecentlySeen(tk.Frame):
             tags=("shiny" if shiny else "normal",),
         )
         self._iids.insert(0, iid)
-        self._load_sprite_async(species_id, shiny, iid)
+        self._load_sprite_async(species_id, shiny, iid, generation)
 
         # Trim the overflow tail. Deleting the row is enough — the
         # Treeview owns its own drawing, so there are no child widgets
@@ -1096,8 +1125,79 @@ class _RecentlySeen(tk.Frame):
 
     # ---- row rendering -----------------------------------------------------
 
+    #: Column headings when showing a Generation II game. Abilities and
+    #: Natures did not exist until Gen 3, and Gen 2 has no PID, so
+    #: those columns would be blank or fabricated. They are retitled to
+    #: carry data Gen 2 actually has: the DV word that stands in for a
+    #: PID, held item, and OT ID.
+    _GEN2_HEADINGS = {
+        "pid": "DVs (hex)",
+        "sv": "Shiny",
+        "ability": "Held item",
+        "nature": "OT ID",
+        "ivs": "DVs",
+    }
+
+    def _apply_generation(self, generation) -> None:
+        """Retitle the columns when the generation on screen changes."""
+        gen = 2 if generation == 2 else 6
+        if gen == getattr(self, "_shown_generation", None):
+            return
+        self._shown_generation = gen
+        for cid, default, _w, _a in self._COLUMNS:
+            text = (self._GEN2_HEADINGS.get(cid, default) if gen == 2
+                    else default)
+            try:
+                self._tree.heading(cid, text=text, anchor="center")
+            except tk.TclError:
+                pass
+
+    @classmethod
+    def _row_values_gen2(cls, evt: dict) -> tuple:
+        """A Gen 2 row.
+
+        Nothing here is invented: Gen 2 has no PID, no ability and no
+        nature, so those columns carry the DV word, held item and OT ID
+        instead of blanks or fabricated Gen 6 values.
+        """
+        dvs = evt.get("dvs") or {}
+        order = ("HP", "Atk", "Def", "Spe", "Spc")
+        dv_vals = [int(dvs.get(k, 0)) for k in order]
+        dv_word = ((dv_vals[1] << 12) | (dv_vals[2] << 8)
+                   | (dv_vals[3] << 4) | dv_vals[4])
+
+        level = evt.get("level")
+        gender = evt.get("gender")
+        # Gen 2 gender comes from the Attack DV plus the species gender
+        # ratio, which we do not carry — so show unknown rather than
+        # guessing.
+        sex_glyph = {"M": "♂", "F": "♀"}.get(gender, "—")
+
+        held = evt.get("held_item")
+        held_text = "—" if not held else f"#{int(held)}"
+        ot = evt.get("ot_id")
+        ot_text = "—" if ot is None else str(int(ot))
+
+        hp_type = evt.get("hp_type")
+        hp_power = evt.get("hp_power")
+        hp_text = (f"{str(hp_type).upper()} · {hp_power}"
+                   if hp_type else "—")
+
+        return (
+            sex_glyph,
+            f"Lv {level}" if level is not None else "Lv ?",
+            f"{dv_word:04X}",
+            "★ YES" if evt.get("shiny") else "—",
+            held_text,
+            ot_text,
+            f"{'/'.join(str(v) for v in dv_vals)} ({sum(dv_vals)})",
+            hp_text,
+        )
+
     @classmethod
     def _row_values(cls, evt: dict) -> tuple:
+        if int(evt.get("generation") or 6) == 2:
+            return cls._row_values_gen2(evt)
         shiny = bool(evt.get("shiny"))
         gender = evt.get("gender") or "G"
         level = evt.get("level")
@@ -1127,7 +1227,7 @@ class _RecentlySeen(tk.Frame):
     # ---- async sprite loading ----------------------------------------------
 
     def _load_sprite_async(self, species_id: int, shiny: bool,
-                           iid: str) -> None:
+                           iid: str, generation: int = 6) -> None:
         """Put this species' icon on row ``iid``, fetching if needed.
 
         Requests are de-duplicated per species while one is in flight.
@@ -1139,7 +1239,7 @@ class _RecentlySeen(tk.Frame):
         """
         if not species_id:
             return
-        key = species_id * 2 + (1 if shiny else 0)
+        key = (generation, species_id, bool(shiny))
         cached = self._sprites.get(key)
         if cached is not None:
             if cached is not False:
@@ -1163,7 +1263,8 @@ class _RecentlySeen(tk.Frame):
                 self._set_row_image(row, img)
 
         _submit_sprite_job(self._tree, species_id, shiny,
-                           self.SPRITE_W, self.SPRITE_H, _done)
+                           self.SPRITE_W, self.SPRITE_H, _done,
+                           generation)
 
     def _set_row_image(self, iid: str, img) -> None:
         try:

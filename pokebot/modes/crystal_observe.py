@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+from .. import gen2
 from ..crystal import (CrystalSession, BATTLE_NONE, BATTLE_WILD,
                        BATTLE_TRAINER)
 from ..games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS
@@ -58,6 +59,15 @@ def _payload(p, **extra) -> dict:
     ot_id = getattr(p, "ot_id", None)
     if ot_id is not None:
         payload["ot_id"] = ot_id
+    held = getattr(p, "held_item", None)
+    if held is not None:
+        payload["held_item"] = held
+    # Gen 2 Hidden Power uses its own formula; sending it computed here
+    # stops the launcher applying the Gen 3+ one and showing a wrong
+    # type and power.
+    hp_type, hp_power = gen2.hidden_power(p.dvs)
+    payload["hp_type"] = hp_type
+    payload["hp_power"] = hp_power
     payload.update(extra)
     return payload
 

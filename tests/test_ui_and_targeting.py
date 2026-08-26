@@ -383,7 +383,8 @@ def test_same_species_is_fetched_once_and_applied_to_every_row(
     """
     submitted = []
 
-    def fake_submit(widget, species_id, shiny, w, h, on_done):
+    def fake_submit(widget, species_id, shiny, w, h, on_done,
+                    generation=6):
         submitted.append((species_id, shiny, on_done))
 
     monkeypatch.setattr(launcher_mod, "_submit_sprite_job", fake_submit)
@@ -399,8 +400,7 @@ def test_same_species_is_fetched_once_and_applied_to_every_row(
     # Completing that single fetch must fill in all four rows.
     sentinel = object()
     submitted[0][2](sentinel)
-    rows = table._tree.get_children("")
-    assert all(table._sprites.get(25 * 2) is sentinel for _ in rows)
+    assert table._sprites.get((6, 25, False)) is sentinel
     assert table._pending == {}, "pending map leaked after completion"
 
 
@@ -410,7 +410,7 @@ def test_failed_sprite_fetch_clears_pending(
     captured = []
     monkeypatch.setattr(
         launcher_mod, "_submit_sprite_job",
-        lambda w, s, sh, mw, mh, cb: captured.append(cb))
+        lambda w, s, sh, mw, mh, cb, gen=6: captured.append(cb))
     table = launcher_mod._RecentlySeen(tk_root)
     table.add_pokemon(dict(ENCOUNTER, species=133))
     tk_root.update()

@@ -41,6 +41,18 @@ _MENU_URL_TMPL = (
     "pokemon/versions/generation-viii/icons/{sid}.png"
 )
 
+# Generation II front sprites, as the games actually drew them. Using
+# the Gen VI art for a Game Boy Color title looks wrong next to the
+# emulator, and Showdown's animated set has no Gen 2 equivalent.
+_GEN2_URL_TMPL = (
+    "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/"
+    "pokemon/versions/generation-ii/crystal/{sid}.png"
+)
+_GEN2_SHINY_URL_TMPL = (
+    "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/"
+    "pokemon/versions/generation-ii/crystal/shiny/{sid}.png"
+)
+
 _CACHE_DIR = Path.home() / ".pokebot-3ds-sprites"
 
 
@@ -49,7 +61,8 @@ def cache_dir() -> Path:
     return _CACHE_DIR
 
 
-def get_sprite_path(species_id: int, shiny: bool = False) -> Optional[Path]:
+def get_sprite_path(species_id: int, shiny: bool = False,
+                    generation: int | None = None) -> Optional[Path]:
     """Return a local PNG path for a species, downloading if missing.
 
     Returns ``None`` if the species can't be downloaded (offline, 404,
@@ -58,15 +71,23 @@ def get_sprite_path(species_id: int, shiny: bool = False) -> Optional[Path]:
     if not species_id or species_id < 1:
         return None
     suffix = "shiny" if shiny else "normal"
-    fname = f"{species_id}_{suffix}.png"
+    # The generation is part of the cache key: Gen 2 and Gen 6 art for
+    # the same species are different images, and sharing one filename
+    # would serve whichever downloaded first to both.
+    tag = "gen2_" if generation == 2 else ""
+    fname = f"{species_id}_{tag}{suffix}.png"
     target = cache_dir() / fname
     if target.exists() and target.stat().st_size > 0:
         return target
     # Download synchronously. Caller decides whether to invoke us in a
     # background thread.
-    urls = [_SPRITE_URL_TMPL.format(sid=species_id)]
-    if shiny:
-        urls = [u.replace("/x-y/", "/x-y/shiny/") for u in urls]
+    if generation == 2:
+        tmpl = _GEN2_SHINY_URL_TMPL if shiny else _GEN2_URL_TMPL
+        urls = [tmpl.format(sid=species_id)]
+    else:
+        urls = [_SPRITE_URL_TMPL.format(sid=species_id)]
+        if shiny:
+            urls = [u.replace("/x-y/", "/x-y/shiny/") for u in urls]
     urls.append(_FALLBACK_URL_TMPL.format(sid=species_id))
     for url in urls:
         try:

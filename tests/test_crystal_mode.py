@@ -16,6 +16,27 @@ from pokebot import gen2                              # noqa: E402
 from pokebot.modes import MODES, crystal_observe      # noqa: E402
 from test_gen2 import make_mon                        # noqa: E402
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def tk_root_for_table(tmp_path, monkeypatch):
+    """A Tk container with the launcher's stats redirected to tmp."""
+    tk = pytest.importorskip("tkinter")
+    import launcher
+    monkeypatch.setattr(launcher, "ROOT", tmp_path)
+    monkeypatch.setattr(launcher, "_STATS_FILE", tmp_path / "stats.json")
+    try:
+        root = tk.Tk()
+    except Exception as exc:
+        pytest.skip(f"Tk unavailable: {exc}")
+    root.withdraw()
+    yield root
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
 
 def _mon(dv_word=0x1234, species=157, level=30):
     return gen2.parse_pokemon(bytes(make_mon(species, level, dv_word)))
@@ -172,3 +193,101 @@ def test_report_battle_is_quiet_for_non_wild_states() -> None:
         ctx = _Ctx()
         crystal_observe._report_battle(ctx, _FakeSession(), mode, 1)
         assert ctx.dashboard.sent == []
+
+
+# --------------------------------------------------------------------
+# Launcher rendering: Gen 2 must not be shown through a Gen 6 lens
+# --------------------------------------------------------------------
+
+def _launcher():
+    import launcher
+    return launcher
+
+
+def _gen2_evt(**over):
+    from pokebot.modes import crystal_observe as co
+    base = co._payload(_mon(dv_word=0xEAAA, species=130, level=30))
+    base.update(over)
+    return base
+
+
+def test_gen2_row_shows_no_ability_or_nature() -> None:
+    """Neither existed until Gen 3. The columns carry Gen 2 data
+    instead of blanks or fabricated Gen 6 values."""
+    L = _launcher()
+    vals = L._RecentlySeen._row_values(_gen2_evt(ot_id=43813, held_item=0))
+    _gender, _lvl, dv_hex, shiny, held, ot, dvs, hp = vals
+    assert dv_hex == "EAAA", "the DV word stands in for the absent PID"
+    assert shiny == "★ YES"
+    assert held == "—"                    # no held item
+    assert ot == "43813"
+    assert dvs.startswith("0/14/10/10/10")
+    assert "GRASS" in hp                  # Gen 2 hidden power
+
+
+def test_gen2_row_uses_the_gen2_hidden_power() -> None:
+    """The Gen 3+ formula gives a different answer; using it here
+    would print a wrong type and power for every Gen 2 encounter."""
+    from pokebot import gen2 as g2
+    L = _launcher()
+    dvs = {"HP": 0, "Atk": 14, "Def": 10, "Spe": 10, "Spc": 10}
+    expected_type, expected_power = g2.hidden_power(dvs)
+    hp = L._RecentlySeen._row_values(_gen2_evt())[7]
+    assert expected_type.upper() in hp
+    assert str(expected_power) in hp
+
+
+def test_gen2_row_does_not_invent_a_gender() -> None:
+    """Gen 2 gender needs the species ratio, which we do not carry."""
+    L = _launcher()
+    assert L._RecentlySeen._row_values(_gen2_evt())[0] == "—"
+
+
+def test_gen6_rows_are_unchanged() -> None:
+    L = _launcher()
+    evt = {"type": "encounter", "species": 25, "shiny": False,
+           "gender": "M", "level": 5, "pid": 0x12345678,
+           "nature": "Adamant", "ability_id": 9, "ability_num": 1,
+           "ivs": {"HP": 31, "Atk": 20, "Def": 15, "Spe": 31,
+                   "SpA": 5, "SpD": 9}}
+    gender, level, pid, sv, _ability, nature, ivs, _hp = \
+        L._RecentlySeen._row_values(evt)
+    assert gender == "♂" and level == "Lv 5"
+    assert pid == "12345678"              # a real PID, not a DV word
+    assert nature == "Adamant"
+    assert ivs.startswith("31/20/15/31/5/9")
+
+
+def test_generation_switch_retitles_the_columns(tk_root_for_table) -> None:
+    L = _launcher()
+    table = L._RecentlySeen(tk_root_for_table)
+    table._apply_generation(2)
+    assert table._tree.heading("ability")["text"] == "Held item"
+    assert table._tree.heading("pid")["text"] == "DVs (hex)"
+    table._apply_generation(6)
+    assert table._tree.heading("ability")["text"] == "Ability"
+    assert table._tree.heading("pid")["text"] == "PID"
+
+
+def test_stats_can_be_made_read_only(tmp_path, monkeypatch) -> None:
+    """Guard against harness scripts rewriting real hunt counters.
+
+    add_pokemon persists on every call, so any script that builds an
+    _App silently edits the user's lifetime totals — and a synthetic
+    shiny row resets their phase counter, which cannot be recovered.
+    """
+    import launcher as L
+    monkeypatch.setattr(L, "ROOT", tmp_path)
+    monkeypatch.setattr(L, "_STATS_FILE", tmp_path / "stats.json")
+    L.set_stats_scope("")
+
+    monkeypatch.delenv("POKEBOT_STATS_RO", raising=False)
+    L._save_stats({"total": 5, "phase": 1, "shinies": 0,
+                   "phase_best_sv": None, "phase_best_iv": None})
+    assert (tmp_path / "stats.json").exists()
+    written = (tmp_path / "stats.json").read_text()
+
+    monkeypatch.setenv("POKEBOT_STATS_RO", "1")
+    L._save_stats({"total": 999, "phase": 9, "shinies": 9,
+                   "phase_best_sv": None, "phase_best_iv": None})
+    assert (tmp_path / "stats.json").read_text() == written

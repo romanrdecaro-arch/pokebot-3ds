@@ -188,3 +188,42 @@ def read_party(buf: bytes, off: int) -> list:
         rec = mon1 + i * PARTY_STRUCT_SIZE
         out.append(parse_pokemon(buf[rec:rec + PARTY_STRUCT_SIZE]))
     return out
+
+
+#: Hidden Power's 16 types, indexed by the Gen 2 type formula.
+#: (Gen 2 has no Fairy, and Normal is not reachable.)
+HP_TYPES = (
+    "Fighting", "Flying", "Poison", "Ground",
+    "Rock", "Bug", "Ghost", "Steel",
+    "Fire", "Water", "Grass", "Electric",
+    "Psychic", "Ice", "Dragon", "Dark",
+)
+
+
+def hidden_power(dvs: dict) -> tuple:
+    """Gen 2 Hidden Power as ``(type_name, power)``.
+
+    Gen 2 computes this completely differently from Gen 3 onward, so
+    the Gen 6 helper produces wrong numbers here:
+
+        type  = 4*(Atk mod 4) + (Def mod 4)
+        power = floor((5*(v + 2w + 4x + 8y) + Z) / 2) + 31
+
+    where v/w/x/y are the most significant bits of the Special, Speed,
+    Defense and Attack DVs, and Z is Special mod 4. Power therefore
+    ranges 31..70 — a property the tests assert exhaustively.
+    """
+    atk = dvs.get("Atk", 0)
+    df = dvs.get("Def", 0)
+    spe = dvs.get("Spe", 0)
+    spc = dvs.get("Spc", 0)
+
+    type_index = 4 * (atk % 4) + (df % 4)
+
+    v = 1 if spc >= 8 else 0
+    w = 1 if spe >= 8 else 0
+    x = 1 if df >= 8 else 0
+    y = 1 if atk >= 8 else 0
+    power = (5 * (v + 2 * w + 4 * x + 8 * y) + (spc % 4)) // 2 + 31
+
+    return HP_TYPES[type_index], power
