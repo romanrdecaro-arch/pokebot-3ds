@@ -34,22 +34,32 @@ def _iv_payload(dvs: dict) -> dict:
 
 
 def _payload(p, **extra) -> dict:
-    """A Gen 2 record shaped for the dashboard and the event log."""
-    return {
+    """A Gen 2 record shaped for the dashboard and the event log.
+
+    Takes either a party ``Gen2Pokemon`` or an in-battle
+    ``EnemyReading``. They genuinely carry different fields — an
+    opponent has no Original Trainer or experience until it is caught —
+    so the ones only a party record has are read defensively rather
+    than assumed.
+    """
+    payload = {
         "species": p.species,
         "level": p.level,
         "shiny": p.shiny,
         "ivs": _iv_payload(p.dvs),
         "dvs": dict(p.dvs),          # the real Gen 2 values, unmapped
         "generation": 2,
-        "ot_id": p.ot_id,
         # Gen 2 has no PID and no TSV, so the shiny-value columns do
         # not apply. Sent explicitly so nothing downstream invents one.
         "pid": 0,
         "psv": None,
         "tsv": None,
-        **extra,
     }
+    ot_id = getattr(p, "ot_id", None)
+    if ot_id is not None:
+        payload["ot_id"] = ot_id
+    payload.update(extra)
+    return payload
 
 
 def _party_signature(party: list) -> tuple:
@@ -79,7 +89,9 @@ def run(ctx) -> None:
         ctx.request_stop("crystal wram not found")
         return
     log.info(f"  WRAM base {base:#010x}")
-    ctx.dashboard.broadcast("ready", mode="crystal_observe",
+    # "status", not "ready": bot.py already broadcasts ready, and two
+    # of them printed the launcher's "bot is ready" line twice.
+    ctx.dashboard.broadcast("status", mode="crystal_observe",
                             wram_base=f"{base:#010x}")
 
     last_sig = None
@@ -123,27 +135,37 @@ def run(ctx) -> None:
 
         mode = session.battle_mode()
         if mode != last_mode:
-            if mode == BATTLE_WILD:
-                encounters += 1
-                enemy = session.enemy()
-                if enemy is None:
-                    log.info(f"Wild battle #{encounters} "
-                             f"(opponent unreadable)")
-                else:
-                    log.info(
-                        f"Wild battle #{encounters}: #{enemy.species} "
-                        f"Lv{enemy.level} DVs={enemy.dvs}"
-                        f"{'  *** SHINY? ***' if enemy.shiny else ''}")
-                    log.info("  (opponent DV offsets are UNVERIFIED — "
-                             "catch it and compare the party reading)")
-                    ctx.dashboard.broadcast(
-                        "encounter", count=encounters,
-                        confirmed=False,
-                        **_payload(enemy))
-            elif mode == BATTLE_TRAINER:
-                log.info("Trainer battle")
-            elif mode == BATTLE_NONE:
-                log.info("Back on the overworld")
+            # Report inside a guard: this is a watch that should run for
+            # a whole play session, and one malformed reading must not
+            # end it. The error is logged in full so it stays visible
+            # rather than being silently swallowed.
+            try:
+                _report_battle(ctx, session, mode, encounters + 1)
+                if mode == BATTLE_WILD:
+                    encounters += 1
+            except Exception:
+                log.exception("failed to report a battle transition "
+                              f"(mode {mode}); continuing")
             last_mode = mode
 
         ctx._stop_evt.wait(_POLL_S)
+
+
+def _report_battle(ctx, session, mode: int, count: int) -> None:
+    """Log and broadcast one battle-state change."""
+    if mode == BATTLE_WILD:
+        enemy = session.enemy()
+        if enemy is None:
+            log.info(f"Wild battle #{count} (opponent unreadable)")
+            return
+        log.info(f"Wild battle #{count}: #{enemy.species} "
+                 f"Lv{enemy.level} DVs={enemy.dvs}"
+                 f"{'  *** SHINY? ***' if enemy.shiny else ''}")
+        log.info("  (opponent DV offsets are UNVERIFIED — catch it and "
+                 "compare the party reading)")
+        ctx.dashboard.broadcast("encounter", count=count,
+                                confirmed=False, **_payload(enemy))
+    elif mode == BATTLE_TRAINER:
+        log.info("Trainer battle")
+    elif mode == BATTLE_NONE:
+        log.info("Back on the overworld")

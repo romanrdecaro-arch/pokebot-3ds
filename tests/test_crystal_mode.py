@@ -87,3 +87,88 @@ def test_gen2_game_skips_the_gen6_offset_block() -> None:
     # The guard is generation-based, so it holds for any VC title.
     assert crystal.generation < 6
     assert hasattr(bot_mod.Bot, "_connect")
+
+
+# --------------------------------------------------------------------
+# Regression: _payload crashed on an in-battle opponent
+# --------------------------------------------------------------------
+
+def _enemy(dv_word=0x1234, species=19, level=11):
+    from pokebot.crystal import EnemyReading
+    dvs = gen2.parse_dvs(dv_word)
+    return EnemyReading(species=species, level=level, dvs=dvs,
+                        shiny=gen2.is_shiny(dvs), confirmed=False)
+
+
+def test_payload_accepts_an_in_battle_opponent() -> None:
+    """Regression: manual mode died on the first wild battle.
+
+    _payload read p.ot_id, which only a caught Pokemon has —
+    EnemyReading has no Original Trainer. Every wild encounter raised
+    AttributeError and ended the run.
+    """
+    payload = crystal_observe._payload(_enemy())
+    assert payload["species"] == 19
+    assert payload["level"] == 11
+    assert "ot_id" not in payload, "an opponent has no OT until caught"
+    assert payload["generation"] == 2
+
+
+def test_enemy_payload_is_json_serialisable() -> None:
+    import json
+    json.dumps(crystal_observe._payload(_enemy(), count=3, confirmed=False))
+
+
+def test_party_payload_still_carries_its_ot_id() -> None:
+    assert "ot_id" in crystal_observe._payload(_mon())
+
+
+def test_shiny_enemy_is_flagged() -> None:
+    assert crystal_observe._payload(_enemy(dv_word=0xAAAA))["shiny"] is True
+
+
+class _FakeDash:
+    def __init__(self):
+        self.sent = []
+
+    def broadcast(self, kind, **fields):
+        self.sent.append((kind, fields))
+
+
+class _FakeSession:
+    def __init__(self, enemy=None):
+        self._enemy = enemy
+
+    def enemy(self):
+        return self._enemy
+
+
+class _Ctx:
+    def __init__(self):
+        self.dashboard = _FakeDash()
+
+
+def test_report_battle_broadcasts_a_wild_encounter() -> None:
+    from pokebot.crystal import BATTLE_WILD
+    ctx = _Ctx()
+    crystal_observe._report_battle(ctx, _FakeSession(_enemy()),
+                                   BATTLE_WILD, 7)
+    assert [k for k, _ in ctx.dashboard.sent] == ["encounter"]
+    kind, fields = ctx.dashboard.sent[0]
+    assert fields["count"] == 7
+    assert fields["confirmed"] is False, "unverified offsets must be marked"
+
+
+def test_report_battle_handles_an_unreadable_opponent() -> None:
+    from pokebot.crystal import BATTLE_WILD
+    ctx = _Ctx()
+    crystal_observe._report_battle(ctx, _FakeSession(None), BATTLE_WILD, 1)
+    assert ctx.dashboard.sent == []       # logged, nothing broadcast
+
+
+def test_report_battle_is_quiet_for_non_wild_states() -> None:
+    from pokebot.crystal import BATTLE_NONE, BATTLE_TRAINER
+    for mode in (BATTLE_NONE, BATTLE_TRAINER):
+        ctx = _Ctx()
+        crystal_observe._report_battle(ctx, _FakeSession(), mode, 1)
+        assert ctx.dashboard.sent == []
