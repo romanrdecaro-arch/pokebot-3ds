@@ -22,7 +22,12 @@ from ..games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS
 
 log = logging.getLogger(__name__)
 
-_POLL_S = 1.0
+#: Poll fast enough to catch a battle that starts and ends
+#: quickly — at 660% emulation speed a fled encounter is only
+#: a second or two of wall clock.
+_POLL_S = 0.3
+#: Read the (much larger) party block every Nth poll.
+_PARTY_EVERY = 4
 
 #: Gen 2 has ONE Special stat; Gen 6 split it into SpA/SpD. The
 #: launcher's table expects the six-stat shape, so Special is reported
@@ -116,10 +121,37 @@ def run(ctx) -> None:
     last_sig = None
     last_known = None
     last_mode = BATTLE_NONE
+    last_foe = None
     seen_shiny: set = set()
     encounters = 0
 
+    poll = 0
     while not ctx.should_stop():
+        # Battle state FIRST, and never gated behind the party read.
+        # It used to sit after an `if not party: continue`, so a single
+        # unreadable party poll — which happens around a battle
+        # starting — skipped the battle check entirely, and by the next
+        # poll the encounter had been missed. Two Oddish went unlogged
+        # exactly this way.
+        mode = session.battle_mode()
+        if mode != last_mode or (mode == BATTLE_WILD
+                                 and _opponent_changed(session, last_foe)):
+            try:
+                if mode == BATTLE_WILD:
+                    encounters += 1
+                last_foe = _report_battle(ctx, session, mode, encounters)
+            except Exception:
+                log.exception("failed to report a battle transition "
+                              f"(mode {mode}); continuing")
+            last_mode = mode
+
+        # The party is a much bigger read, and only changes on a catch
+        # or a level-up, so it does not need checking every tick.
+        poll += 1
+        if poll % _PARTY_EVERY != 0:
+            ctx._stop_evt.wait(_POLL_S)
+            continue
+
         party = session.party()
         if not party:
             # Losing the base mid-session is normal if the emulator is
@@ -166,31 +198,36 @@ def run(ctx) -> None:
                         "target_hit", count=encounters,
                         reason="shiny (Gen 2 DVs)", **_payload(p))
 
-        mode = session.battle_mode()
-        if mode != last_mode:
-            # Report inside a guard: this is a watch that should run for
-            # a whole play session, and one malformed reading must not
-            # end it. The error is logged in full so it stays visible
-            # rather than being silently swallowed.
-            try:
-                _report_battle(ctx, session, mode, encounters + 1)
-                if mode == BATTLE_WILD:
-                    encounters += 1
-            except Exception:
-                log.exception("failed to report a battle transition "
-                              f"(mode {mode}); continuing")
-            last_mode = mode
-
         ctx._stop_evt.wait(_POLL_S)
 
 
-def _report_battle(ctx, session, mode: int, count: int) -> None:
-    """Log and broadcast one battle-state change."""
+def _opponent_changed(session, last_foe) -> bool:
+    """True when a different wild is on screen than the one reported.
+
+    Back-to-back encounters can both fall inside one polling window,
+    and mode alone would not change between them.
+    """
+    enemy = session.enemy()
+    if enemy is None:
+        return False
+    return (enemy.species, enemy.level) != last_foe
+
+
+def _report_battle(ctx, session, mode: int, count: int):
+    """Log and broadcast one battle-state change; return the opponent."""
     if mode == BATTLE_WILD:
         enemy = session.enemy()
         if enemy is None:
+            # Still report it. The encounter definitely happened, and a
+            # row saying "unreadable" is far better than the table
+            # silently missing an encounter the player just saw.
             log.info(f"Wild battle #{count} (opponent unreadable)")
-            return
+            ctx.dashboard.broadcast(
+                "encounter", count=count, confirmed=False,
+                generation=2, species=0, level=None, shiny=False,
+                dvs={}, ivs={}, pid=0, psv=None, tsv=None,
+                note="opponent unreadable")
+            return None
         log.info(f"Wild battle #{count}: #{enemy.species} "
                  f"Lv{enemy.level} DVs={enemy.dvs}"
                  f"{'  *** SHINY? ***' if enemy.shiny else ''}")
@@ -198,7 +235,9 @@ def _report_battle(ctx, session, mode: int, count: int) -> None:
                  "compare the party reading)")
         ctx.dashboard.broadcast("encounter", count=count,
                                 confirmed=False, **_payload(enemy))
-    elif mode == BATTLE_TRAINER:
+        return (enemy.species, enemy.level)
+    if mode == BATTLE_TRAINER:
         log.info("Trainer battle")
     elif mode == BATTLE_NONE:
         log.info("Back on the overworld")
+    return None

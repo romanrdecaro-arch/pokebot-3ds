@@ -179,10 +179,16 @@ def test_report_battle_broadcasts_a_wild_encounter() -> None:
 
 
 def test_report_battle_handles_an_unreadable_opponent() -> None:
+    """Superseded: it now reports the encounter anyway.
+
+    Returning early here meant a wild battle the player was looking at
+    never reached the table. See
+    test_unreadable_opponent_still_logs_an_encounter.
+    """
     from pokebot.crystal import BATTLE_WILD
     ctx = _Ctx()
     crystal_observe._report_battle(ctx, _FakeSession(None), BATTLE_WILD, 1)
-    assert ctx.dashboard.sent == []       # logged, nothing broadcast
+    assert [k for k, _ in ctx.dashboard.sent] == ["encounter"]
 
 
 def test_report_battle_is_quiet_for_non_wild_states() -> None:
@@ -308,3 +314,40 @@ def test_stats_can_be_made_read_only(tmp_path, monkeypatch) -> None:
     L._save_stats({"total": 999, "phase": 9, "shinies": 9,
                    "phase_best_sv": None, "phase_best_iv": None})
     assert (tmp_path / "stats.json").read_text() == written
+
+
+def test_unreadable_opponent_still_logs_an_encounter() -> None:
+    """An encounter the player saw must never be silently dropped.
+
+    _report_battle used to return early when the opponent could not be
+    read, so nothing reached the table even though a wild battle had
+    plainly started.
+    """
+    from pokebot.crystal import BATTLE_WILD
+    ctx = _Ctx()
+    crystal_observe._report_battle(ctx, _FakeSession(None), BATTLE_WILD, 3)
+    kinds = [k for k, _ in ctx.dashboard.sent]
+    assert kinds == ["encounter"], "the encounter was dropped"
+    _kind, fields = ctx.dashboard.sent[0]
+    assert fields["count"] == 3
+    assert fields["note"] == "opponent unreadable"
+
+
+def test_battle_report_returns_the_opponent_for_change_detection() -> None:
+    """Back-to-back wilds can share one polling window, so the mode
+    tracks which opponent it last reported."""
+    from pokebot.crystal import BATTLE_WILD, BATTLE_NONE
+    ctx = _Ctx()
+    got = crystal_observe._report_battle(
+        ctx, _FakeSession(_enemy(species=43, level=12)), BATTLE_WILD, 1)
+    assert got == (43, 12)
+    assert crystal_observe._report_battle(
+        ctx, _FakeSession(None), BATTLE_NONE, 1) is None
+
+
+def test_opponent_changed_detects_a_new_wild() -> None:
+    assert crystal_observe._opponent_changed(
+        _FakeSession(_enemy(species=43, level=12)), (19, 11))
+    assert not crystal_observe._opponent_changed(
+        _FakeSession(_enemy(species=43, level=12)), (43, 12))
+    assert not crystal_observe._opponent_changed(_FakeSession(None), (43, 12))
