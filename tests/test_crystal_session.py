@@ -87,13 +87,18 @@ def test_locate_finds_the_wram_base() -> None:
     assert crystal.locate_wram(rpc, [(BASE, BASE + 0x30000)]) == BASE
 
 
-def test_located_base_is_cached_and_reused() -> None:
-    """A cache hit must verify in one read, not re-walk the heap."""
+def test_located_base_is_cached_and_reused(monkeypatch) -> None:
+    """A cache hit must cost far less than sweeping the heap."""
+    # The real neighbourhood is 4 MB, which would swallow this whole
+    # synthetic space and make the comparison meaningless.
+    monkeypatch.setattr(crystal, "_NEARBY", 0x4000)
+    monkeypatch.setattr(crystal, "_NEIGHBOURHOOD", 0x4000)
     far = 0x20000                       # several chunks in
     space = build_space([make_mon(251, 30)], wram_at=far)
     rpc = FakeRPC(BASE, space, live_at=BASE + far)
     assert crystal.locate_wram(rpc, [(BASE, BASE + 0x30000)]) == BASE + far
     scan_reads = rpc.reads
+    scan_rpc_bytes = rpc.bytes_read
     assert scan_reads > 2, "scenario too easy to prove anything"
 
     rpc2 = FakeRPC(BASE, space, live_at=BASE + far)

@@ -185,63 +185,61 @@ def is_live_base(rpc, base: int, min_churn: int = 1) -> bool:
     return churn(rpc, base) >= min_churn
 
 
-def locate_wram(rpc, ranges, use_cache: bool = True) -> int | None:
-    """Find the emulated WRAM base, preferring a validated cache.
+def locate_wram(rpc, ranges, use_cache: bool = True,
+                out_candidates: list | None = None) -> int | None:
+    """Find the LIVE WRAM base.
 
-    A cached base must still be LIVE, not merely parseable: locking
-    onto a save buffer reads a correct party forever while battle state
-    stays permanently zero, so encounters are never detected.
+    Several regions hold a valid party block: the live WRAM and the
+    game's save/backup buffers. They are indistinguishable by the party
+    signature, which is why "first hit wins" locked onto a buffer and
+    read a correct party forever while battle state stayed zero.
+
+    An absolute liveness threshold does not separate them either — a
+    buffer was measured churning 14 bytes against the live region's 57,
+    so any fixed cut-off is either too strict (rejects the real thing
+    on a quiet screen) or too loose (accepts the buffer). The only
+    reliable test is COMPARING the candidates, so that is what happens
+    every time: gather the copies that sit near each other and take the
+    liveliest.
     """
-    if use_cache:
-        cached = _load_cached_base()
-        if cached is not None and verify_base(rpc, cached):
-            if is_live_base(rpc, cached):
-                log.info(f"WRAM base {cached:#010x} (cached, verified live)")
-                return cached
-            log.info(f"cached base {cached:#010x} parses but is not live "
-                     f"(a save buffer); re-scanning")
-        elif cached is not None:
-            log.info("cached WRAM base no longer valid; re-scanning")
-
-    # A moved base usually lands near the old one, so try its
-    # neighbourhood before sweeping the whole heap. A full sweep is
-    # ~900 MB of RPC traffic; this is a fraction of a second.
-    cached = _load_cached_base()
+    # Start from the cached base when there is one — the copies cluster,
+    # so its neighbourhood almost always contains the live region too.
+    cached = _load_cached_base() if use_cache else None
     if cached:
-        near = (max(0, cached - _NEARBY), cached + _NEARBY)
-        log.info(f"looking near the last base {cached:#010x} first…")
-        found = _pick_live(rpc, scan_range(rpc, near[0], near[1],
-                                           stop_after=8, progress_every=0))
-        if found is not None:
-            _save_cached_base(found)
-            return found
+        log.info(f"checking around the last base {cached:#010x}…")
+        hits = scan_range(rpc, max(0, cached - _NEARBY), cached + _NEARBY,
+                          stop_after=8, progress_every=0)
+        base = _pick_live(rpc, hits)
+        if base is not None:
+            _save_cached_base(base)
+            if out_candidates is not None:
+                out_candidates[:] = [h["wram_base"] for h in hits]
+            return base
+        log.info("  nothing live nearby; sweeping the heap")
 
     for start, end in ranges:
         log.info(f"scanning {start:#010x}-{end:#010x} for the party block…")
-        # Stop at the FIRST hit, then look for its siblings in a small
+        # Stop at the FIRST hit, then gather its siblings from a small
         # window around it. Asking the full-range scan for 8 candidates
         # meant that whenever fewer than 8 existed it read the entire
         # ~900 MB range every time — about 85s of sustained RPC traffic
         # per attempt, which starved the detection loop and hammered
-        # the emulator. The copies sit within a few tens of KB of each
-        # other, so a bounded neighbourhood finds them for free.
+        # the emulator.
         first = scan_range(rpc, start, end, stop_after=1)
         if not first:
             continue
         anchor = first[0]["wram_base"]
-        lo = max(start, anchor - _NEIGHBOURHOOD)
-        hi = min(end, anchor + _NEIGHBOURHOOD)
-        hits = scan_range(rpc, lo, hi, stop_after=8, progress_every=0)
-        seen = {h["wram_base"] for h in hits}
-        for h in first:
-            if h["wram_base"] not in seen:
-                hits.append(h)
-        if not hits:
-            hits = first
+        hits = scan_range(rpc, max(start, anchor - _NEIGHBOURHOOD),
+                          min(end, anchor + _NEIGHBOURHOOD),
+                          stop_after=8, progress_every=0)
+        known = {h["wram_base"] for h in hits}
+        hits += [h for h in first if h["wram_base"] not in known]
         base = _pick_live(rpc, hits)
         if base is None:
             continue
         _save_cached_base(base)
+        if out_candidates is not None:
+            out_candidates[:] = [h["wram_base"] for h in hits]
         return base
     return None
 
@@ -263,12 +261,13 @@ def _pick_live(rpc, hits) -> int | None:
 
     scored.sort(key=lambda pair: pair[0], reverse=True)
     best_churn, best = scored[0]
-    if best_churn < 0:                      # every read failed
+    if best_churn <= 0:
+        # Nothing here ticks, so nothing here is the live region.
+        # Returning the best of a dead field is what produced a bot
+        # that read the party perfectly and never saw a battle.
+        log.info("  no candidate is ticking; not accepting any of them")
         return None
     base = best["wram_base"]
-    if best_churn <= 0:
-        log.warning("  no candidate is ticking — this may be a save "
-                    "buffer, so battle state could read as empty.")
     log.info(f"WRAM base {base:#010x} "
              f"(party block @ {best['party_addr']:#010x}, "
              f"churn {best_churn})")
@@ -286,28 +285,61 @@ class CrystalSession:
         self.ranges = ranges
         self.base = base
         self._next_live_check = 0.0
+        #: Other party-block copies seen when locating, so the periodic
+        #: check can re-compare instead of re-scanning.
+        self._candidates: list = []
 
     def ensure_base(self) -> int | None:
-        """Return a base that still holds a party AND is still live.
+        """Return a base that still holds a party AND is the liveliest.
 
-        verify_base alone is not enough. The emulator keeps save and
-        backup buffers that contain a perfectly valid party block, so a
-        base can keep verifying forever while battle state reads as
-        permanently zero and no encounter is ever seen. Liveness is
-        rechecked on a timer rather than every call, because it costs
-        two reads and a short sleep.
+        verify_base alone is not enough: the emulator keeps save and
+        backup buffers holding a perfectly valid party block, so a base
+        can verify forever while battle state reads permanently zero and
+        no encounter is ever seen.
+
+        An absolute liveness threshold does not separate them either — a
+        buffer was measured churning 14 bytes against the live region's
+        57. So the periodic check RE-COMPARES the copies found last
+        time, which costs a couple of small reads each rather than a
+        rescan, and switches if a different one is now livelier.
         """
         if self.base is not None and verify_base(self.rpc, self.base):
             now = time.monotonic()
             if now < self._next_live_check:
                 return self.base
             self._next_live_check = now + self.LIVE_CHECK_EVERY_S
-            if is_live_base(self.rpc, self.base):
+
+            if not self._candidates:
+                # A session handed an explicit base has no rivals to
+                # compare against yet. Find its neighbours once, or it
+                # can never notice it is sitting on a save buffer.
+                hits = scan_range(
+                    self.rpc, max(0, self.base - _NEIGHBOURHOOD),
+                    self.base + _NEIGHBOURHOOD, stop_after=8,
+                    progress_every=0)
+                self._candidates = [h["wram_base"] for h in hits]
+            rivals = [b for b in self._candidates if b != self.base]
+            if not rivals:
                 return self.base
-            log.warning(f"base {self.base:#010x} still parses but has "
-                        f"stopped ticking — it is a save buffer, not live "
-                        f"WRAM. Re-locating.")
-        self.base = locate_wram(self.rpc, self.ranges)
+            mine = churn(self.rpc, self.base)
+            best_base, best_churn = self.base, mine
+            for other in rivals:
+                if verify_base(self.rpc, other):
+                    c = churn(self.rpc, other)
+                    if c > best_churn:
+                        best_base, best_churn = other, c
+            if best_base != self.base:
+                log.warning(
+                    f"base {self.base:#010x} churns {mine} but "
+                    f"{best_base:#010x} churns {best_churn} — switching to "
+                    f"the livelier copy (the old one is a save buffer).")
+                self.base = best_base
+                _save_cached_base(best_base)
+            return self.base
+
+        self._candidates = []
+        self.base = locate_wram(self.rpc, self.ranges,
+                                out_candidates=self._candidates)
         self._next_live_check = time.monotonic() + self.LIVE_CHECK_EVERY_S
         return self.base
 
