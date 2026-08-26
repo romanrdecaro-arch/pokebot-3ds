@@ -79,6 +79,12 @@ def _party_signature(party: list) -> tuple:
     return tuple((p.species, p.level, p.ot_id, p.exp) for p in party)
 
 
+def party_key(p) -> tuple:
+    """Identity that survives levelling up, so only genuinely NEW
+    Pokemon are reported as caught."""
+    return (p.species, p.ot_id, p.exp // 1000)
+
+
 def _describe(p) -> str:
     d = p.dvs
     return (f"#{p.species} Lv{p.level} "
@@ -108,6 +114,7 @@ def run(ctx) -> None:
                             wram_base=f"{base:#010x}")
 
     last_sig = None
+    last_known = None
     last_mode = BATTLE_NONE
     seen_shiny: set = set()
     encounters = 0
@@ -130,6 +137,19 @@ def run(ctx) -> None:
                 "party",
                 slots=[{"slot": i, **_payload(p)}
                        for i, p in enumerate(party)])
+
+            # A newly caught Pokemon belongs in the encounter table,
+            # not only in the party strip — otherwise manual mode shows
+            # an empty table for a whole session unless a wild battle
+            # happens to start while it is watching.
+            if last_known is not None:
+                for p in party:
+                    if party_key(p) not in last_known:
+                        encounters += 1
+                        log.info(f"  new in party: {_describe(p)}")
+                        ctx.dashboard.broadcast(
+                            "candidate", count=encounters, **_payload(p))
+            last_known = {party_key(p) for p in party}
 
             for i, p in enumerate(party):
                 key = (p.species, p.ot_id, p.exp)

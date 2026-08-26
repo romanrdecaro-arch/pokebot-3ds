@@ -111,6 +111,17 @@ offsets:
 
 # Random-encounter shiny hunt tuning.
 random_encounters:
+  # --- Pokémon Crystal (Virtual Console) ---------------------------
+  # How the opponent's shininess is judged. The in-battle structure's
+  # DV offset is not confirmed yet, and reading the wrong byte would
+  # silently MISS a shiny.
+  #   paranoid - test every candidate offset in the opponent region.
+  #              Cannot miss a shiny; stops on a coincidence roughly
+  #              once every 200 encounters.
+  #   strict   - trust the single configured offset. Use this after
+  #              scripts/find_enemy_dvs.py confirms it (1 in 8192).
+  enemy_dv_check: paranoid
+  flee_settle: 1.2           # pause before the RUN sequence (Gen 2)
   movement: horizontal       # horizontal (Left/Right) | vertical (Up/Down)
   walk_hold: 0.20            # seconds per step (short = quick back-and-forth)
   # Seconds to wait AFTER detecting a wild before fleeing — lets the

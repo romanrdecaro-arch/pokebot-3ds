@@ -300,6 +300,14 @@ def methods_for(game_key: str) -> list[Method]:
                          "watches Crystal's memory and reports your "
                          "party, wild battles, and anything shiny "
                          "(Gen 2 shininess is DV-based, 1 in 8192)."),
+            Method("Random encounters (horizontal)", "crystal_encounter",
+                   movement="horizontal",
+                   notes="Walks Left/Right to trigger wild battles, "
+                         "checks each one and runs from the rest."),
+            Method("Random encounters (vertical)", "crystal_encounter",
+                   movement="vertical",
+                   notes="Walks Up/Down to trigger wild battles, "
+                         "checks each one and runs from the rest."),
         ]
     if game is not None and game.generation < 6:
         return []

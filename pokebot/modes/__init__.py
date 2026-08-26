@@ -8,6 +8,7 @@ from .soft_reset import run as run_soft_reset
 from .debug import run as run_debug
 from .livehex import run as run_livehex
 from .crystal_observe import run as run_crystal_observe
+from .crystal_encounter import run as run_crystal_encounter
 
 MODES = {
     "observe":     run_observe,
@@ -19,4 +20,5 @@ MODES = {
     "livehex":     run_livehex,
     # Gen 2 (Virtual Console)
     "crystal_observe": run_crystal_observe,
+    "crystal_encounter": run_crystal_encounter,
 }

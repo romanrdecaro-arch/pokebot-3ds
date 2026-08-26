@@ -349,7 +349,7 @@ def test_crystal_title_id_is_recognised() -> None:
     assert CRYSTAL_TID in POKEMON_TITLE_IDS, "attach would not recognise it"
 
 
-def test_crystal_offers_only_its_own_manual_mode() -> None:
+def test_crystal_offers_only_its_own_modes() -> None:
     """Crystal gets a mode it can actually run, and nothing else.
 
     Every Gen 6/7 mode reads PK6/PK7 over Azahar RPC at 3DS addresses.
@@ -359,8 +359,10 @@ def test_crystal_offers_only_its_own_manual_mode() -> None:
     from pokebot.games import methods_for
     from pokebot.modes import MODES
     methods = methods_for("CRYSTAL-USA")
-    assert [m.mode for m in methods] == ["crystal_observe"]
-    assert methods[0].mode in MODES, "offered a mode the bot cannot run"
+    assert {m.mode for m in methods} == {"crystal_observe",
+                                         "crystal_encounter"}
+    for m in methods:
+        assert m.mode in MODES, f"offered '{m.mode}', which cannot run"
 
     gen6_modes = {"observe", "encounter", "horde", "fishing",
                   "soft_reset", "livehex", "debug"}
