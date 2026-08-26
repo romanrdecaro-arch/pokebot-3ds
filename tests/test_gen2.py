@@ -330,3 +330,37 @@ def test_scanner_terminates_at_an_awkward_range_tail() -> None:
     for extra in (0, 1, 2, SIGNATURE_LEN):
         hits = scan_range(rpc, base, base + SIGNATURE_LEN + extra)
         assert isinstance(hits, list)      # reaching here means it ended
+
+
+# --------------------------------------------------------------------
+# Registry: Crystal must be identified, but must NOT offer Gen 6 modes
+# --------------------------------------------------------------------
+
+CRYSTAL_TID = 0x0004000000172800
+
+
+def test_crystal_title_id_is_recognised() -> None:
+    """Read off a live Azahar session running Crystal VC."""
+    from pokebot.games import find_game_by_title_id
+    from pokebot.citra_rpc import POKEMON_TITLE_IDS
+    game = find_game_by_title_id(CRYSTAL_TID)
+    assert game is not None, "Crystal VC title id not in the registry"
+    assert game.generation == 2
+    assert CRYSTAL_TID in POKEMON_TITLE_IDS, "attach would not recognise it"
+
+
+def test_crystal_offers_no_gen6_hunt_methods() -> None:
+    """Registering the title must not imply the modes work on it.
+
+    Every mode reads PK6/PK7 over Azahar RPC at 3DS addresses. A VC
+    title has neither, so offering them would let the launcher start a
+    hunt that cannot possibly work.
+    """
+    from pokebot.games import methods_for
+    assert methods_for("CRYSTAL-USA") == []
+
+
+def test_gen6_games_still_offer_their_methods() -> None:
+    from pokebot.games import methods_for
+    assert len(methods_for("X-USA")) > 0
+    assert len(methods_for("USUM-USA-1.2")) > 0

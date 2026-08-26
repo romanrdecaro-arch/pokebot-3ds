@@ -79,7 +79,7 @@ class Game:
     key: str                              # e.g. "USUM-USA-1.2"
     title: str                            # human-readable name
     title_ids: tuple                      # u64 title IDs that map to this entry
-    generation: int                       # 6 or 7
+    generation: int                       # 2 (VC), 6 or 7
     offsets: GameOffsets = field(default_factory=GameOffsets)
     verified: bool = False                # have THESE offsets been tested?
     notes: str = ""
@@ -107,6 +107,22 @@ def _register(g: Game):
 
 
 # ---- Gen 6: X / Y ------------------------------------------------------
+_register(Game(
+    key="CRYSTAL-USA",
+    title="Pokémon Crystal (US, Virtual Console)",
+    # Read off a running Azahar session: ProcessList reported this
+    # title id with process name "trl" (the GB VC emulator), which is
+    # why the Gen 6/7 attach never recognised it.
+    title_ids=(0x0004000000172800,),
+    generation=2,
+    offsets=GameOffsets(),
+    notes=("Virtual Console: a Game Boy emulator inside the 3DS "
+           "process, so Crystal's own addresses are NOT 3DS addresses. "
+           "Its WRAM base is discovered at runtime by pokebot.crystal, "
+           "not stored here. Gen 2 records are unencrypted 48-byte "
+           "structures and shininess is DV-based — none of the "
+           "PK6/PK7 offsets above apply."),
+))
 _register(Game(
     key="X-USA",
     title="Pokémon X (US)",
@@ -262,7 +278,18 @@ def methods_for(game_key: str) -> list[Method]:
     Run this once after a fresh save (with at least one Pokémon in
     slot 0) so subsequent Starters / Manual runs can use the fast
     anchor path.
+
+    Generation 2 (Virtual Console) games get an EMPTY list. Every mode
+    below reads PK6/PK7 records over Azahar's RPC at 3DS addresses,
+    and a VC title has neither — its Game Boy RAM is nested inside the
+    VC emulator and its records are 48-byte Gen 2 structures. Offering
+    these would let the launcher start a hunt that cannot possibly
+    work; Crystal is read with scripts/crystal_watch.py for now.
     """
+    game = GAMES.get(game_key)
+    if game is not None and game.generation < 6:
+        return []
+
     return [
         Method("Manual control", "observe",
                notes="Bot sends NO inputs — you play normally. The "

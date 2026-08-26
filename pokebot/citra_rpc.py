@@ -57,6 +57,9 @@ class RPCError(RuntimeError):
 # Title IDs of the Gen 6/7 mainline games. The 3DS title ID is a u64;
 # Azahar reports it as such in ProcessList.
 POKEMON_TITLE_IDS = {
+    # Gen 2 (3DS Virtual Console). Confirmed against a running Azahar
+    # session; the process name is "trl", the GB VC emulator.
+    0x0004000000172800: ("Crystal", "USA"),
     # Gen 6
     0x0004000000055D00: ("X",          "USA"),
     0x0004000000055E00: ("Y",          "USA"),
