@@ -36,13 +36,13 @@ CACHE_PATH = Path(__file__).resolve().parent.parent / ".crystal_wram.json"
 GB_BATTLE_MODE = 0xD22D
 BATTLE_NONE, BATTLE_WILD, BATTLE_TRAINER = 0, 1, 2
 
-#: Enemy battle structure. PROVISIONAL — the in-battle struct is NOT
-#: the party struct (its DVs do not sit at +0x15), so these come from
-#: Data Crystal's map rather than from a verified parse. Treat any
-#: enemy reading as unconfirmed until checked against a Pokemon whose
-#: DVs are known from the party after catching it.
+#: wEnemyMon uses the Gen 2 battle_struct layout, confirmed against a
+#: live wild battle: species, item, 4 moves, DVs, 4 PP, happiness,
+#: level. Every field lined up at once (Oddish, Absorb, happiness 70,
+#: level 5), which is what pins the DVs to +6 rather than the D20D the
+#: RAM map suggested.
 GB_ENEMY_SPECIES = 0xD206
-GB_ENEMY_DVS = 0xD20D          # 2 bytes: Atk/Def then Spe/Spc
+GB_ENEMY_DVS = 0xD20C          # wEnemyMon + 6
 GB_ENEMY_LEVEL = 0xD213
 
 
@@ -145,40 +145,112 @@ def verify_base(rpc, base: int) -> bool:
     return gen2.looks_like_party(buf, 0)
 
 
+def churn(rpc, base: int, size: int = 0x2000,
+          gap: float = 0.4) -> int:
+    """How many bytes change over ``gap`` seconds — a liveness probe.
+
+    Several regions hold a valid-looking party block: the live WRAM and
+    the save/backup buffers the game keeps. They are indistinguishable
+    by the party signature alone, but only the live one ticks — its
+    clock, RNG and sprite state change constantly, while a save buffer
+    is static. Measured on a real session: live 57 bytes, buffers 14
+    and 0.
+    """
+    try:
+        a = rpc.read(base, size)
+        time.sleep(gap)
+        b = rpc.read(base, size)
+    except Exception:
+        return -1
+    return sum(1 for i in range(min(len(a), len(b))) if a[i] != b[i])
+
+
+def is_live_base(rpc, base: int, min_churn: int = 25) -> bool:
+    """Is this the LIVE WRAM rather than a save buffer copy?"""
+    return churn(rpc, base) >= min_churn
+
+
 def locate_wram(rpc, ranges, use_cache: bool = True) -> int | None:
-    """Find the emulated WRAM base, preferring a validated cache."""
+    """Find the emulated WRAM base, preferring a validated cache.
+
+    A cached base must still be LIVE, not merely parseable: locking
+    onto a save buffer reads a correct party forever while battle state
+    stays permanently zero, so encounters are never detected.
+    """
     if use_cache:
         cached = _load_cached_base()
         if cached is not None and verify_base(rpc, cached):
-            log.info(f"WRAM base {cached:#010x} (cached, verified)")
-            return cached
-        if cached is not None:
+            if is_live_base(rpc, cached):
+                log.info(f"WRAM base {cached:#010x} (cached, verified live)")
+                return cached
+            log.info(f"cached base {cached:#010x} parses but is not live "
+                     f"(a save buffer); re-scanning")
+        elif cached is not None:
             log.info("cached WRAM base no longer valid; re-scanning")
 
     for start, end in ranges:
         log.info(f"scanning {start:#010x}-{end:#010x} for the party block…")
-        hits = scan_range(rpc, start, end, stop_after=1)
-        if hits:
-            base = hits[0]["wram_base"]
-            log.info(f"WRAM base {base:#010x} "
-                     f"(party block @ {hits[0]['party_addr']:#010x})")
-            _save_cached_base(base)
-            return base
+        # Collect several candidates, then pick the live one. Taking the
+        # first match is what locked onto a save buffer.
+        hits = scan_range(rpc, start, end, stop_after=8)
+        if not hits:
+            continue
+        scored = []
+        for h in hits:
+            c = churn(rpc, h["wram_base"])
+            scored.append((c, h))
+            log.info(f"  candidate {h['wram_base']:#010x}  churn={c}")
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        best_churn, best = scored[0]
+        if best_churn < 0:
+            continue
+        base = best["wram_base"]
+        if best_churn < 25:
+            log.warning(f"  best candidate churns only {best_churn} bytes — "
+                        f"this may be a save buffer, so battle state could "
+                        f"read as empty.")
+        log.info(f"WRAM base {base:#010x} "
+                 f"(party block @ {best['party_addr']:#010x}, "
+                 f"churn {best_churn})")
+        _save_cached_base(base)
+        return base
     return None
 
 
 class CrystalSession:
     """Reads a located Crystal session. Re-locates if the base goes stale."""
 
+    #: How often to re-confirm the base is LIVE, not just parseable.
+    LIVE_CHECK_EVERY_S = 30.0
+
     def __init__(self, rpc, ranges, base: int | None = None):
         self.rpc = rpc
         self.ranges = ranges
         self.base = base
+        self._next_live_check = 0.0
 
     def ensure_base(self) -> int | None:
+        """Return a base that still holds a party AND is still live.
+
+        verify_base alone is not enough. The emulator keeps save and
+        backup buffers that contain a perfectly valid party block, so a
+        base can keep verifying forever while battle state reads as
+        permanently zero and no encounter is ever seen. Liveness is
+        rechecked on a timer rather than every call, because it costs
+        two reads and a short sleep.
+        """
         if self.base is not None and verify_base(self.rpc, self.base):
-            return self.base
+            now = time.monotonic()
+            if now < self._next_live_check:
+                return self.base
+            self._next_live_check = now + self.LIVE_CHECK_EVERY_S
+            if is_live_base(self.rpc, self.base):
+                return self.base
+            log.warning(f"base {self.base:#010x} still parses but has "
+                        f"stopped ticking — it is a save buffer, not live "
+                        f"WRAM. Re-locating.")
         self.base = locate_wram(self.rpc, self.ranges)
+        self._next_live_check = time.monotonic() + self.LIVE_CHECK_EVERY_S
         return self.base
 
     def _read(self, gb_addr: int, size: int) -> bytes | None:

@@ -2176,7 +2176,13 @@ class _App(tk.Tk):
             chosen_starter = method.starter
         # Resolve the movement axis for encounter mode.
         chosen_movement = None
-        if method.mode in ("encounter", "horde"):
+        if method.movement:
+            # The method itself fixes the axis (the Crystal modes ship
+            # one entry per direction). This has to come first: the
+            # branch below only fires for the Gen 6 mode names, so a
+            # Crystal "vertical" method silently walked horizontally.
+            chosen_movement = method.movement
+        elif method.mode in ("encounter", "horde"):
             chosen_movement = (
                 "vertical"
                 if "Vertical" in self._movement_var.get()

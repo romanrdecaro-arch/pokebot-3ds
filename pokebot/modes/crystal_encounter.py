@@ -67,16 +67,19 @@ def _shiny_candidates(buf: bytes) -> list:
 def _flee(ctx, settle: float) -> None:
     """Select RUN from the Gen 2 battle menu and clear the text.
 
-    The menu is a 2x2 grid with the cursor starting on FIGHT:
+    The opening A clears the "Wild POKEMON appeared!" text so the
+    command menu is actually on screen; without it the d-pad presses
+    land on the message box and do nothing. Then the menu is a 2x2 grid
+    with the cursor starting on FIGHT:
 
         FIGHT  PKMN
         PACK   RUN
 
-    so RUN is one step down and one step right, then A. Gen 2 has no
-    touch screen, which is a small mercy — this needs no mouse at all.
+    so RUN is one down, one right, then A. Gen 2 has no touch screen,
+    which is a small mercy — this needs no mouse at all.
     """
     ctx._stop_evt.wait(settle)
-    for button in ("DpadDown", "DpadRight", "A"):
+    for button in ("A", "DpadDown", "DpadRight", "A"):
         if ctx.should_stop():
             return
         ctx.input.tap(button, hold_s=0.06)

@@ -21,9 +21,18 @@ from test_gen2 import make_mon      # noqa: E402
 
 
 class FakeRPC:
-    def __init__(self, base: int, data: bytes):
+    """A fake address space.
+
+    ``live_at`` marks which base behaves like RUNNING memory: a byte
+    there changes on every read, which is how locate_wram tells live
+    WRAM apart from a static save buffer.
+    """
+
+    def __init__(self, base: int, data: bytes, live_at: int | None = None):
         self.base, self.data = base, data
         self.reads = 0
+        self.live_at = base if live_at is None else live_at
+        self._tick = 0
 
     def read(self, addr: int, size: int) -> bytes:
         self.reads += 1
@@ -33,6 +42,12 @@ class FakeRPC:
         chunk = self.data[lo:lo + size]
         if len(chunk) < size:
             raise RuntimeError("short read")
+        if addr == self.live_at:
+            self._tick += 1
+            out = bytearray(chunk)
+            for i in range(0, min(64, len(out))):
+                out[i] = (out[i] + self._tick) & 0xFF
+            return bytes(out)
         return chunk
 
 
@@ -74,15 +89,16 @@ def test_located_base_is_cached_and_reused() -> None:
     """A cache hit must verify in one read, not re-walk the heap."""
     far = 0x20000                       # several chunks in
     space = build_space([make_mon(251, 30)], wram_at=far)
-    rpc = FakeRPC(BASE, space)
+    rpc = FakeRPC(BASE, space, live_at=BASE + far)
     assert crystal.locate_wram(rpc, [(BASE, BASE + 0x30000)]) == BASE + far
     scan_reads = rpc.reads
     assert scan_reads > 2, "scenario too easy to prove anything"
 
-    rpc2 = FakeRPC(BASE, space)
+    rpc2 = FakeRPC(BASE, space, live_at=BASE + far)
     assert crystal.locate_wram(rpc2, [(BASE, BASE + 0x30000)]) == BASE + far
     assert rpc2.reads < scan_reads, "cached run re-scanned the whole heap"
-    assert rpc2.reads <= 2, "a cached base should verify in one read"
+    assert rpc2.reads <= 4, ("a cached base should cost a verify plus a "
+                             "liveness probe, not a rescan")
 
 
 def test_stale_cached_base_is_rescanned_not_trusted() -> None:
@@ -189,3 +205,76 @@ def test_scan_prefilter_handles_a_party_count_of_six() -> None:
     hits = crystal.scan_range(rpc, BASE, BASE + 0x30000)
     assert len(hits) == 1
     assert [p.species for p in hits[0]["party"]] == [150 + i for i in range(6)]
+
+
+def test_live_base_is_preferred_over_a_save_buffer() -> None:
+    """The bug this exists to prevent.
+
+    Several regions hold a valid party block — the live WRAM and the
+    game's save/backup buffers. They are identical to the party
+    signature, so taking the first match can lock onto a buffer that
+    reads a correct party forever while battle state stays permanently
+    zero, and no encounter is ever detected.
+    """
+    mons = [make_mon(251, 30)]
+    space = bytearray(0x40000)
+    buffer_at, live_at = 0x1000, 0x21000
+    for at in (buffer_at, live_at):
+        blk = build_space(mons, span=0x40000, wram_at=at)
+        space[at:at + 0x30000] = blk[at:at + 0x30000]
+
+    rpc = FakeRPC(BASE, bytes(space), live_at=BASE + live_at)
+    assert crystal.locate_wram(rpc, [(BASE, BASE + 0x40000)],
+                               use_cache=False) == BASE + live_at
+
+
+def test_churn_distinguishes_live_from_static() -> None:
+    space = build_space([make_mon()], wram_at=0)
+    live = FakeRPC(BASE, space, live_at=BASE)
+    static = FakeRPC(BASE, space, live_at=BASE + 0x99999)   # never hit
+    assert crystal.churn(live, BASE, size=0x400, gap=0.0) > 0
+    assert crystal.churn(static, BASE, size=0x400, gap=0.0) == 0
+    assert crystal.is_live_base(live, BASE) is True
+    assert crystal.is_live_base(static, BASE) is False
+
+
+def test_stale_cache_pointing_at_a_buffer_is_rejected() -> None:
+    """A cached base that parses but does not tick must be re-scanned."""
+    space = build_space([make_mon()], wram_at=0)
+    crystal._save_cached_base(BASE)
+    static = FakeRPC(BASE, space, live_at=BASE + 0x99999)
+    assert not crystal.is_live_base(static, BASE)
+
+
+def test_session_switches_off_a_dead_buffer_to_the_live_base() -> None:
+    """A base can keep parsing while being a dead save buffer.
+
+    The session must notice it has stopped ticking and move to the
+    real WRAM, or it reads a correct party forever while battle state
+    stays zero and no encounter is ever detected.
+    """
+    mons = [make_mon(251, 30)]
+    space = bytearray(0x40000)
+    buffer_at, live_at = 0x1000, 0x21000
+    for at in (buffer_at, live_at):
+        blk = build_space(mons, span=0x40000, wram_at=at)
+        space[at:at + 0x30000] = blk[at:at + 0x30000]
+
+    rpc = FakeRPC(BASE, bytes(space), live_at=BASE + live_at)
+    s = crystal.CrystalSession(rpc, [(BASE, BASE + 0x40000)],
+                               base=BASE + buffer_at)
+    s._next_live_check = 0.0          # force the liveness check now
+    assert s.ensure_base() == BASE + live_at
+    assert s.base == BASE + live_at
+
+
+def test_liveness_is_not_rechecked_every_call() -> None:
+    """The probe costs two reads and a sleep; it must be on a timer."""
+    space = build_space([make_mon()], wram_at=0)
+    rpc = FakeRPC(BASE, space, live_at=BASE)
+    s = crystal.CrystalSession(rpc, [(BASE, BASE + 0x30000)], base=BASE)
+    s.ensure_base()
+    after_first = rpc.reads
+    for _ in range(5):
+        s.ensure_base()
+    assert rpc.reads - after_first <= 6, "liveness probed on every call"
