@@ -111,6 +111,17 @@ def run(ctx) -> None:
         ctx.request_stop("crystal wram not found")
         return
     log.info(f"  WRAM base {base:#010x}")
+
+    # Bring Azahar to the front once, as the Gen 6 modes do: the
+    # emulator only acts on input while its window is focused.
+    try:
+        from ..platform_utils import focus_azahar
+        if not focus_azahar():
+            log.warning("  could not focus Azahar — keypresses may not "
+                        "register. Click the emulator window once.")
+    except Exception as exc:
+        log.warning(f"  focus_azahar failed: {exc}")
+
     if check == "strict":
         log.info(f"  shiny check: strict, opponent DVs at "
                  f"{GB_ENEMY_DVS:#06x}")

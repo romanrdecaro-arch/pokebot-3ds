@@ -1295,6 +1295,9 @@ class _RecentlySeen(tk.Frame):
 
 class _App(tk.Tk):
 
+    #: How often the Tk thread drains queued bot output.
+    _PUMP_MS = 60
+
     def __init__(self):
         super().__init__()
         self.title("pokebot-3ds")
@@ -1323,6 +1326,10 @@ class _App(tk.Tk):
             pass
         self._tweak_ttk_theme()
 
+        # Bot output crosses a thread boundary: the reader thread only
+        # queues, and the Tk thread drains. See _on_bot_line.
+        self._line_q: "queue.Queue" = queue.Queue()
+        self._exit_q: "queue.Queue" = queue.Queue()
         self._cfg = _load_config()
         self._bot = _BotProcess(self._on_bot_line, self._on_bot_exit)
         self._offset_proc: subprocess.Popen | None = None
@@ -1331,6 +1338,8 @@ class _App(tk.Tk):
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._pump_bot_lines()
+        self._pump_bot_exit()
 
         if _AUTO_INSTALLED:
             self._log(f"Auto-installed: {', '.join(_AUTO_INSTALLED)}", "good")
@@ -2328,7 +2337,52 @@ class _App(tk.Tk):
 
     # ---- Bot callbacks -----------------------------------------------------
 
-    def _on_bot_line(self, line: str):
+    def _on_bot_line(self, line: str) -> None:
+        """Called on the bot's stdout READER THREAD. Must not touch Tk.
+
+        This used to call self.after() directly, which is not
+        thread-safe: it raised `RuntimeError: main thread is not in
+        main loop`, and because that killed the reader thread, every
+        later line — including every encounter — was lost. The table
+        stayed empty for a whole session.
+
+        So the thread only queues; _pump_bot_lines does the Tk work.
+        """
+        try:
+            self._line_q.put_nowait(line)
+        except Exception:
+            pass
+
+    def _pump_bot_exit(self) -> None:
+        """Apply a finished bot's exit code. Tk thread only."""
+        while True:
+            try:
+                self._exit_q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._set_running(False)
+            except Exception:
+                pass
+        self.after(self._PUMP_MS, self._pump_bot_exit)
+
+    def _pump_bot_lines(self) -> None:
+        """Drain queued bot output. Tk thread only."""
+        for _ in range(200):          # bounded so a burst can't stall the UI
+            try:
+                line = self._line_q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._handle_bot_line(line)
+            except Exception as exc:
+                try:
+                    self._log(f"[line] {type(exc).__name__}: {exc}", "warn")
+                except Exception:
+                    pass
+        self.after(self._PUMP_MS, self._pump_bot_lines)
+
+    def _handle_bot_line(self, line: str) -> None:
         # Structured event line emitted by dashboard_server.broadcast.
         if line.startswith("EVENT: "):
             try:
@@ -2337,7 +2391,7 @@ class _App(tk.Tk):
             except Exception:
                 evt = None
             if evt:
-                self.after(0, self._dispatch_event, evt)
+                self._dispatch_event(evt)
                 return  # don't pollute the log view with raw event JSON
         tag = ""
         ll = line.lower()
@@ -2347,7 +2401,7 @@ class _App(tk.Tk):
             tag = "warn"
         elif "target hit" in ll or "shiny" in ll:
             tag = "accent"
-        self._log_thread(line, tag)
+        self._log(line, tag)
 
     def _dispatch_event(self, evt: dict):
         kind = evt.get("type", "")
@@ -2400,11 +2454,14 @@ class _App(tk.Tk):
             except Exception as e:
                 self._log(f"[party] update failed: {e}", "warn")
 
-    def _on_bot_exit(self, code: int):
-        self._log_thread(
-            f"Bot stopped (exit code {code})",
-            "good" if code == 0 else "warn")
-        self.after(0, self._set_running, False)
+    def _on_bot_exit(self, code: int) -> None:
+        """Also called on the reader thread — queue, never touch Tk."""
+        try:
+            self._line_q.put_nowait(
+                f"Bot stopped (exit code {code})")
+            self._exit_q.put_nowait(code)
+        except Exception:
+            pass
 
     # ---- Helpers -----------------------------------------------------------
 
@@ -2434,8 +2491,12 @@ class _App(tk.Tk):
         self._log_box.see("end")
         self._log_box.config(state="disabled")
 
-    def _log_thread(self, text: str, tag: str = ""):
-        self.after(0, self._log, text, tag)
+    def _log_thread(self, text: str, tag: str = "") -> None:
+        """Queue a line from a worker thread. Never calls Tk directly."""
+        try:
+            self._line_q.put_nowait(text)
+        except Exception:
+            pass
 
     def _clear_log(self):
         self._log_box.config(state="normal")

@@ -86,3 +86,18 @@ def test_false_positive_rate_is_tolerable() -> None:
     windows = (ce._ENEMY_REGION_HI - ce._ENEMY_REGION_LO) - 1
     rate = windows * 8 / 65536
     assert 1 / 400 < rate < 1 / 100, f"one stop per {1 / rate:.0f} encounters"
+
+
+def test_flee_sequence_is_down_right_a() -> None:
+    """Confirmed against the game: RUN is one down, one right, then A.
+
+    The Gen 2 battle menu is a 2x2 grid with the cursor starting on
+    FIGHT, so this is the whole flee input — no touch screen involved.
+    """
+    import inspect
+    src = inspect.getsource(ce._flee)
+    order = [b for b in ("DpadDown", "DpadRight", "A") if b in src]
+    assert order == ["DpadDown", "DpadRight", "A"]
+    # and it must not reach for a touch/mouse path, which Gen 2 has none of
+    assert "tap_touch" not in src
+    assert "click" not in src
