@@ -18,33 +18,11 @@ sys.path.insert(0, str(REPO))
 from pokebot import platform_utils as pu  # noqa: E402
 
 
-@pytest.fixture(scope="module")
-def _tk_session():
-    """One hidden Tk root for the module, or skip when there is none.
-
-    Module-scoped deliberately: creating and destroying a Tk root per
-    test intermittently fails with `invalid command name
-    "tcl_findLibrary"`, which is an artefact of repeated interpreter
-    setup rather than anything about the widget under test.
-    """
-    tk = pytest.importorskip("tkinter")
-    try:
-        root = tk.Tk()
-    except Exception as exc:                       # no display / no Tk
-        pytest.skip(f"Tk unavailable: {exc}")
-    root.withdraw()
-    yield root
-    try:
-        root.destroy()
-    except Exception:
-        pass
-
-
 @pytest.fixture
-def tk_root(_tk_session):
+def tk_root(tk_session):
     """A clean container inside the shared root, torn down per test."""
     import tkinter as tk
-    frame = tk.Frame(_tk_session)
+    frame = tk.Frame(tk_session)
     frame.pack()
     yield frame
     try:

@@ -20,20 +20,18 @@ import pytest  # noqa: E402
 
 
 @pytest.fixture
-def tk_root_for_table(tmp_path, monkeypatch):
+def tk_root_for_table(tk_session, tmp_path, monkeypatch):
     """A Tk container with the launcher's stats redirected to tmp."""
-    tk = pytest.importorskip("tkinter")
+    import tkinter as tk
     import launcher
     monkeypatch.setattr(launcher, "ROOT", tmp_path)
     monkeypatch.setattr(launcher, "_STATS_FILE", tmp_path / "stats.json")
+    monkeypatch.setenv("POKEBOT_STATS_RO", "1")
+    frame = tk.Frame(tk_session)
+    frame.pack()
+    yield frame
     try:
-        root = tk.Tk()
-    except Exception as exc:
-        pytest.skip(f"Tk unavailable: {exc}")
-    root.withdraw()
-    yield root
-    try:
-        root.destroy()
+        frame.destroy()
     except Exception:
         pass
 
