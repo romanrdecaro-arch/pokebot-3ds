@@ -1167,11 +1167,11 @@ class _RecentlySeen(tk.Frame):
                    | (dv_vals[3] << 4) | dv_vals[4])
 
         level = evt.get("level")
-        gender = evt.get("gender")
-        # Gen 2 gender comes from the Attack DV plus the species gender
-        # ratio, which we do not carry — so show unknown rather than
-        # guessing.
-        sex_glyph = {"M": "♂", "F": "♀"}.get(gender, "—")
+        # Gen 2 gender is derived from the Attack DV against the
+        # species ratio and computed upstream; "N" is genderless, which
+        # a great many Gen 2 species are.
+        sex_glyph = {"M": "♂", "F": "♀", "N": "⚲"}.get(
+            evt.get("gender"), "—")
 
         held = evt.get("held_item")
         held_text = "—" if not held else f"#{int(held)}"

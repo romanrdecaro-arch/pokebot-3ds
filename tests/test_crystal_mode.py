@@ -235,10 +235,29 @@ def test_gen2_row_uses_the_gen2_hidden_power() -> None:
     assert str(expected_power) in hp
 
 
-def test_gen2_row_does_not_invent_a_gender() -> None:
-    """Gen 2 gender needs the species ratio, which we do not carry."""
+def test_gen2_row_shows_the_derived_gender() -> None:
+    """Gender is computed from the Attack DV and the species ratio.
+
+    Gyarados is a 50%-female species; Attack DV 14 puts it male.
+    """
     L = _launcher()
-    assert L._RecentlySeen._row_values(_gen2_evt())[0] == "—"
+    assert L._RecentlySeen._row_values(_gen2_evt())[0] == "♂"
+
+
+def test_gen2_row_marks_a_genderless_species() -> None:
+    from pokebot import gen2 as g2
+    from pokebot.modes import crystal_observe as co
+    L = _launcher()
+    celebi = co._payload(_mon(dv_word=0xEAAA, species=g2.CELEBI_SPECIES))
+    assert celebi["gender"] == "N"
+    assert L._RecentlySeen._row_values(celebi)[0] == "⚲"
+
+
+def test_gen2_row_falls_back_when_gender_is_unknown() -> None:
+    L = _launcher()
+    evt = dict(_gen2_evt())
+    evt.pop("gender", None)
+    assert L._RecentlySeen._row_values(evt)[0] == "—"
 
 
 def test_gen6_rows_are_unchanged() -> None:

@@ -227,3 +227,55 @@ def hidden_power(dvs: dict) -> tuple:
     power = (5 * (v + 2 * w + 4 * x + 8 * y) + (spc % 4)) // 2 + 31
 
     return HP_TYPES[type_index], power
+
+
+#: Gender ratio sentinels (Game Boy base-stats convention).
+GENDER_GENDERLESS = 255
+GENDER_ALWAYS_MALE = 0
+GENDER_ALWAYS_FEMALE = 254
+
+
+def gender(species_id: int, atk_dv: int) -> str:
+    """``"M"``, ``"F"`` or ``"N"`` (genderless), or ``"?"`` if unknown.
+
+    Gen 2 stores no gender on a Pokemon. It is derived at display time
+    from the Attack DV against the species' gender ratio:
+
+        female  if  (Attack DV * 16) < ratio
+
+    which is why a species' gender split is always a multiple of 1/16,
+    and why gender and shininess are not independent — both are
+    functions of the same Attack DV.
+    """
+    from .gen2_gender import GENDER_RATIOS
+    ratio = GENDER_RATIOS.get(int(species_id))
+    if ratio is None:
+        return "?"
+    if ratio == GENDER_GENDERLESS:
+        return "N"
+    if ratio == GENDER_ALWAYS_MALE:
+        return "M"
+    if ratio == GENDER_ALWAYS_FEMALE:
+        return "F"
+    return "F" if int(atk_dv) * 16 < ratio else "M"
+
+
+def female_can_be_shiny(species_id: int) -> bool:
+    """Can a FEMALE of this species be shiny at all?
+
+    Shininess needs an Attack DV in SHINY_ATK_DVS (minimum 2), while a
+    female needs Atk*16 < ratio. For a 12.5%-female species (ratio 31)
+    that caps Atk at 1, so no female can ever be shiny — the classic
+    Gen 2 quirk that rules out shiny female starters.
+    """
+    from .gen2_gender import GENDER_RATIOS
+    ratio = GENDER_RATIOS.get(int(species_id))
+    if ratio is None:
+        return True
+    if ratio == GENDER_GENDERLESS:
+        return False                      # no females at all
+    if ratio == GENDER_ALWAYS_MALE:
+        return False
+    if ratio == GENDER_ALWAYS_FEMALE:
+        return True
+    return any(atk * 16 < ratio for atk in SHINY_ATK_DVS)

@@ -68,6 +68,9 @@ def _payload(p, **extra) -> dict:
     hp_type, hp_power = gen2.hidden_power(p.dvs)
     payload["hp_type"] = hp_type
     payload["hp_power"] = hp_power
+    # Gen 2 stores no gender: it is derived from the Attack DV against
+    # the species gender ratio, so it is computed here rather than read.
+    payload["gender"] = gen2.gender(p.species, p.dvs.get("Atk", 0))
     payload.update(extra)
     return payload
 

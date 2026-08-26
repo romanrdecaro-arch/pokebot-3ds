@@ -414,3 +414,72 @@ def test_correlator_reports_every_copy() -> None:
 def test_correlator_finds_nothing_when_absent() -> None:
     from find_enemy_dvs import find_all
     assert find_all(bytes(0x2000), 0xBEEF) == []
+
+
+# --------------------------------------------------------------------
+# Gender — derived from the Attack DV, never stored
+# --------------------------------------------------------------------
+
+def test_gender_ratio_table_covers_every_gen2_species() -> None:
+    from pokebot.gen2_gender import GENDER_RATIOS
+    assert set(GENDER_RATIOS) == set(range(1, gen2.MAX_SPECIES + 1))
+
+
+@pytest.mark.parametrize("species,expected", [
+    (81, "N"),    # Magnemite, genderless
+    (151, "N"),   # Mew
+    (251, "N"),   # Celebi
+    (113, "F"),   # Chansey, always female
+])
+def test_fixed_gender_species(species: int, expected: str) -> None:
+    for atk in range(16):
+        assert gen2.gender(species, atk) == expected
+
+
+def test_fifty_fifty_species_splits_evenly() -> None:
+    """Ratio 127: female when Atk*16 < 127, i.e. Atk 0..7."""
+    genders = [gen2.gender(25, atk) for atk in range(16)]
+    assert genders.count("F") == 8 and genders.count("M") == 8
+    assert gen2.gender(25, 7) == "F" and gen2.gender(25, 8) == "M"
+
+
+def test_one_eighth_female_species_splits_two_of_sixteen() -> None:
+    genders = [gen2.gender(1, atk) for atk in range(16)]
+    assert genders.count("F") == 2, "12.5% female is 2 of 16 Attack DVs"
+
+
+def test_unknown_species_is_not_guessed() -> None:
+    assert gen2.gender(9999, 5) == "?"
+
+
+def test_female_of_a_seven_to_one_species_can_never_be_shiny() -> None:
+    """The classic Gen 2 quirk, and it falls straight out of the maths.
+
+    Shiny needs Attack in {2,3,6,7,...} (minimum 2), but a female of a
+    12.5%-female species needs Atk <= 1. The two cannot both hold.
+    """
+    for starter in (1, 4, 7, 152, 155, 158):      # Gen 1 + Gen 2 starters
+        assert not gen2.female_can_be_shiny(starter)
+        for atk in gen2.SHINY_ATK_DVS:
+            assert gen2.gender(starter, atk) == "M"
+
+
+def test_even_ratio_species_can_have_a_shiny_female() -> None:
+    assert gen2.female_can_be_shiny(25)
+    shiny_females = [atk for atk in gen2.SHINY_ATK_DVS
+                     if gen2.gender(25, atk) == "F"]
+    assert shiny_females
+
+
+def test_genderless_species_has_no_shiny_female() -> None:
+    assert not gen2.female_can_be_shiny(251)      # Celebi
+
+
+def test_gender_and_shininess_share_the_attack_dv() -> None:
+    """They are not independent — both read the same DV, which is why
+    the quirk above exists at all."""
+    for atk in range(16):
+        dvs = {"HP": 0, "Atk": atk, "Def": 10, "Spe": 10, "Spc": 10}
+        if gen2.is_shiny(dvs):
+            assert atk in gen2.SHINY_ATK_DVS
+            assert gen2.gender(1, atk) == "M"     # Bulbasaur, 12.5% F
