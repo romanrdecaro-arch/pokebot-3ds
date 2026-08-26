@@ -109,6 +109,27 @@ offsets:
   foe_scan_len: 0x20000
   in_battle_flag: 0x0        # TODO: not yet located (battle-state u8)
 
+# Celebi soft-reset hunt (Pokemon Crystal, Virtual Console).
+#
+# Save standing in front of the Ilex Forest shrine with the GS Ball
+# placed, so that ONE A press starts the encounter. The bot spams A
+# until Celebi appears, checks its DVs, and soft-resets if it is not
+# shiny. On a shiny it STOPS COMPLETELY and sends no further input —
+# the fight is yours.
+#
+# The reset is the Game Boy combo A+B+Start+Select, handled by the Gen 2
+# ROM itself, so it leaves Azahar and the located WRAM base untouched.
+celebi_hunt:
+  press_interval: 0.5        # seconds between A presses
+  encounter_timeout: 120     # give up A-spamming after this long, and say so
+  reset_hold: 0.6            # how long to hold A+B+Start+Select
+  boot_timeout: 90           # wait this long for the save to reload
+  # Same meaning as random_encounters.enemy_dv_check below. Every
+  # attempt ALSO cross-checks the DV reading against the opponent's max
+  # HP (Celebi at Lv30 with HP DV 4 must have 102), and the hunt halts
+  # rather than resetting past shinies on a reading it cannot trust.
+  enemy_dv_check: paranoid
+
 # Random-encounter shiny hunt tuning.
 random_encounters:
   # --- Pokémon Crystal (Virtual Console) ---------------------------

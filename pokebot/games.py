@@ -308,6 +308,12 @@ def methods_for(game_key: str) -> list[Method]:
                    movement="vertical",
                    notes="Walks Up/Down to trigger wild battles, "
                          "checks each one and runs from the rest."),
+            Method("Celebi soft-reset hunt", "crystal_celebi",
+                   notes="Save in front of the Ilex Forest shrine with "
+                         "the GS Ball placed. Spams A until Celebi "
+                         "appears, checks its DVs, and soft-resets if "
+                         "it is not shiny. STOPS COMPLETELY on a shiny "
+                         "so you can catch it yourself."),
         ]
     if game is not None and game.generation < 6:
         return []

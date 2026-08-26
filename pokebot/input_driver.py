@@ -338,15 +338,16 @@ class InputDriver:
             for k in keys:
                 self._release(k)
 
-    def soft_reset(self, hold_s: float = 0.5):
-        """3DS soft-reset combo: L + R + Start held together.
+    def hold_combo(self, buttons, hold_s: float = 0.5, what: str = "combo"):
+        """Hold several buttons together, by whichever path works.
 
-        Prefer the PostMessage path on Windows — pynput's SendInput
-        wrapper crashes on Python 3.14 (ctypes signature mismatch),
-        and PostMessage doesn't need Azahar focused either way.
+        Prefer PostMessage on Windows — pynput's SendInput wrapper
+        crashes on Python 3.14 (ctypes signature mismatch), and
+        PostMessage does not need Azahar focused either way.
         """
+        buttons = list(buttons)
         if self.dry_run:
-            log.info(f"[DRY] soft_reset ({hold_s}s)")
+            log.info(f"[DRY] {what} ({hold_s}s)")
             time.sleep(hold_s)
             return
         if sys.platform.startswith("win"):
@@ -356,7 +357,7 @@ class InputDriver:
                     char_to_vk,
                 )
                 vks = [char_to_vk(getattr(self.binds, b, None))
-                       for b in ("L", "R", "Start")]
+                       for b in buttons]
                 if not self._azahar_hwnd:
                     self._azahar_hwnd = find_azahar_hwnd() or 0
                 if self._azahar_hwnd and all(vks):
@@ -368,14 +369,32 @@ class InputDriver:
                     finally:
                         # Without this, a failure between the downs and
                         # the ups fell through to the pynput combo below
-                        # with L and R still latched in Azahar.
+                        # with buttons still latched in Azahar.
                         for vk in vks:
                             post_key_up(self._azahar_hwnd, vk)
                             self._held_vks.discard(vk)
                     return
             except Exception as e:
-                log.warning(f"  soft_reset PostMessage failed ({e}); "
+                log.warning(f"  {what} PostMessage failed ({e}); "
                             f"falling back to pynput.")
         # pynput fallback (needs focus; may crash on Python 3.14 —
         # the PostMessage path above is the primary route).
-        self.combo("L", "R", "Start", hold_s=hold_s)
+        self.combo(*buttons, hold_s=hold_s)
+
+    def soft_reset(self, hold_s: float = 0.5):
+        """3DS soft-reset combo: L + R + Start held together."""
+        self.hold_combo(("L", "R", "Start"), hold_s, what="soft_reset")
+
+    def gb_soft_reset(self, hold_s: float = 0.6):
+        """Game Boy soft reset: A + B + Start + Select together.
+
+        NOT the 3DS combo. A Virtual Console title is a Game Boy game
+        running inside a 3DS process, and this reset is implemented in
+        the Gen 2 ROM's own joypad routine — so it resets the emulated
+        Game Boy back to its title screen and leaves Azahar, the VC
+        process, and the located WRAM base all exactly where they were.
+        L+R+Start would be handled by the 3DS layer instead, which is a
+        different and much heavier thing to do between hunt attempts.
+        """
+        self.hold_combo(("A", "B", "Start", "Select"), hold_s,
+                        what="gb_soft_reset")

@@ -82,9 +82,16 @@ BATTLE_NONE, BATTLE_WILD, BATTLE_TRAINER = 0, 1, 2
 #: level. Every field lined up at once (Oddish, Absorb, happiness 70,
 #: level 5), which is what pins the DVs to +6 rather than the D20D the
 #: RAM map suggested.
+#:
+#: Full battle_struct, from pokecrystal:
+#:     +0  species     +8  PP (4)      +15 unused
+#:     +1  item        +12 happiness   +16 HP
+#:     +2  moves (4)   +13 level       +18 max HP
+#:     +6  DVs         +14 status      +20 stats...
 GB_ENEMY_SPECIES = 0xD206
 GB_ENEMY_DVS = 0xD20C          # wEnemyMon + 6
-GB_ENEMY_LEVEL = 0xD213
+GB_ENEMY_LEVEL = 0xD213        # wEnemyMon + 13
+GB_ENEMY_MAXHP = 0xD218        # wEnemyMon + 18
 
 
 def _gb(addr: int) -> int:
@@ -94,12 +101,21 @@ def _gb(addr: int) -> int:
 
 @dataclass(frozen=True)
 class EnemyReading:
-    """A provisional read of the in-battle opponent."""
+    """A read of the in-battle opponent.
+
+    ``dv_check`` is the answer to "do these DVs explain the opponent's
+    max HP?" — True, False, or None when the species has no trusted
+    base HP to check against. It matters because the DV offset was
+    found by hand: a wrong offset does not crash, it silently reports
+    every opponent as ordinary. See :func:`gen2.verify_dv_reading`.
+    """
     species: int
     level: int
     dvs: dict
     shiny: bool
     confirmed: bool = False
+    max_hp: int = 0
+    dv_check: bool | None = None
 
 
 def _dead_range_message(start: int, cur: int, dead: int) -> str:
@@ -583,6 +599,11 @@ class CrystalSession:
         dv_raw = self._read(GB_ENEMY_DVS, 2)
         if not species or not level or not dv_raw:
             return None
+        raw_hp = self._read(GB_ENEMY_MAXHP, 2)
+        max_hp = int.from_bytes(raw_hp, "big") if raw_hp else 0
         dvs = gen2.parse_dvs(int.from_bytes(dv_raw, "big"))
-        return EnemyReading(species=species[0], level=level[0], dvs=dvs,
-                            shiny=gen2.is_shiny(dvs), confirmed=False)
+        return EnemyReading(
+            species=species[0], level=level[0], dvs=dvs,
+            shiny=gen2.is_shiny(dvs), confirmed=False, max_hp=max_hp,
+            dv_check=gen2.verify_dv_reading(species[0], level[0], dvs,
+                                            max_hp))

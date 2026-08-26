@@ -359,9 +359,14 @@ def test_crystal_offers_only_its_own_modes() -> None:
     from pokebot.games import methods_for
     from pokebot.modes import MODES
     methods = methods_for("CRYSTAL-USA")
-    assert {m.mode for m in methods} == {"crystal_observe",
-                                         "crystal_encounter"}
+    assert {m.mode for m in methods} >= {"crystal_observe",
+                                         "crystal_encounter",
+                                         "crystal_celebi"}
+    # Asserted as a property rather than a frozen list, so adding a Gen 2
+    # mode does not fail this while adding a Gen 6 one still does.
     for m in methods:
+        assert m.mode.startswith("crystal_"), (
+            f"offered '{m.mode}', which is not a Gen 2 mode")
         assert m.mode in MODES, f"offered '{m.mode}', which cannot run"
 
     gen6_modes = {"observe", "encounter", "horde", "fishing",

@@ -67,6 +67,50 @@ CELEBI_SPECIES = 251
 SHINY_ATK_DVS = frozenset({2, 3, 6, 7, 10, 11, 14, 15})
 SHINY_FIXED_DV = 10
 
+#: Base HP of the species this bot can verify a DV read against.
+#:
+#: Deliberately tiny. Verifying max HP needs a base stat, and a wrong
+#: entry would halt a working hunt, so only values that are certain go
+#: in here — Celebi's base stats are famously 100 across the board.
+#: Species absent from this table simply skip verification.
+BASE_HP = {
+    CELEBI_SPECIES: 100,
+}
+
+
+def max_hp(base_hp: int, hp_dv: int, level: int, stat_exp: int = 0) -> int:
+    """Gen 1/2 max-HP formula.
+
+    Wild Pokemon carry no stat experience, so for anything the bot
+    meets in the grass this is fully determined by species, level and
+    the HP DV — which makes it a way to CHECK a DV reading rather than
+    merely trust it. See ``verify_dv_reading``.
+    """
+    import math
+    ev = int(math.sqrt(stat_exp)) // 4 if stat_exp else 0
+    return ((base_hp + hp_dv) * 2 + ev) * level // 100 + level + 10
+
+
+def verify_dv_reading(species: int, level: int, dvs: dict,
+                      observed_max_hp: int) -> bool | None:
+    """Do these DVs actually explain the opponent's max HP?
+
+    Returns True/False, or None when the species has no trusted base HP
+    and the question cannot be answered.
+
+    This exists because the opponent's DV offset was found by hand
+    rather than from documentation, and the failure it guards against
+    is the one a shiny hunt cannot recover from: reading the wrong two
+    bytes does not crash or look wrong, it just quietly reports every
+    Celebi as ordinary and resets past the shiny. Max HP is derived
+    from the HP DV by a formula the game itself uses, so if the reading
+    is right the numbers agree, and if it drifted they do not.
+    """
+    base = BASE_HP.get(species)
+    if base is None or not level or observed_max_hp <= 0:
+        return None
+    return max_hp(base, dvs.get("HP", 0), level) == observed_max_hp
+
 _STAT_ORDER = ("Atk", "Def", "Spe", "Spc")
 
 
