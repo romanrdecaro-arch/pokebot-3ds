@@ -31,11 +31,13 @@ class FakeRPC:
     def __init__(self, base: int, data: bytes, live_at: int | None = None):
         self.base, self.data = base, data
         self.reads = 0
+        self.bytes_read = 0
         self.live_at = base if live_at is None else live_at
         self._tick = 0
 
     def read(self, addr: int, size: int) -> bytes:
         self.reads += 1
+        self.bytes_read += size
         lo = addr - self.base
         if lo < 0 or lo >= len(self.data):
             raise RuntimeError("unmapped")
@@ -278,3 +280,45 @@ def test_liveness_is_not_rechecked_every_call() -> None:
     for _ in range(5):
         s.ensure_base()
     assert rpc.reads - after_first <= 6, "liveness probed on every call"
+
+
+def test_locate_does_not_sweep_the_whole_heap_for_missing_candidates() -> None:
+    """Regression: asking for 8 candidates read the entire range.
+
+    scan_range only stops early once it has `stop_after` hits, so
+    requesting 8 when only a few exist meant sweeping every byte of the
+    ~900 MB heap on EVERY attempt — roughly 85s of sustained RPC
+    traffic, which starved the detection loop and destabilised the
+    emulator. It must stop at the first hit and then look only nearby.
+    """
+    mons = [make_mon(251, 30)]
+    span = 0x60000
+    live_at = 0x1000
+    space = bytearray(span)
+    blk = build_space(mons, span=span, wram_at=live_at)
+    space[live_at:live_at + 0x30000] = blk[live_at:live_at + 0x30000]
+
+    rpc = FakeRPC(BASE, bytes(space), live_at=BASE + live_at)
+    crystal._save_cached_base(0)          # no useful cache
+    base = crystal.locate_wram(rpc, [(BASE, BASE + span)], use_cache=False)
+    assert base == BASE + live_at
+
+    # The party sits near the start, so stopping at the first hit plus
+    # a bounded neighbourhood probe must read far less than the whole
+    # range. A sweep would read every byte of it.
+    assert rpc.bytes_read < span, (
+        f"read {rpc.bytes_read} bytes across a {span}-byte range; the "
+        f"scan is not stopping at the first hit")
+
+
+def test_liveness_only_rejects_a_completely_static_base() -> None:
+    """A quiet game must not trigger endless full re-scans.
+
+    Each rejection costs a heap sweep, so the check is deliberately
+    generous: only a base that never ticks at all is refused.
+    """
+    space = build_space([make_mon()], wram_at=0)
+    live = FakeRPC(BASE, space, live_at=BASE)
+    assert crystal.is_live_base(live, BASE) is True
+    static = FakeRPC(BASE, space, live_at=BASE + 0x99999)
+    assert crystal.is_live_base(static, BASE) is False

@@ -29,6 +29,15 @@ SIGNATURE_LEN = 8 + gen2.PARTY_STRUCT_SIZE * 6
 #: Read size per RPC round trip; chunks overlap by SIGNATURE_LEN.
 CHUNK = 0x8000
 
+#: How far either side of the LAST KNOWN base to look before falling
+#: back to a full-heap sweep.
+_NEARBY = 0x400000
+
+#: How far either side of the first hit to look for its sibling copies.
+#: Observed spacing between the live WRAM and the save buffers was well
+#: under 64 KB; 256 KB is generous and costs a fraction of a second.
+_NEIGHBOURHOOD = 0x40000
+
 #: Where a discovered base is remembered between runs.
 CACHE_PATH = Path(__file__).resolve().parent.parent / ".crystal_wram.json"
 
@@ -165,8 +174,14 @@ def churn(rpc, base: int, size: int = 0x2000,
     return sum(1 for i in range(min(len(a), len(b))) if a[i] != b[i])
 
 
-def is_live_base(rpc, base: int, min_churn: int = 25) -> bool:
-    """Is this the LIVE WRAM rather than a save buffer copy?"""
+def is_live_base(rpc, base: int, min_churn: int = 1) -> bool:
+    """Is this the LIVE WRAM rather than a save buffer copy?
+
+    Deliberately generous: only a base that does not tick AT ALL is
+    rejected. A stricter threshold would reject the real thing whenever
+    the game sits on a quiet screen, and each rejection costs a full
+    re-scan — far worse than briefly tolerating a dull-looking base.
+    """
     return churn(rpc, base) >= min_churn
 
 
@@ -188,33 +203,76 @@ def locate_wram(rpc, ranges, use_cache: bool = True) -> int | None:
         elif cached is not None:
             log.info("cached WRAM base no longer valid; re-scanning")
 
+    # A moved base usually lands near the old one, so try its
+    # neighbourhood before sweeping the whole heap. A full sweep is
+    # ~900 MB of RPC traffic; this is a fraction of a second.
+    cached = _load_cached_base()
+    if cached:
+        near = (max(0, cached - _NEARBY), cached + _NEARBY)
+        log.info(f"looking near the last base {cached:#010x} first…")
+        found = _pick_live(rpc, scan_range(rpc, near[0], near[1],
+                                           stop_after=8, progress_every=0))
+        if found is not None:
+            _save_cached_base(found)
+            return found
+
     for start, end in ranges:
         log.info(f"scanning {start:#010x}-{end:#010x} for the party block…")
-        # Collect several candidates, then pick the live one. Taking the
-        # first match is what locked onto a save buffer.
-        hits = scan_range(rpc, start, end, stop_after=8)
+        # Stop at the FIRST hit, then look for its siblings in a small
+        # window around it. Asking the full-range scan for 8 candidates
+        # meant that whenever fewer than 8 existed it read the entire
+        # ~900 MB range every time — about 85s of sustained RPC traffic
+        # per attempt, which starved the detection loop and hammered
+        # the emulator. The copies sit within a few tens of KB of each
+        # other, so a bounded neighbourhood finds them for free.
+        first = scan_range(rpc, start, end, stop_after=1)
+        if not first:
+            continue
+        anchor = first[0]["wram_base"]
+        lo = max(start, anchor - _NEIGHBOURHOOD)
+        hi = min(end, anchor + _NEIGHBOURHOOD)
+        hits = scan_range(rpc, lo, hi, stop_after=8, progress_every=0)
+        seen = {h["wram_base"] for h in hits}
+        for h in first:
+            if h["wram_base"] not in seen:
+                hits.append(h)
         if not hits:
+            hits = first
+        base = _pick_live(rpc, hits)
+        if base is None:
             continue
-        scored = []
-        for h in hits:
-            c = churn(rpc, h["wram_base"])
-            scored.append((c, h))
-            log.info(f"  candidate {h['wram_base']:#010x}  churn={c}")
-        scored.sort(key=lambda pair: pair[0], reverse=True)
-        best_churn, best = scored[0]
-        if best_churn < 0:
-            continue
-        base = best["wram_base"]
-        if best_churn < 25:
-            log.warning(f"  best candidate churns only {best_churn} bytes — "
-                        f"this may be a save buffer, so battle state could "
-                        f"read as empty.")
-        log.info(f"WRAM base {base:#010x} "
-                 f"(party block @ {best['party_addr']:#010x}, "
-                 f"churn {best_churn})")
         _save_cached_base(base)
         return base
     return None
+
+
+def _pick_live(rpc, hits) -> int | None:
+    """Choose the liveliest candidate, or None when there are none.
+
+    Several regions hold a valid party block — the live WRAM plus the
+    game's save/backup buffers. Only the live one ticks, so churn is
+    what tells them apart.
+    """
+    if not hits:
+        return None
+    scored = []
+    for h in hits:
+        c = churn(rpc, h["wram_base"])
+        scored.append((c, h))
+        log.info(f"  candidate {h['wram_base']:#010x}  churn={c}")
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    best_churn, best = scored[0]
+    if best_churn < 0:                      # every read failed
+        return None
+    base = best["wram_base"]
+    if best_churn <= 0:
+        log.warning("  no candidate is ticking — this may be a save "
+                    "buffer, so battle state could read as empty.")
+    log.info(f"WRAM base {base:#010x} "
+             f"(party block @ {best['party_addr']:#010x}, "
+             f"churn {best_churn})")
+    return base
 
 
 class CrystalSession:
