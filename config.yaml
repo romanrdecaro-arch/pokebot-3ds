@@ -120,7 +120,19 @@ offsets:
 # The reset is the Game Boy combo A+B+Start+Select, handled by the Gen 2
 # ROM itself, so it leaves Azahar and the located WRAM base untouched.
 celebi_hunt:
-  press_interval: 0.5        # seconds between A presses
+  # A presses, as fast as Azahar will take them. The whole cost of a
+  # press is these two numbers — the keypress itself and the one-byte
+  # battle check are microseconds beside them.
+  #
+  # The floor is set by Azahar, not by us: a key posted to its window is
+  # picked up when Qt next drains its event queue, so a press held for
+  # less than one of those can go down and come up inside a single
+  # emulated joypad read, which the game scores as no press at all.
+  #   0.030 -> ~33 presses/s  (default, comfortable margin)
+  #   0.020 -> ~49 presses/s
+  #   0.010 -> ~96 presses/s  (try it; back off if attempts time out)
+  press_hold: 0.03
+  press_interval: 0.0        # extra gap after each press; 0 = flat out
   encounter_timeout: 120     # give up A-spamming after this long, and say so
   reset_hold: 0.6            # how long to hold A+B+Start+Select
   boot_timeout: 90           # wait this long for the save to reload

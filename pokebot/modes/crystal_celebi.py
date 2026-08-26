@@ -9,7 +9,8 @@ Catching a 1-in-8192 encounter is not something to automate on top of
 an input path this indirect.
 
     celebi_hunt:
-      press_interval: 0.5     # seconds between A presses
+      press_hold: 0.03        # ~33 A presses/second; lower is faster
+      press_interval: 0.0     # extra gap after each press; 0 = flat out
       encounter_timeout: 120  # give up A-spamming after this long
       reset_hold: 0.6         # how long to hold A+B+Start+Select
       boot_timeout: 90        # wait this long for the save to reload
@@ -43,8 +44,30 @@ from ..games import GB_VC_SCAN_RANGES
 
 log = logging.getLogger(__name__)
 
-#: How often to check the battle byte while spamming A.
-_POLL_S = 0.15
+#: How long each A press is held, and the gap after it.
+#:
+#: The whole cost of a press is these two sleeps — the PostMessage
+#: round trip and the one-byte battle check are microseconds beside
+#: them. The old 0.06 + 0.50 + 0.15 managed 1.4 presses a second, which
+#: is almost entirely waiting.
+#:
+#: The floor is set by Azahar, not by us. A key posted to its window is
+#: picked up when Qt next drains its event queue, so a press held for
+#: less than one of those iterations can be seen going down and coming
+#: up within a single emulated joypad read — which the game scores as
+#: no press at all. 30 ms clears that comfortably and gives ~30
+#: presses/second; ``press_hold`` in config.yaml lowers it further if
+#: your machine takes it, and raises it if presses start going missing.
+_PRESS_HOLD_S = 0.03
+_PRESS_GAP_S = 0.0
+
+#: Below this, presses start being dropped rather than delivered fast.
+_PRESS_HOLD_FLOOR = 0.01
+
+#: How long to give the reset to visibly take before calling it failed.
+#: Gen 2 clears WRAM within a frame or two of booting, so this is
+#: generous; it only has to outlast the combo's own hold.
+_RESET_TAKE_S = 8.0
 
 #: The opponent's region, per Data Crystal's Crystal RAM map. Paranoid
 #: mode treats every 2-byte window in here as a possible DV word.
@@ -87,9 +110,15 @@ def _read_opponent(ctx, session, settle: float = _OPPONENT_SETTLE_S):
     return best
 
 
-def _spam_a_until_battle(ctx, session, press_interval: float,
+def _spam_a_until_battle(ctx, session, hold: float, gap: float,
                          timeout: float) -> int:
-    """Press A until a battle starts. Returns the battle mode, or NONE.
+    """Press A as fast as configured until a battle starts.
+
+    The battle byte is checked before every press rather than on its
+    own timer. It is a single byte over loopback, so it costs far less
+    than the press itself and buys detection within one press — which
+    is what stops the spam before it reaches the FIGHT menu and starts
+    attacking the thing we came to catch.
 
     A battle only counts once the overworld has been seen first. Coming
     out of a soft reset the game is on its title screen, where the
@@ -98,44 +127,72 @@ def _spam_a_until_battle(ctx, session, press_interval: float,
     reset straight past whatever the next attempt would have been.
     """
     deadline = time.monotonic() + timeout
+    started = time.monotonic()
     presses = 0
     seen_overworld = False
     while not ctx.should_stop() and time.monotonic() < deadline:
-        for _ in range(2):
-            mode = session.battle_mode()
-            if mode == BATTLE_NONE:
-                seen_overworld = True
-            elif seen_overworld:
-                log.info(f"  battle after {presses} A presses")
-                return mode
-            # First half of the loop presses, second half just re-checks
-            # so a fast encounter is not missed for a whole interval.
-            if not _:
-                ctx.input.tap("A", hold_s=0.06)
-                presses += 1
-                ctx._stop_evt.wait(press_interval)
-            else:
-                ctx._stop_evt.wait(_POLL_S)
+        mode = session.battle_mode()
+        if mode == BATTLE_NONE:
+            seen_overworld = True
+        elif seen_overworld:
+            elapsed = time.monotonic() - started
+            log.info(f"  battle after {presses} A presses "
+                     f"({presses / max(elapsed, 1e-9):.0f}/s)")
+            return mode
+        ctx.input.tap("A", hold_s=hold)
+        presses += 1
+        if gap:
+            ctx._stop_evt.wait(gap)
     return BATTLE_NONE
 
 
-def _wait_for_reload(ctx, session, timeout: float) -> bool:
-    """Wait for the save to come back after a soft reset.
+#: Phases of a reset, so the caller can say which one failed.
+RESET_OK, RESET_NEVER_TOOK, RELOAD_TIMED_OUT = "ok", "no_reset", "no_reload"
 
-    Reads the party block DIRECTLY rather than through ensure_base.
-    That matters: while the game sits on the title screen there is no
-    party to find, and ensure_base would read that as a lost base and
-    start scanning the heap — thousands of times over a long hunt, for
-    a base that never actually moved.
+
+def _wait_for_reload(ctx, session, timeout: float,
+                     hold: float = _PRESS_HOLD_S,
+                     gap: float = _PRESS_GAP_S) -> str:
+    """Wait for the reset to take, then for the save to come back.
+
+    Two phases, and the first matters as much as the second: the party
+    block has to go AWAY before it comes back. Gen 2 clears WRAM on
+    boot, so a party that never disappears means the combo never
+    registered — and the hunt would otherwise sail on pressing A into a
+    battle still on screen, which in Gen 2 means attacking the Pokemon
+    it came to catch. Nothing is pressed during that first phase for
+    exactly that reason.
+
+    Reads the party block DIRECTLY rather than through ensure_base. On
+    the title screen there is no party to find, and ensure_base would
+    read that as a lost base and start scanning the heap — thousands of
+    times over a hunt, for a base that never actually moved.
     """
+    def has_party() -> bool:
+        buf = session._read(gen2.GB_PARTY_COUNT, SIGNATURE_LEN)
+        return bool(buf) and gen2.looks_like_party(buf, 0)
+
+    # Phase 1: the old save must disappear. No input — we may still be
+    # standing in the battle this reset is meant to escape.
+    deadline = time.monotonic() + min(timeout, _RESET_TAKE_S)
+    while not ctx.should_stop() and time.monotonic() < deadline:
+        if not has_party():
+            break
+        ctx._stop_evt.wait(0.1)
+    else:
+        return RESET_NEVER_TOOK
+    if ctx.should_stop():
+        return RESET_NEVER_TOOK
+
+    # Phase 2: press through the title and CONTINUE until it is back.
     deadline = time.monotonic() + timeout
     while not ctx.should_stop() and time.monotonic() < deadline:
-        buf = session._read(gen2.GB_PARTY_COUNT, SIGNATURE_LEN)
-        if buf and gen2.looks_like_party(buf, 0):
-            return True
-        ctx.input.tap("A", hold_s=0.06)
-        ctx._stop_evt.wait(0.5)
-    return False
+        if has_party():
+            return RESET_OK
+        ctx.input.tap("A", hold_s=hold)
+        if gap:
+            ctx._stop_evt.wait(gap)
+    return RELOAD_TIMED_OUT
 
 
 def _payload(enemy, attempt: int, shiny: bool) -> dict:
@@ -200,16 +257,52 @@ def _dv_check_failed(ctx, enemy) -> None:
     ctx.request_stop("DV reading failed its max-HP check")
 
 
+def _reset_ok(ctx, session, boot_timeout: float, hold: float,
+              gap: float, reset_hold: float) -> bool:
+    """Reset, or stop the hunt saying exactly which half failed."""
+    status = _wait_for_reload(ctx, session, boot_timeout, hold, gap)
+    if status == RESET_OK:
+        return True
+    if ctx.should_stop():
+        return False
+    if status == RESET_NEVER_TOOK:
+        log.error(f"  the save never went away, so A+B+Start+Select did "
+                  f"not register. The battle is probably still on screen "
+                  f"— stopping rather than pressing A into it, which in "
+                  f"Gen 2 means attacking. Check Azahar's bindings for "
+                  f"Select, or raise celebi_hunt.reset_hold above "
+                  f"{reset_hold:.2f}s.")
+        ctx.dashboard.broadcast("read_failure",
+                                reason="soft reset did not register")
+        ctx.request_stop("soft reset did not register")
+    else:
+        log.error(f"  save did not come back within {boot_timeout:.0f}s of "
+                  f"the reset. Stopping so the game is not left in an "
+                  f"unknown state.")
+        ctx.request_stop("game did not reload after soft reset")
+    return False
+
+
 def run(ctx) -> None:
     cfg = (ctx.config.get("celebi_hunt") or {})
-    press_interval = float(cfg.get("press_interval", 0.5))
+    press_hold = float(cfg.get("press_hold", _PRESS_HOLD_S))
+    press_gap = float(cfg.get("press_interval", _PRESS_GAP_S))
     encounter_timeout = float(cfg.get("encounter_timeout", 120.0))
     reset_hold = float(cfg.get("reset_hold", 0.6))
     boot_timeout = float(cfg.get("boot_timeout", 90.0))
     check = str(cfg.get("enemy_dv_check", "paranoid")).lower()
 
+    if press_hold < _PRESS_HOLD_FLOOR:
+        log.warning(f"  press_hold {press_hold:.3f}s is below "
+                    f"{_PRESS_HOLD_FLOOR:.3f}s — Azahar may see the key go "
+                    f"down and up inside one joypad read and score no "
+                    f"press at all. Raise it if attempts start timing out.")
+
     session = CrystalSession(ctx.rpc, GB_VC_SCAN_RANGES)
     log.info("Mode: Crystal Celebi soft-reset hunt")
+    log.info(f"  A presses: {press_hold * 1000:.0f}ms hold"
+             + (f" + {press_gap * 1000:.0f}ms gap" if press_gap else "")
+             + f"  (~{1 / max(press_hold + press_gap, 1e-9):.0f}/s)")
     log.info("  Save in front of the Ilex Forest shrine with the GS Ball "
              "placed, so one A press starts the encounter.")
 
@@ -244,7 +337,7 @@ def run(ctx) -> None:
         attempt += 1
         log.info(f"Attempt #{attempt}: pressing A…")
 
-        mode = _spam_a_until_battle(ctx, session, press_interval,
+        mode = _spam_a_until_battle(ctx, session, press_hold, press_gap,
                                     encounter_timeout)
         if ctx.should_stop():
             return
@@ -267,7 +360,9 @@ def run(ctx) -> None:
         if enemy is None:
             log.warning("  opponent unreadable; resetting and retrying.")
             ctx.input.gb_soft_reset(hold_s=reset_hold)
-            _wait_for_reload(ctx, session, boot_timeout)
+            if not _reset_ok(ctx, session, boot_timeout, press_hold,
+                             press_gap, reset_hold):
+                return
             continue
 
         region = session._read(_ENEMY_REGION_LO,
@@ -296,9 +391,6 @@ def run(ctx) -> None:
 
         log.info(f"  not shiny — soft resetting (attempt {attempt} done)")
         ctx.input.gb_soft_reset(hold_s=reset_hold)
-        if not _wait_for_reload(ctx, session, boot_timeout):
-            log.error(f"  save did not come back within {boot_timeout:.0f}s "
-                      f"of the reset. Stopping so the game is not left in "
-                      f"an unknown state.")
-            ctx.request_stop("game did not reload after soft reset")
+        if not _reset_ok(ctx, session, boot_timeout, press_hold, press_gap,
+                         reset_hold):
             return

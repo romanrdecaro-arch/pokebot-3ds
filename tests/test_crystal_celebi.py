@@ -105,6 +105,12 @@ class ScriptedSession:
         self.party_reads = 0
         self.region = region or bytes(_ENEMY_SPAN)
         self.in_battle = crystal.BATTLE_WILD
+        #: Reads for which the party block is GONE. Gen 2 clears WRAM on
+        #: boot, so after a reset it really does disappear and then come
+        #: back when the save loads. reset_takes=False models a combo
+        #: that never registered.
+        self.party_gone_for = 0
+        self.reset_takes = True
 
     def ensure_base(self):
         return self.base
@@ -123,6 +129,9 @@ class ScriptedSession:
     def _read(self, gb_addr, size):
         if gb_addr == gen2.GB_PARTY_COUNT:
             self.party_reads += 1
+            if self.party_gone_for > 0:
+                self.party_gone_for -= 1
+                return bytes(size)          # WRAM cleared by the reset
             return _party_block()
         if gb_addr == cc._ENEMY_REGION_LO:
             return self.region
@@ -136,6 +145,8 @@ class ScriptedSession:
     def advance(self):
         self.index += 1
         self.polls = 0          # back to the overworld after a reset
+        if self.reset_takes:
+            self.party_gone_for = 2
 
 
 _ENEMY_SPAN = cc._ENEMY_REGION_HI - cc._ENEMY_REGION_LO
@@ -388,3 +399,35 @@ def test_a_stale_battle_byte_after_a_reset_is_not_an_encounter(monkeypatch):
     assert "RESET" not in ctx.input.events
     assert not ctx.dashboard.of("encounter"), (
         "logged an encounter from a stale battle byte")
+
+
+def test_a_reset_that_never_registers_stops_the_hunt(monkeypatch):
+    """If the combo does not land, the battle is still on screen.
+
+    Pressing A into a Gen 2 battle selects FIGHT and attacks — so a
+    reset that silently did nothing would have the bot beating up the
+    Pokemon it came to catch. Gen 2 clears WRAM on boot, so the party
+    block disappearing is the proof that the reset actually happened.
+    """
+    session = ScriptedSession([_enemy(), _enemy()],
+                              region=_region_with(PLAIN_WORD))
+    session.reset_takes = False            # the combo does nothing
+    _patched(monkeypatch, session)
+    ctx = _run(FakeCtx(), session, boot_timeout=0.5)
+
+    assert ctx.stop_reason == "soft reset did not register"
+    assert "read_failure" in ctx.dashboard.kinds()
+    # One reset attempted, then it stopped rather than pressing on.
+    assert ctx.input.events.count("RESET") == 1
+
+
+def test_nothing_is_pressed_while_waiting_for_the_reset_to_take(monkeypatch):
+    """Phase one sends no input at all: we may still be in the battle."""
+    session = ScriptedSession([_enemy()], region=_region_with(PLAIN_WORD))
+    session.reset_takes = False
+    _patched(monkeypatch, session)
+    ctx = _run(FakeCtx(), session, boot_timeout=0.5)
+
+    after_reset = ctx.input.events[ctx.input.events.index("RESET") + 1:]
+    assert after_reset == [], (
+        f"pressed {after_reset} while the battle was still on screen")
