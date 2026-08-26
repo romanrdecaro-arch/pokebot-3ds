@@ -226,6 +226,28 @@ class CitraRPC:
                            struct.pack("<II", 1, pid))
         self._attached_pid = pid
 
+    def attach_is_live(self) -> bool:
+        """Is Azahar really pointed at the process we asked for?
+
+        Worth one extra packet, because the failure is silent and
+        expensive: with no target process selected Azahar answers every
+        read with zeros and logs "memory access may be invalid" rather
+        than returning an error, so the caller cannot tell a blank page
+        from a detached emulator. A scanner then hunts a signature that
+        cannot appear and grinds through the whole heap — 177,147 reads
+        in one measured session, none of which could ever have hit.
+
+        Process selection is also global to the RPC server rather than
+        per client, and Azahar drops it when a title is reloaded, so an
+        attach that succeeded earlier is not evidence it still holds.
+        """
+        if self._attached_pid is None:
+            return False
+        try:
+            return self.get_process() == self._attached_pid
+        except Exception:
+            return False
+
     def attach_to_pokemon_game(self) -> tuple[int, int, str]:
         """Find a running Gen 6/7 Pokémon process and attach to it.
         Returns (pid, title_id, game_name). Raises if not found."""
@@ -233,6 +255,12 @@ class CitraRPC:
         for pid, (tid, name) in procs.items():
             if tid in POKEMON_TITLE_IDS:
                 self.set_process(pid)
+                if not self.attach_is_live():
+                    raise RPCError(
+                        f"Azahar accepted the attach to PID {pid} but still "
+                        f"reports no target process. Reload the game in "
+                        f"Azahar and try again — every read would come back "
+                        f"blank until it is attached.")
                 self._attached_title = tid
                 game_name = POKEMON_TITLE_IDS[tid][0]
                 return pid, tid, game_name

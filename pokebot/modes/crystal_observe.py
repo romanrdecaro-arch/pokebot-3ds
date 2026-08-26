@@ -18,7 +18,7 @@ import logging
 from .. import gen2
 from ..crystal import (CrystalSession, BATTLE_NONE, BATTLE_WILD,
                        BATTLE_TRAINER)
-from ..games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS
+from ..games import GB_VC_SCAN_RANGES
 
 log = logging.getLogger(__name__)
 
@@ -99,8 +99,7 @@ def _describe(p) -> str:
 
 
 def run(ctx) -> None:
-    ranges = [HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS]
-    session = CrystalSession(ctx.rpc, ranges)
+    session = CrystalSession(ctx.rpc, GB_VC_SCAN_RANGES)
 
     log.info("Mode: Crystal manual control — the bot sends NO input.")
     log.info("  Locating Crystal's WRAM (first run scans the heap)…")

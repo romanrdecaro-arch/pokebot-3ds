@@ -27,7 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pokebot.citra_rpc import CitraRPC, wait_for_emulator      # noqa: E402
 from pokebot.crystal import (CrystalSession, locate_wram,       # noqa: E402
                              BATTLE_NONE)
-from pokebot.games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS  # noqa: E402
+from pokebot.games import (GB_VC_SCAN_RANGES,  # noqa: E402
+                           EXT_HEAP_RANGE_N3DS)
 
 log = logging.getLogger("crystal_watch")
 
@@ -84,7 +85,7 @@ def main(argv=None) -> int:
     wait_for_emulator(**kwargs)
     rpc = CitraRPC(**kwargs)
 
-    ranges = [HEAP_RANGE_3DS]
+    ranges = list(GB_VC_SCAN_RANGES)
     if args.extended:
         ranges.append(EXT_HEAP_RANGE_N3DS)
 

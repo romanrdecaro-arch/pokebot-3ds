@@ -387,6 +387,13 @@ LINEAR_HEAP_RANGE_3DS  = (0x14000000, 0x20000000)   # gfx scratch / FX buffers
 LINEAR_HEAP_HOT_3DS    = (0x14000000, 0x18000000)
 EXT_HEAP_RANGE_N3DS    = (0x30000000, 0x40000000)   # Gen 7
 
+#: Where the Game Boy Virtual Console emulator ("trl") keeps the
+#: emulated WRAM. Confirmed by locating Crystal's party block at
+#: 0x08a2ffac and 0x08a3bf1a on separate runs — both inside the first
+#: 16 MB of the application heap, which is what makes a small hot band
+#: worth trying before anything wider.
+GB_VC_HOT_3DS          = (0x08000000, 0x09000000)   # Gen 2 VC hot 16 MB
+
 
 def heap_range_for(gen: int) -> tuple[int, int]:
     """Return the most-likely heap range for party data.
@@ -419,9 +426,23 @@ def scan_ranges_for(gen: int) -> list[tuple[int, int]]:
 
     Gen 7: just the extended heap — that's where everything lives.
     """
+    if gen == 2:
+        return GB_VC_SCAN_RANGES
     if gen == 6:
         return [APP_HEAP_HOT_3DS, APP_HEAP_RANGE_3DS, LINEAR_HEAP_HOT_3DS]
     return [EXT_HEAP_RANGE_N3DS]
+
+
+#: Ranges the Crystal scanner walks, narrowest first.
+#:
+#: Deliberately NOT ``HEAP_RANGE_3DS``. That catch-all spans 896 MB,
+#: which at Azahar's 1024-byte-per-read RPC is 917,504 round trips, and
+#: it covers the linear heap and VRAM (0x14000000-0x20000000) — pages
+#: the renderer owns, that a Game Boy title never touches, and that were
+#: measured returning "unmapped ReadBlock" for every single request.
+#: Sweeping it once wrote 100 MB of emulator log in 21 seconds and took
+#: Azahar down with it.
+GB_VC_SCAN_RANGES = [GB_VC_HOT_3DS, APP_HEAP_RANGE_3DS]
 
 
 # --------------------------------------------------------------------

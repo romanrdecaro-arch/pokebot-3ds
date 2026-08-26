@@ -37,7 +37,7 @@ from pokebot import gen2                                        # noqa: E402
 from pokebot.citra_rpc import CitraRPC, wait_for_emulator      # noqa: E402
 from pokebot.crystal import (CrystalSession, locate_wram,       # noqa: E402
                              BATTLE_WILD, GB_BATTLE_MODE)
-from pokebot.games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS  # noqa: E402
+from pokebot.games import GB_VC_SCAN_RANGES  # noqa: E402
 
 log = logging.getLogger("find_enemy_dvs")
 
@@ -79,7 +79,7 @@ def main(argv=None) -> int:
     wait_for_emulator(**kwargs)
     rpc = CitraRPC(**kwargs)
 
-    ranges = [HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS]
+    ranges = GB_VC_SCAN_RANGES
     base = locate_wram(rpc, ranges)
     if base is None:
         print("Could not find Crystal's WRAM.")

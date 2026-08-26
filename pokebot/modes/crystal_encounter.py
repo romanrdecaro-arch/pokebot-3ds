@@ -38,7 +38,7 @@ import logging
 from .. import gen2
 from ..crystal import (CrystalSession, BATTLE_NONE, BATTLE_WILD,
                        BATTLE_TRAINER, GB_ENEMY_DVS)
-from ..games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS
+from ..games import GB_VC_SCAN_RANGES
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ def run(ctx) -> None:
     check = str(cfg.get("enemy_dv_check", "paranoid")).lower()
     step_a, step_b = _AXES[pad][movement]
 
-    session = CrystalSession(ctx.rpc, [HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS])
+    session = CrystalSession(ctx.rpc, GB_VC_SCAN_RANGES)
     log.info(f"Mode: Crystal random encounters ({movement} on the "
              f"{pad}, {walk_hold:.2f}s steps: {step_a}/{step_b})")
     base = session.ensure_base()

@@ -29,6 +29,38 @@ SIGNATURE_LEN = 8 + gen2.PARTY_STRUCT_SIZE * 6
 #: Read size per RPC round trip; chunks overlap by SIGNATURE_LEN.
 CHUNK = 0x8000
 
+#: Ceiling on scanner RPC round trips per second.
+#:
+#: Azahar's RPC read is capped at 1024 bytes, so a scan is *hundreds of
+#: thousands* of UDP round trips, and at the default ``*:Info`` log
+#: filter the emulator writes 3-4 lines — about 590 bytes — for every
+#: one of them. An unpaced sweep was measured at 8,273 requests/second:
+#: 100 MB of emulator log in 21 seconds, on the RPC thread, while
+#: emulating. Azahar did not survive it.
+#:
+#: 1000/s is ~1 MB/s of scanning and ~0.6 MB/s of emulator logging even
+#: on a default install, and finishes the 16 MB hot band in 16s.
+MAX_REQ_PER_S = 1000.0
+
+#: RPC round trips per scan chunk, for pacing arithmetic.
+_REQS_PER_CHUNK = CHUNK / 1024
+
+#: Give up on a range once this much of it has yielded NOTHING AT ALL.
+#:
+#: When Azahar has no target process selected every read comes back as
+#: zeros and logs "memory access may be invalid" rather than failing, so
+#: no signature can ever match and the scanner grinds through the whole
+#: heap for a result that cannot exist — 177,164 reads in one measured
+#: session, and a dead emulator.
+#:
+#: The counter is armed only from the start of a range and DISARMED for
+#: good by the first readable, non-zero byte. That distinction matters:
+#: a blank or unmapped stretch in the middle of a real heap is ordinary
+#: and must not abort the scan, while a range that is blank from its
+#: very first byte to its four-millionth means the emulator is not
+#: attached, which no amount of further scanning will fix.
+_DEAD_BAIL_BYTES = 0x400000
+
 #: How far either side of the LAST KNOWN base to look before falling
 #: back to a full-heap sweep.
 _NEARBY = 0x400000
@@ -70,22 +102,55 @@ class EnemyReading:
     confirmed: bool = False
 
 
+def _dead_range_message(start: int, cur: int, dead: int) -> str:
+    return (f"  {start:#010x}-{cur:#010x} is blank or unreadable for its "
+            f"first {dead // 1048576} MB — giving up on this range. If "
+            f"EVERY range reads blank, Azahar has no target process "
+            f"selected; reload the game so the bot can re-attach.")
+
+
 def scan_range(rpc, start: int, end: int, stop_after: int = 0,
-               progress_every: float = 10.0) -> list[dict]:
-    """Scan ``[start, end)`` for Crystal party blocks."""
+               progress_every: float = 10.0,
+               max_req_per_s: float = MAX_REQ_PER_S) -> list[dict]:
+    """Scan ``[start, end)`` for Crystal party blocks.
+
+    Paced and bail-out guarded — see :data:`MAX_REQ_PER_S` and
+    :data:`_DEAD_BAIL_BYTES`. Both exist because an unthrottled sweep of
+    a range that could not contain a hit is what crashed the emulator,
+    not because scanning is inherently expensive.
+    """
     hits: list[dict] = []
     cur = start
     t0 = last_report = time.monotonic()
+    #: Bytes covered before seeing a single readable, non-zero byte.
+    #: ``None`` once one is seen, which disarms the bail-out for good.
+    dead_run: int | None = 0
 
     while cur < end:
         size = min(CHUNK, end - cur)
         if size < SIGNATURE_LEN:
             break
+        chunk_started = time.monotonic()
         try:
             buf = rpc.read(cur, size)
         except Exception:
+            if dead_run is not None:
+                dead_run += size
+                if dead_run >= _DEAD_BAIL_BYTES:
+                    log.warning(_dead_range_message(start, cur, dead_run))
+                    return hits
             cur += CHUNK          # unmapped page: skip, don't abort
             continue
+        # An all-zero chunk is not a failure the RPC reports: with no
+        # target process selected Azahar answers every read with zeros.
+        if dead_run is not None:
+            if any(buf):
+                dead_run = None   # real data — this range is alive
+            else:
+                dead_run += size
+                if dead_run >= _DEAD_BAIL_BYTES:
+                    log.warning(_dead_range_message(start, cur, dead_run))
+                    return hits
 
         limit = len(buf) - SIGNATURE_LEN
         # Prefilter in C rather than calling looks_like_party on every
@@ -127,6 +192,16 @@ def scan_range(rpc, start: int, end: int, stop_after: int = 0,
         # Always advance: at a range tail `size` can equal
         # SIGNATURE_LEN and a zero step would spin forever.
         cur += max(1, size - SIGNATURE_LEN)
+
+        # Pace. The sleep is what keeps the emulator alive, so it is
+        # computed from how long the chunk actually took rather than
+        # assumed: a slow chunk already paid the budget and sleeps for
+        # nothing extra.
+        if max_req_per_s > 0:
+            budget = _REQS_PER_CHUNK / max_req_per_s
+            spent = time.monotonic() - chunk_started
+            if spent < budget:
+                time.sleep(budget - spent)
 
     return hits
 
@@ -280,11 +355,23 @@ class CrystalSession:
     #: How often to re-confirm the base is LIVE, not just parseable.
     LIVE_CHECK_EVERY_S = 30.0
 
+    #: The FIRST re-confirmation happens sooner than the rest. Churn is
+    #: a 0.4s sample and the copies are not far apart, so the initial
+    #: pick can land on the wrong one; a quick second opinion costs a
+    #: couple of small reads and halves the window in which the party
+    #: is read from a stale copy.
+    FIRST_LIVE_CHECK_S = 5.0
+
+    #: How often to cross-check the rival copies' battle byte while our
+    #: own base reads "no battle". See :meth:`battle_mode`.
+    RIVAL_CHECK_EVERY_S = 1.0
+
     def __init__(self, rpc, ranges, base: int | None = None):
         self.rpc = rpc
         self.ranges = ranges
         self.base = base
         self._next_live_check = 0.0
+        self._next_rival_check = 0.0
         #: Other party-block copies seen when locating, so the periodic
         #: check can re-compare instead of re-scanning.
         self._candidates: list = []
@@ -340,7 +427,7 @@ class CrystalSession:
         self._candidates = []
         self.base = locate_wram(self.rpc, self.ranges,
                                 out_candidates=self._candidates)
-        self._next_live_check = time.monotonic() + self.LIVE_CHECK_EVERY_S
+        self._next_live_check = time.monotonic() + self.FIRST_LIVE_CHECK_S
         return self.base
 
     def _read(self, gb_addr: int, size: int) -> bytes | None:
@@ -360,9 +447,80 @@ class CrystalSession:
             return []
         return gen2.read_party(buf, 0)
 
-    def battle_mode(self) -> int:
-        buf = self._read(GB_BATTLE_MODE, 1)
+    def _read_at(self, base: int, gb_addr: int, size: int) -> bytes | None:
+        """Read relative to an ARBITRARY base, not necessarily ours."""
+        try:
+            return self.rpc.read(base + _gb(gb_addr), size)
+        except Exception:
+            return None
+
+    def _battle_at(self, base: int) -> int:
+        buf = self._read_at(base, GB_BATTLE_MODE, 1)
         return buf[0] if buf else BATTLE_NONE
+
+    def _really_battling(self, base: int) -> bool:
+        """Battle byte says yes AND the opponent record agrees.
+
+        One byte on its own is far too weak to move the base on: a
+        stale copy holds whatever was in WRAM when it was written, and
+        1 and 2 are common byte values. Requiring a plausible species
+        and level alongside it makes a false switch vanishingly
+        unlikely, for two extra single-byte reads.
+        """
+        if self._battle_at(base) not in (BATTLE_WILD, BATTLE_TRAINER):
+            return False
+        species = self._read_at(base, GB_ENEMY_SPECIES, 1)
+        level = self._read_at(base, GB_ENEMY_LEVEL, 1)
+        if not species or not level:
+            return False
+        return (1 <= species[0] <= gen2.MAX_SPECIES
+                and 1 <= level[0] <= 100)
+
+    def _battling_rival(self) -> int | None:
+        """A sibling copy that is in a battle while we are not."""
+        if self.base is None or not self._candidates:
+            return None
+        now = time.monotonic()
+        if now < self._next_rival_check:
+            return None
+        self._next_rival_check = now + self.RIVAL_CHECK_EVERY_S
+        for other in self._candidates:
+            if other != self.base and self._really_battling(other):
+                return other
+        return None
+
+    def battle_mode(self) -> int:
+        """The battle byte — from whichever copy is actually in a battle.
+
+        Picking the base by churn is a 0.4s coin flip between copies
+        that all hold a valid party, and losing it used to cost a whole
+        encounter: with the base on a stale copy the battle byte reads
+        0 forever, and nothing noticed until the 30-second liveness
+        re-compare came round. A Celebi battle was invisible for 15
+        seconds for exactly this reason, and the encounter was logged
+        0.3s after that timer fired.
+
+        So the battle byte is not trusted to be absent. When ours says
+        "no battle", the sibling copies are asked too, and a copy that
+        is genuinely battling wins the argument immediately — which is
+        the strongest liveness evidence there is, far better than churn.
+        """
+        buf = self._read(GB_BATTLE_MODE, 1)
+        mode = buf[0] if buf else BATTLE_NONE
+        if mode != BATTLE_NONE:
+            return mode
+
+        rival = self._battling_rival()
+        if rival is None:
+            return mode
+
+        log.warning(
+            f"base {self.base:#010x} shows no battle but {rival:#010x} is "
+            f"mid-battle — switching to it (we were on a stale copy).")
+        self.base = rival
+        _save_cached_base(rival)
+        self._next_live_check = time.monotonic() + self.LIVE_CHECK_EVERY_S
+        return self._battle_at(rival)
 
     def enemy(self) -> EnemyReading | None:
         """PROVISIONAL read of the opponent — see the module notes.

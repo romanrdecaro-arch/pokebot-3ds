@@ -30,7 +30,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pokebot.citra_rpc import CitraRPC, wait_for_emulator      # noqa: E402
-from pokebot.games import HEAP_RANGE_3DS, EXT_HEAP_RANGE_N3DS  # noqa: E402
+from pokebot.games import (GB_VC_SCAN_RANGES,  # noqa: E402
+                           EXT_HEAP_RANGE_N3DS)
 from pokebot.crystal import scan_range                          # noqa: E402
 
 log = logging.getLogger("find_crystal_wram")
@@ -77,7 +78,7 @@ def main(argv=None) -> int:
     if args.start and args.end:
         ranges.append((int(args.start, 0), int(args.end, 0)))
     else:
-        ranges.append(HEAP_RANGE_3DS)
+        ranges.extend(GB_VC_SCAN_RANGES)
         if args.extended:
             ranges.append(EXT_HEAP_RANGE_N3DS)
 

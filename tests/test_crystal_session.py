@@ -330,3 +330,221 @@ def test_liveness_only_rejects_a_completely_static_base() -> None:
     assert crystal.is_live_base(live, BASE) is True
     static = FakeRPC(BASE, space, live_at=BASE + 0x99999)
     assert crystal.is_live_base(static, BASE) is False
+
+
+# ---------------------------------------------------------------------
+# Regressions from the Celebi session of 2026-08-26.
+#
+# Two separate failures, both proven from timestamps rather than
+# guessed at:
+#
+#   * The base was picked as 0x08a3bf1a at 15:26:39. A wild Celebi
+#     battle then ran for ~15 seconds completely unseen, because a
+#     stale copy's battle byte reads 0 forever. The 30-second liveness
+#     re-compare switched the base to 0x08a2ffac at 15:27:11.255 and
+#     the encounter was logged at 15:27:11.588 — 0.33s later.
+#   * A sweep of the 896 MB catch-all range issued 177,164 RPC reads in
+#     21 seconds, every one of them answered "no target process
+#     selected", and Azahar wrote 100 MB of log and died.
+# ---------------------------------------------------------------------
+
+class TwoCopyRPC:
+    """Two party-block copies; only ``battling_at`` is in a battle.
+
+    Deliberately does NOT make either copy churn, so churn cannot break
+    the tie. That is the real situation: the copies are equally
+    plausible and the initial pick is close to a coin flip.
+    """
+
+    def __init__(self, base, data, battling_at):
+        self.base, self.data = base, data
+        self.battling_at = battling_at
+
+    def read(self, addr, size):
+        lo = addr - self.base
+        if lo < 0 or lo + size > len(self.data):
+            raise RuntimeError("unmapped")
+        return bytes(self.data[lo:lo + size])
+
+
+def _two_copies(mode_a=0, mode_b=crystal.BATTLE_WILD,
+                species=251, level=30, gap=0x8000):
+    """Two WRAM copies in one space; the second is mid-battle."""
+    span = gap * 2 + 0x8000
+    space = bytearray(span)
+    for at, mode in ((0, mode_a), (gap, mode_b)):
+        one = bytearray(build_space([make_mon(157, 100)], span=0x8000,
+                                    wram_at=0, battle_mode=mode))
+        one[crystal.GB_ENEMY_SPECIES - gen2.GB_WRAM_LO] = species
+        one[crystal.GB_ENEMY_LEVEL - gen2.GB_WRAM_LO] = level
+        space[at:at + len(one)] = one
+    return bytes(space), gap
+
+
+def test_battle_on_a_sibling_copy_is_seen_at_once() -> None:
+    """The 15-second Celebi blind spot must not be possible again.
+
+    With the base on the wrong copy, battle_mode() has to notice that a
+    sibling is mid-battle and switch immediately — not wait out the
+    30-second liveness timer.
+    """
+    space, gap = _two_copies()
+    rpc = TwoCopyRPC(BASE, space, BASE + gap)
+    session = crystal.CrystalSession(rpc, [], base=BASE)
+    session._candidates = [BASE, BASE + gap]
+
+    assert session.battle_mode() == crystal.BATTLE_WILD
+    assert session.base == BASE + gap, "did not move to the battling copy"
+
+    enemy = session.enemy()
+    assert enemy is not None and enemy.species == 251 and enemy.level == 30
+
+
+def test_a_lone_battle_byte_is_not_enough_to_switch() -> None:
+    """A stale copy holds whatever was in WRAM when it was written.
+
+    1 and 2 are common byte values, so the battle byte alone must not
+    move the base — the opponent record has to corroborate it.
+    """
+    space, gap = _two_copies(species=0, level=200)   # implausible foe
+    rpc = TwoCopyRPC(BASE, space, BASE + gap)
+    session = crystal.CrystalSession(rpc, [], base=BASE)
+    session._candidates = [BASE, BASE + gap]
+
+    assert session.battle_mode() == crystal.BATTLE_NONE
+    assert session.base == BASE, "switched on an uncorroborated byte"
+
+
+def test_our_own_battle_needs_no_sibling_lookup() -> None:
+    """When our base IS battling, the rivals are never consulted."""
+    space, gap = _two_copies(mode_a=crystal.BATTLE_WILD, mode_b=0)
+    rpc = TwoCopyRPC(BASE, space, BASE)
+    session = crystal.CrystalSession(rpc, [], base=BASE)
+    session._candidates = [BASE, BASE + gap]
+    calls = []
+    session._really_battling = lambda b: calls.append(b) or False
+
+    assert session.battle_mode() == crystal.BATTLE_WILD
+    assert calls == [], "asked the siblings despite seeing its own battle"
+
+
+class BlankRPC:
+    """An emulator with no target process: every read answers zeros."""
+
+    def __init__(self):
+        self.bytes_read = 0
+
+    def read(self, addr, size):
+        self.bytes_read += size
+        return bytes(size)
+
+
+def test_a_blank_range_is_abandoned_not_ground_through() -> None:
+    """Detached emulator: 4 MB of proof, not 896 MB of it."""
+    rpc = BlankRPC()
+    hits = crystal.scan_range(rpc, 0x08000000, 0x40000000,
+                              progress_every=0, max_req_per_s=0)
+    assert hits == []
+    assert rpc.bytes_read <= crystal._DEAD_BAIL_BYTES + crystal.CHUNK, (
+        f"read {rpc.bytes_read / 1048576:.0f} MB of blank memory before "
+        f"giving up")
+
+
+def test_a_blank_stretch_mid_range_does_not_abort_the_scan() -> None:
+    """Blank pages inside a real heap are ordinary and must be skipped.
+
+    The bail-out exists for a range that is blank from its first byte;
+    arming it anywhere else would make the scanner miss a party block
+    that sits past a large empty region.
+    """
+    lead = 0x1000                                  # real data up front
+    blank = crystal._DEAD_BAIL_BYTES + 0x10000     # then a big gap
+    party = build_space([make_mon(251, 30)], span=0x8000)
+    space = bytearray(lead + blank + len(party))
+    space[:lead] = b"\xa5" * lead
+    space[lead + blank:] = party
+    rpc = FakeRPC(BASE, bytes(space))
+
+    hits = crystal.scan_range(rpc, BASE, BASE + len(space),
+                              progress_every=0, max_req_per_s=0)
+    assert [h["wram_base"] for h in hits] == [BASE + lead + blank]
+
+
+def test_the_scanner_is_paced() -> None:
+    """Unpaced, the scanner issued 8,273 RPC reads/second and Azahar died."""
+    import time as _t
+    rpc = FakeRPC(BASE, build_space([make_mon(251, 30)], span=0x40000))
+    t0 = _t.monotonic()
+    crystal.scan_range(rpc, BASE, BASE + 0x40000, progress_every=0,
+                       max_req_per_s=200.0)
+    elapsed = _t.monotonic() - t0
+    requests = rpc.bytes_read / 1024
+    assert requests / max(elapsed, 1e-9) <= 260, (
+        f"paced at {requests / elapsed:.0f} req/s, asked for 200")
+
+
+def test_the_scan_ranges_avoid_graphics_memory() -> None:
+    """A Game Boy title has no business in the renderer's pages.
+
+    The old catch-all (0x08000000-0x40000000) covered the linear heap
+    and VRAM. Reading those over RPC produced 215,516 "unmapped
+    ReadBlock" errors in 21 seconds for pages that can never hold GB
+    WRAM.
+    """
+    from pokebot import games
+
+    vram_and_linear = (0x14000000, 0x20000000)
+    for start, end in games.GB_VC_SCAN_RANGES:
+        assert end <= vram_and_linear[0] or start >= vram_and_linear[1], (
+            f"range {start:#010x}-{end:#010x} overlaps graphics memory")
+
+    # And the hot band must actually contain both bases seen in the wild.
+    hot_start, hot_end = games.GB_VC_HOT_3DS
+    for observed in (0x08a2ffac, 0x08a3bf1a):
+        assert hot_start <= observed < hot_end
+
+
+def test_an_unconfirmed_attach_is_reported_not_assumed() -> None:
+    """Azahar can accept SetProcess and still have no target selected.
+
+    It then answers every read with zeros instead of an error, so the
+    caller cannot tell a blank page from a detached emulator — which is
+    what sent the scanner through the whole heap.
+    """
+    from pokebot import citra_rpc
+
+    class Detached(citra_rpc.CitraRPC):
+        def __init__(self):                 # no socket
+            self._attached_pid = None
+            self._attached_title = None
+            self.sent = []
+
+        def _send_request(self, req_type, payload):
+            self.sent.append(req_type)
+            return b"\x00\x00\x00\x00"      # get_process -> 0, i.e. none
+
+        def list_processes(self):
+            return {7: (0x0004000000172800, "trl")}
+
+    rpc = Detached()
+    with pytest.raises(citra_rpc.RPCError, match="no target process"):
+        rpc.attach_to_pokemon_game()
+
+
+def test_a_confirmed_attach_succeeds() -> None:
+    from pokebot import citra_rpc
+    import struct as _s
+
+    class Attached(citra_rpc.CitraRPC):
+        def __init__(self):
+            self._attached_pid = None
+            self._attached_title = None
+
+        def _send_request(self, req_type, payload):
+            return _s.pack("<I", 7)         # get_process -> our pid
+
+        def list_processes(self):
+            return {7: (0x0004000000172800, "trl")}
+
+    pid, tid, name = Attached().attach_to_pokemon_game()
+    assert (pid, name) == (7, "Crystal")
