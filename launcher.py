@@ -200,6 +200,16 @@ def _load_config() -> dict:
 # Bot subprocess manager
 # ---------------------------------------------------------------------------
 
+
+def _press_rate_label(hold_s: float) -> str:
+    """Show the slider as a RATE as well as a hold time.
+
+    "0.03 s" means nothing on its own; "0.03 s (33/s)" is the number
+    the user actually cares about.
+    """
+    return f"{hold_s:.2f} s ({1 / max(hold_s, 1e-9):.0f}/s)"
+
+
 class _BotProcess:
     def __init__(self, on_line, on_exit):
         self._proc: subprocess.Popen | None = None
@@ -1625,9 +1635,12 @@ class _App(tk.Tk):
                  font=("Segoe UI", 10)).pack(fill="x", pady=(2, 8),
                                               ipady=4)
 
-        # Press speed — seconds between button presses in the X/Y
-        # starter sequence (advance_gap + xy_receive_gap). Lower =
-        # faster; raise if the cursor / Tierno text gets skipped.
+        # Press speed — how long each A press is HELD, which is what
+        # sets the rate now that the sequence is a detect-driven spam
+        # rather than a fixed cadence: 0.03s is ~33 presses/second.
+        # The floor is Azahar's, not ours — below ~0.01s it can see the
+        # key go down and up inside one polled frame and score no press
+        # at all.
         ps_head = tk.Frame(self._sr_rest_frame, bg=_PANEL2)
         ps_head.pack(fill="x")
         tk.Label(ps_head, text="Press speed",
@@ -1635,24 +1648,24 @@ class _App(tk.Tk):
                  font=("Segoe UI", 9, "bold"),
                  anchor="w").pack(side="left")
         self._press_var = tk.DoubleVar(value=float(
-            _seed.get("advance_gap", 1.0)))
+            _seed.get("press_hold", 0.03)))
         self._press_val_lbl = tk.Label(
-            ps_head, text=f"{self._press_var.get():.1f} s",
+            ps_head, text=_press_rate_label(self._press_var.get()),
             bg=_PANEL2, fg=_ACCENT,
             font=("Segoe UI", 9, "bold"))
         self._press_val_lbl.pack(side="right")
-        tk.Scale(self._sr_rest_frame, from_=0.3, to=2.0,
-                 resolution=0.1, orient="horizontal",
+        tk.Scale(self._sr_rest_frame, from_=0.01, to=0.20,
+                 resolution=0.01, orient="horizontal",
                  variable=self._press_var, showvalue=False,
                  bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
                  highlightthickness=0, bd=0, sliderrelief="flat",
                  activebackground=_ACCENT,
                  command=lambda v: self._press_val_lbl.config(
-                     text=f"{float(v):.1f} s")).pack(fill="x")
+                     text=_press_rate_label(float(v)))).pack(fill="x")
         tk.Label(self._sr_rest_frame,
-                 text="Lower = faster button presses. Raise if the "
-                      "Tierno text gets cut off or the cursor doesn't "
-                      "register.",
+                 text="Lower = faster button presses. Raise it if "
+                      "attempts start timing out — that means Azahar "
+                      "is dropping presses.",
                  bg=_PANEL2, fg=_MUTED,
                  font=("Segoe UI", 9, "italic"),
                  anchor="w", wraplength=235, justify="left"

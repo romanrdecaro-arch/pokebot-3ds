@@ -1,11 +1,10 @@
 """
 Soft-reset mode (starters / gifts).
 
-Save in front of the starter table (see TUTORIAL.md), pick the
-starter in the launcher, then per attempt the bot:
+Save in front of the starter table with an EMPTY party, then per
+attempt the bot:
 
-  1. Runs the X/Y input sequence (Tierno cutscene → cursor to the
-     chosen starter → receive it).
+  1. Presses A, fast, until a Pokémon lands in the party.
   2. Detects the received Pokémon by CONTENT — observe.get_party()
      locates the player-owned party in RAM by scanning for
      checksum-valid PK6 whose OT is the trainer (the same
@@ -14,7 +13,15 @@ starter in the launcher, then per attempt the bot:
   3. Evaluates: species must be the chosen starter, then the target
      filter (shiny / IVs / nature …).
   4. Hit → stop + alert (it's in your party, go save). Miss → soft
-     reset (L+R+Start) and repeat.
+     reset (L+R+Start), wait for the party to empty, and repeat.
+
+There is NO cursor navigation. The old sequence walked the cursor with
+DpadLeft/DpadRight on a fixed one-second cadence, and every step of it
+assumed the cutscene was exactly where the timings said — a cursor
+misfire meant receiving the wrong starter and burning the attempt.
+Whichever starter sits under the default cursor is the one taken, so
+save in front of the one you want; the ``starter`` setting is now only
+used to check what actually arrived.
 
 config.yaml soft_reset.trainer_name MUST match your in-game OT (it's
 how the party is found). Defaults to games.DEFAULT_OT_NAME.
@@ -22,6 +29,7 @@ how the party is found). Defaults to games.DEFAULT_OT_NAME.
 from __future__ import annotations
 
 import logging
+import time
 
 from ..games import DEFAULT_OT_NAME, starter_species, starters_for
 from ..pk6_export import ensure_targets_dir, save_target_pk6
@@ -36,71 +44,61 @@ log = logging.getLogger(__name__)
 # Per-game starter input sequence
 # ---------------------------------------------------------------------------
 
-def _xy_starter_sequence(ctx, starter: str, gap: float,
-                         pre_taps: int, post_taps: int,
-                         receive_gap: float, detect_cb=None) -> bool:
-    """Pokémon X/Y starter sequence (fixed, manually-timed). Returns
-    False if a stop was requested mid-run.
+#: A presses, at the cadence the Celebi hunt settled on. The floor is
+#: Azahar's: a key posted to its window is picked up when Qt next
+#: drains its event queue, so a press held for less than one of those
+#: can go down and come up inside a single polled frame and score no
+#: press at all. 30 ms clears that and gives ~33 presses/second.
+_PRESS_HOLD_S = 0.03
+_PRESS_GAP_S = 0.0
+_PRESS_HOLD_FLOOR = 0.01
 
-      1× DpadLeft        — start Tierno's cutscene
-      pre_taps× A        — clear setup dialogue          (gap)
-      cursor + confirm:                                  (gap)
-        Chespin  → 1×A, 2×DpadLeft,  2×A
-        Fennekin → 3×A  (default cursor)
-        Froakie  → 1×A, 2×DpadRight, 2×A
-      post_taps× B       — receive (B avoids the nickname
-                            prompt)                       (receive_gap)
-    The main loop confirms the starter actually arrived via
-    get_party(), so post_taps is just a generous floor.
+#: Poll the party this often while spamming. The fast party check is a
+#: 12 KB window — a dozen RPC round trips, against 30 ms for a press —
+#: so checking every press would halve the press rate for nothing.
+#: 0.15s bounds the overshoot to about five presses past the moment the
+#: starter lands, which is what keeps the spam from running deep into
+#: the nickname prompt.
+_DETECT_EVERY_S = 0.15
+
+
+def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
+                           detect_cb, detect_every: float
+                           = _DETECT_EVERY_S) -> bool:
+    """Press A until something lands in the party.
+
+    Replaces the old fixed, hand-timed sequence — 1x DpadLeft, 25x A,
+    two cursor presses, then up to 30x B on one-second gaps, about a
+    minute of pressing whose every step assumed the cutscene was where
+    the timings said it would be. There is no cursor navigation here at
+    all: whichever starter sits under the default cursor is the one
+    taken, so save in front of the one you want.
+
+    Driven by the party rather than by a clock, exactly like the Celebi
+    hunt: press, check, stop the moment a Pokemon appears. That is also
+    what keeps the spam out of the nickname prompt, which comes AFTER
+    the mon is added to the party — so detecting it promptly means the
+    presses stop before the prompt matters.
     """
-    starter = (starter or "").lower()
-
-    def _tap(button: str, sleep_for: float) -> bool:
-        if ctx.should_stop():
-            return False
-        ctx.input.tap(button, hold_s=0.05)
-        ctx._stop_evt.wait(sleep_for)
-        return not ctx.should_stop()
-
-    if not _tap("DpadLeft", gap):
-        return False
-    log.info(f"  X/Y: {pre_taps}× A (clear Tierno, gap {gap}s)")
-    for _ in range(pre_taps):
-        if not _tap("A", gap):
-            return False
-
-    if starter == "chespin":
-        log.info("  X/Y: cursor → Chespin")
-        seq = [("A", gap), ("DpadLeft", gap), ("DpadLeft", gap),
-               ("A", gap), ("A", gap)]
-    elif starter == "froakie":
-        log.info("  X/Y: cursor → Froakie")
-        seq = [("A", gap), ("DpadRight", gap), ("DpadRight", gap),
-               ("A", gap), ("A", gap)]
-    else:
-        log.info("  X/Y: cursor on Fennekin (default)")
-        seq = [("A", gap), ("A", gap), ("A", gap)]
-    for btn, g in seq:
-        if not _tap(btn, g):
-            return False
-
-    log.info(f"  X/Y: up to {post_taps}× B to receive "
-             f"(gap {receive_gap}s, early-exit on detect)")
-    for i in range(post_taps):
-        if not _tap("B", receive_gap):
-            return False
-        # Cheap poll between presses — break out the moment the
-        # starter is written to the live party. Skip the first 2
-        # (the slot can't possibly be ready yet, and the broad scan
-        # only happens once after the cache is set).
-        if detect_cb is not None and i >= 2 and detect_cb():
-            log.info(f"  X/Y: starter detected after {i + 1} B "
-                     f"press(es) — stopping B-mash early.")
-            return True
-    return True
-
-
-_SEQUENCES = {"X-USA": _xy_starter_sequence, "Y-USA": _xy_starter_sequence}
+    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    next_check = 0.0
+    presses = 0
+    while not ctx.should_stop() and time.monotonic() < deadline:
+        now = time.monotonic()
+        if now >= next_check:
+            next_check = now + detect_every
+            if detect_cb():
+                elapsed = now - started
+                log.info(f"  received after {presses} A presses "
+                         f"({presses / max(elapsed, 1e-9):.0f}/s, "
+                         f"{elapsed:.1f}s)")
+                return True
+        ctx.input.tap("A", hold_s=hold)
+        presses += 1
+        if gap:
+            ctx._stop_evt.wait(gap)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +119,33 @@ def _do_reset(ctx, post_wait: float, post_taps: int, post_gap: float):
             return
         ctx.input.tap("A", hold_s=0.05)
         ctx._stop_evt.wait(post_gap)
+
+
+def _reset_until_party_empty(ctx, detect_cb, post_wait: float,
+                             timeout: float) -> bool:
+    """Soft-reset, and wait for the received starter to disappear.
+
+    The party emptying is the proof that L+R+Start actually landed. It
+    matters more now than it did under the old fixed sequence: the A
+    spam that follows is 33 presses a second, and if the reset silently
+    did nothing those presses go into whatever is still on screen — the
+    nickname keyboard, most likely — while the bot waits for a starter
+    it already has. Checking costs one fast party read.
+
+    Nothing is pressed while waiting, for the same reason.
+    """
+    ctx.input.soft_reset()
+    ctx._stop_evt.wait(post_wait)
+    try:
+        focus_azahar()
+    except Exception:
+        pass
+    deadline = time.monotonic() + timeout
+    while not ctx.should_stop() and time.monotonic() < deadline:
+        if not detect_cb():
+            return True
+        ctx._stop_evt.wait(0.25)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -520,19 +545,28 @@ def _run_starters(ctx, cfg):
         log.warning(f"  couldn't focus Azahar: {e}")
 
     player_ot = cfg.get("trainer_name", DEFAULT_OT_NAME)
-    advance_taps = int(cfg.get("advance_taps", 60))
-    advance_gap = float(cfg.get("advance_gap", 1.0))
     post_reset = float(cfg.get("post_reset_wait", 3.5))
-    post_reset_taps = int(cfg.get("post_reset_taps", 4))
-    post_reset_gap = float(cfg.get("post_reset_gap", 0.6))
+    press_hold = float(cfg.get("press_hold", _PRESS_HOLD_S))
+    press_gap = float(cfg.get("press_interval", _PRESS_GAP_S))
+    detect_every = float(cfg.get("detect_every", _DETECT_EVERY_S))
+    # The cutscene has its own unskippable animations, so this bounds
+    # a stuck attempt rather than pacing a working one.
+    receive_timeout = float(cfg.get("receive_timeout", 180.0))
+    reset_timeout = float(cfg.get("reset_timeout", 30.0))
     starter_name = cfg.get("starter")
-    xy_pre_taps = int(cfg.get("xy_pre_taps", 25))
-    xy_post_taps = int(cfg.get("xy_post_taps", 30))
-    xy_receive_gap = float(cfg.get("xy_receive_gap", 1.0))
     # How long to wait for the starter to show up in the party after
     # the input sequence before declaring the attempt a miss.
     detect_tries = int(cfg.get("detect_tries", 12))
     detect_gap = float(cfg.get("detect_gap", 1.5))
+
+    if press_hold < _PRESS_HOLD_FLOOR:
+        log.warning(f"  press_hold {press_hold:.3f}s is below "
+                    f"{_PRESS_HOLD_FLOOR:.3f}s — Azahar may see the key go "
+                    f"down and up inside one polled frame and score no "
+                    f"press at all. Raise it if attempts start timing out.")
+    log.info(f"  A presses: {press_hold * 1000:.0f}ms hold"
+             + (f" + {press_gap * 1000:.0f}ms gap" if press_gap else "")
+             + f"  (~{1 / max(press_hold + press_gap, 1e-9):.0f}/s)")
     party_base = ctx.game.offsets.party_base
     party_stride = ctx.game.offsets.party_stride or 484
 
@@ -553,9 +587,44 @@ def _run_starters(ctx, cfg):
             log.warning(f"  unknown starter {starter_name!r} for "
                         f"{ctx.game.key}; known: "
                         f"{list(all_starters)}")
-    seq_fn = _SEQUENCES.get(ctx.game.key)
-    if not (seq_fn and starter_name):
-        log.info("  no game-specific starter sequence — generic A-mash.")
+    log.info("  No cursor navigation: whichever starter is under the "
+             "default cursor is the one taken, so save in front of the "
+             "one you want. The starter setting is only used to check "
+             "what arrived.")
+
+    # An attempt is "party empty -> press A -> party has one". Starting
+    # with a mon already there means the save is not where the hunt
+    # expects, and the bot would call it a fresh catch every attempt
+    # without pressing anything.
+    def _party_has_mon() -> bool:
+        return bool(quick_get_party(ctx, player_ot))
+
+    if _party_has_mon():
+        log.error("Your party already has a Pokemon. This mode expects a "
+                  "save made in front of the starter table with an EMPTY "
+                  "party — otherwise it cannot tell a new starter from "
+                  "the one already there. Stopping.")
+        ctx.dashboard.broadcast("read_failure",
+                                reason="party not empty at start")
+        ctx.request_stop("party not empty at start")
+        return
+
+    def _reset_or_stop() -> bool:
+        """Reset and confirm it took, or stop the hunt saying so."""
+        if _reset_until_party_empty(ctx, _party_has_mon, post_reset,
+                                    reset_timeout):
+            return True
+        if ctx.should_stop():
+            return False
+        log.error(f"  the starter never left the party, so L+R+Start did "
+                  f"not register within {reset_timeout:.0f}s. Stopping "
+                  f"rather than spamming A into whatever is still on "
+                  f"screen while waiting for a starter that is already "
+                  f"there.")
+        ctx.dashboard.broadcast("read_failure",
+                                reason="soft reset did not register")
+        ctx.request_stop("soft reset did not register")
+        return False
 
     attempt = 0
     while not ctx.should_stop():
@@ -567,28 +636,27 @@ def _run_starters(ctx, cfg):
         except Exception:
             pass
 
-        # Detect callback used by the sequence between B presses —
-        # break out the moment the starter lands in the live party
-        # so we don't keep mashing B after it's already received.
-        def _detected() -> bool:
-            party = quick_get_party(ctx, player_ot)
-            if not party:
-                return False
-            lead = party[0]
-            return starter_id is None or lead.species == starter_id
-
-        # 1. Drive the game to "starter received".
-        if seq_fn and starter_name:
-            if not seq_fn(ctx, starter_name, advance_gap,
-                          xy_pre_taps, xy_post_taps, xy_receive_gap,
-                          detect_cb=_detected):
+        # 1. Press A until something lands in the party.
+        #
+        # Deliberately NOT gated on species: the wrong starter still
+        # ends the pressing, and the species check below reports it
+        # properly. Waiting for the right one instead would keep
+        # mashing A deep into the nickname keyboard.
+        if not _spam_a_until_received(ctx, press_hold, press_gap,
+                                      receive_timeout, _party_has_mon,
+                                      detect_every):
+            if ctx.should_stop():
                 return
-        else:
-            for _ in range(advance_taps):
-                if ctx.should_stop():
-                    return
-                ctx.input.tap("A", hold_s=0.05)
-                ctx._stop_evt.wait(advance_gap)
+            log.error(f"  nothing reached the party in "
+                      f"{receive_timeout:.0f}s of A presses. Either the "
+                      f"save is not in front of the starter table, or "
+                      f"Azahar is not receiving input — run "
+                      f"scripts/test_input.py to tell those apart.")
+            ctx.dashboard.broadcast(
+                "read_failure", attempt=attempt,
+                reason="no starter received from A presses")
+            ctx.request_stop("no starter received — check input and save")
+            return
 
         # 2. Detect the received starter by content (relocation-proof;
         #    no offsets needed). Exit as soon as ANY mon lands in the
@@ -612,7 +680,8 @@ def _run_starters(ctx, cfg):
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
                 reason="no party member after sequence")
-            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+            if not _reset_or_stop():
+                return
             continue
 
         # Species gate — accepts the chosen starter; logs+resets if
@@ -629,7 +698,8 @@ def _run_starters(ctx, cfg):
                 "read_failure", attempt=attempt,
                 reason=f"wrong starter (got #{pkm.species}, "
                        f"wanted #{starter_id})")
-            _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+            if not _reset_or_stop():
+                return
             continue
 
         # 3. Report + evaluate. X/Y starters are ALWAYS received at
@@ -681,4 +751,5 @@ def _run_starters(ctx, cfg):
             ctx.request_stop("target hit")
             return
 
-        _do_reset(ctx, post_reset, post_reset_taps, post_reset_gap)
+        if not _reset_or_stop():
+                return

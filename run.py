@@ -65,9 +65,9 @@ def main(argv=None):
                          "to identify your owned Pokémon (soft_reset "
                          "mode). Overrides config.yaml.")
     ap.add_argument("--press-speed", type=float, default=None,
-                    help="seconds between button presses in the X/Y "
-                         "starter sequence (soft_reset mode). Lower "
-                         "= faster; sets advance_gap + xy_receive_gap.")
+                    help="seconds each A press is held in the starter "
+                         "soft-reset (soft_reset mode). Lower = faster; "
+                         "0.03 is ~33 presses/second. Sets press_hold.")
     ap.add_argument("--verify-address", default=None,
                     help="for debug mode: read 260 bytes at this hex "
                          "address and report whether it's a valid PK6 "
@@ -143,9 +143,7 @@ def main(argv=None):
     if args.trainer_name:
         section("soft_reset")["trainer_name"] = args.trainer_name
     if args.press_speed is not None:
-        sr = section("soft_reset")
-        sr["advance_gap"] = args.press_speed
-        sr["xy_receive_gap"] = args.press_speed
+        section("soft_reset")["press_hold"] = args.press_speed
     if args.target:   config["target"] = _target_preset(args.target)
     if args.verify_address:
         config["verify_address"] = int(args.verify_address, 0)

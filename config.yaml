@@ -42,25 +42,42 @@ input:
 # Mode-specific options
 soft_reset:
   read_slot: 0           # which party slot the gift Pokemon lands in
-  advance_taps: 60       # generic-mode mashes (non-X/Y games)
-  advance_gap: 3.0       # seconds between presses for the pre-menu /
-                         # navigation phase of the X/Y sequence
   post_reset_wait: 12.0  # seconds after L+R+Start to wait for boot logos
-                         # (Nintendo 3DS + Game Freak) before mashing
-  post_reset_taps: 6     # A presses through Title -> Continue -> save flash
-                         # back to the saved tile
-  post_reset_gap: 1.0    # seconds between each post-reset A press
+                         # (Nintendo 3DS + Game Freak) before pressing
+  post_reset_taps: 6     # (snorlax / lapras targets only)
+  post_reset_gap: 1.0    # (snorlax / lapras targets only)
 
-  # X/Y starter sequence — manually counted on real hardware.
-  xy_pre_taps:  25       # A presses to clear Tierno's dialogue
-  xy_post_taps: 40       # B presses to receive the starter (hard cap;
-                         # the bot exits early as soon as slot 0 has a
-                         # valid PK6 record, so the actual count is
-                         # usually much lower once party_base is known)
-                         # (B avoids opening the nickname-entry screen)
-  xy_receive_gap: 1.0    # seconds between each B press in the receive
-                         # phase. Faster than advance_gap because the
-                         # receive dialogue advances quickly with B.
+  # --- Starter hunt: press A until something lands in the party ------
+  #
+  # There is NO cursor navigation. The old sequence walked the cursor
+  # with DpadLeft/DpadRight on a fixed one-second cadence and assumed
+  # the cutscene was exactly where the timings said; a misfire meant
+  # receiving the wrong starter and burning the attempt. Save in front
+  # of the starter you want, with an EMPTY party.
+  #
+  # press_hold sets the rate, the same way it does for the Celebi hunt.
+  # The floor is Azahar's: a key posted to its window is picked up when
+  # Qt next drains its event queue, so a press held for less than one
+  # of those can go down and up inside a single polled frame and score
+  # no press at all.
+  #   0.030 -> ~33 presses/s  (default)
+  #   0.020 -> ~49 presses/s
+  #   0.010 -> ~96 presses/s  (back off if attempts start timing out)
+  press_hold: 0.03
+  press_interval: 0.0    # extra gap after each press; 0 = flat out
+  detect_every: 0.15     # how often to check the party while pressing.
+                         # The fast party check is a dozen RPC round
+                         # trips against 30ms for a press, so checking
+                         # every press would halve the rate for nothing.
+                         # This bounds the overshoot past the moment the
+                         # starter lands to about five presses, which is
+                         # what keeps the spam out of the nickname prompt.
+  receive_timeout: 180   # give up on an attempt after this long, and say
+                         # so — this is also how a dead input path shows
+  reset_timeout: 30      # how long to wait for the party to empty after
+                         # L+R+Start. If it never does, the reset did not
+                         # register and the hunt stops rather than
+                         # pressing A into whatever is still on screen.
 
   # Trainer name (in-game OT name, exactly as you set it). Used as
   # a fast RAM anchor: the bot searches for this string as UTF-16LE
