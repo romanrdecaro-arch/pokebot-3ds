@@ -315,11 +315,36 @@ def test_a_reset_that_never_registers_stops_the_hunt(monkeypatch):
     assert world.resets == 1, "kept resetting after the first did nothing"
 
 
-def test_nothing_is_pressed_while_waiting_for_the_reset_to_take(monkeypatch):
+def test_a_is_pressed_immediately_after_the_reset(monkeypatch):
+    """No wait for the boot logos.
+
+    The old 12-second pause did nothing on the theory that a press
+    during the Nintendo/Game Freak splash is wasted — but a wasted
+    press costs 30ms and the pause cost 12 seconds of every attempt.
+    The reset and the next attempt are one continuous stream of A.
+    """
     world = World(presses_to_receive=3, shiny=False, reset_works=False)
     ctx = _run(world, monkeypatch, starter="chespin")
     after = ctx.input.events[ctx.input.events.index("RESET") + 1:]
-    assert after == [], f"pressed {after} with the old screen still up"
+    assert "A" in after, f"nothing pressed after the reset: {after}"
+
+
+def test_the_reset_does_not_sleep_through_the_boot_logos(monkeypatch):
+    """post_reset_wait used to be 12s on every single attempt."""
+    import time as _t
+    world = World(presses_to_receive=2, shiny=False)
+    ctx = FakeCtx(_cfg(starter="chespin", post_reset_wait=12.0))
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        world.shiny = True
+
+    ctx.input.soft_reset = reset
+    t0 = _t.monotonic()
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+    assert _t.monotonic() - t0 < 2.0, "still sleeping through the logos"
 
 
 def test_nothing_received_within_the_timeout_stops_with_a_reason(monkeypatch):
@@ -530,3 +555,57 @@ def test_driver_hold_rejects_an_unknown_button(monkeypatch):
     with pytest.raises(ValueError):
         drv.hold("Leftish")
     assert posted == []
+
+
+# --------------------------------------------------------------------
+# Recently Seen: the table must show what actually arrived
+# --------------------------------------------------------------------
+
+def test_the_wrong_starter_still_reaches_the_table(monkeypatch):
+    """Reported: Recently Seen sat empty through a whole run.
+
+    Every attempt was finding a real Fennekin and rejecting it as the
+    wrong starter, and the rejection path broadcast only read_failure —
+    which populates nothing. An empty table reads as "the UI is broken"
+    rather than "the cursor is not moving", which is exactly the wrong
+    thing to be looking at.
+    """
+    world = World(presses_to_receive=3, species=656)   # Froakie
+    ctx = FakeCtx(_cfg(starter="chespin"))             # wanted Chespin
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        world.species = 650
+        world.shiny = True
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    candidates = [p for k, p in ctx.dashboard.sent if k == "candidate"]
+    assert len(candidates) == 2, (
+        f"{len(candidates)} candidate rows for 2 received starters")
+    assert candidates[0]["species"] == 656, "the rejected one is missing"
+    assert candidates[1]["species"] == 650
+
+
+def test_every_attempt_produces_exactly_one_table_row(monkeypatch):
+    """Rows should track attempts, whatever the species gate decides."""
+    world = World(presses_to_receive=2, species=653)   # always Fennekin
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        if world.resets >= 3:
+            ctx.request_stop("enough")
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    attempts = sum(1 for k, _ in ctx.dashboard.sent
+                   if k == "soft_reset_attempt")
+    candidates = sum(1 for k, _ in ctx.dashboard.sent if k == "candidate")
+    assert candidates == attempts, f"{candidates} rows for {attempts} attempts"

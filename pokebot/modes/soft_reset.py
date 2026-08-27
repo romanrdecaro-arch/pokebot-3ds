@@ -14,7 +14,8 @@ attempt the bot:
   3. Evaluates: species must be the chosen starter, then the target
      filter (shiny / IVs / nature …).
   4. Hit → stop + alert (it's in your party, go save). Miss → soft
-     reset (L+R+Start), wait for the party to empty, and repeat.
+     reset (L+R+Start) and keep pressing A straight through the boot
+     logos into the next attempt.
 
 Left is HELD for the whole sequence rather than tapped. The old
 sequence walked the cursor with individual DpadLeft/DpadRight presses
@@ -155,21 +156,42 @@ def _do_reset(ctx, post_wait: float, post_taps: int, post_gap: float):
         ctx._stop_evt.wait(post_gap)
 
 
-def _reset_until_party_empty(ctx, detect_cb, post_wait: float,
-                             timeout: float) -> bool:
-    """Soft-reset, and wait for the received starter to disappear.
+#: X/Y starters are ALWAYS received at Lv5. The byte at 0xEC of the
+#: live party slot right after the cutscene is not yet the level field
+#: (transitional state), so this is hardcoded rather than read — it
+#: otherwise displays something like 84 or 48.
+STARTER_LEVEL = 5
 
-    The party emptying is the proof that L+R+Start actually landed. It
-    matters more now than it did under the old fixed sequence: the A
-    spam that follows is 33 presses a second, and if the reset silently
-    did nothing those presses go into whatever is still on screen — the
-    nickname keyboard, most likely — while the bot waits for a starter
-    it already has. Checking costs one fast party read.
 
-    Nothing is pressed while waiting, for the same reason.
+def _broadcast_candidate(ctx, attempt: int, pkm) -> None:
+    """Put one received starter in the Recently Seen table."""
+    ctx.dashboard.broadcast(
+        "candidate", attempt=attempt,
+        species=pkm.species, nickname=pkm.nickname,
+        shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
+        ivs=pkm.ivs, pid=pkm.pid, tsv=pkm.tsv, psv=pkm.psv,
+        ability_id=pkm.ability_id, ability_num=pkm.ability_num,
+        level=STARTER_LEVEL, moves=pkm.moves)
+
+
+def _reset_until_party_empty(ctx, detect_cb, timeout: float,
+                             hold: float = _PRESS_HOLD_S,
+                             gap: float = _PRESS_GAP_S) -> bool:
+    """Soft-reset and start pressing A straight away.
+
+    There is no wait for the boot logos. The old one was 12 seconds of
+    doing nothing on the theory that a press during the Nintendo/Game
+    Freak splash is wasted — but a wasted press costs 30ms and the wait
+    cost 12 seconds of every single attempt. Pressing through the logos,
+    the title and CONTINUE is the same A spam that then walks the
+    cutscene, so the reset and the next attempt are one continuous
+    stream of presses.
+
+    The party emptying is still the proof that L+R+Start actually
+    landed: if it never does, the reset did nothing and the caller
+    stops rather than pressing on forever.
     """
     ctx.input.soft_reset()
-    ctx._stop_evt.wait(post_wait)
     try:
         focus_azahar()
     except Exception:
@@ -178,7 +200,9 @@ def _reset_until_party_empty(ctx, detect_cb, post_wait: float,
     while not ctx.should_stop() and time.monotonic() < deadline:
         if not detect_cb():
             return True
-        ctx._stop_evt.wait(0.25)
+        ctx.input.tap("A", hold_s=hold)
+        if gap:
+            ctx._stop_evt.wait(gap)
     return False
 
 
@@ -579,7 +603,6 @@ def _run_starters(ctx, cfg):
         log.warning(f"  couldn't focus Azahar: {e}")
 
     player_ot = cfg.get("trainer_name", DEFAULT_OT_NAME)
-    post_reset = float(cfg.get("post_reset_wait", 3.5))
     press_hold = float(cfg.get("press_hold", _PRESS_HOLD_S))
     press_gap = float(cfg.get("press_interval", _PRESS_GAP_S))
     detect_every = float(cfg.get("detect_every", _DETECT_EVERY_S))
@@ -656,16 +679,15 @@ def _run_starters(ctx, cfg):
 
     def _reset_or_stop() -> bool:
         """Reset and confirm it took, or stop the hunt saying so."""
-        if _reset_until_party_empty(ctx, _party_has_mon, post_reset,
-                                    reset_timeout):
+        if _reset_until_party_empty(ctx, _party_has_mon, reset_timeout,
+                                    press_hold, press_gap):
             return True
         if ctx.should_stop():
             return False
         log.error(f"  the starter never left the party, so L+R+Start did "
                   f"not register within {reset_timeout:.0f}s. Stopping "
-                  f"rather than spamming A into whatever is still on "
-                  f"screen while waiting for a starter that is already "
-                  f"there.")
+                  f"rather than pressing on forever waiting for a starter "
+                  f"that is already there.")
         ctx.dashboard.broadcast("read_failure",
                                 reason="soft reset did not register")
         ctx.request_stop("soft reset did not register")
@@ -732,13 +754,21 @@ def _run_starters(ctx, cfg):
         # Species gate — accepts the chosen starter; logs+resets if
         # the cursor landed on the wrong one (e.g. picked Fennekin
         # when Chespin was requested).
+        #
+        # The row goes to the table FIRST, whatever arrived. A rejected
+        # starter is still a Pokémon that was seen, and hiding it made
+        # Recently Seen sit empty through a whole run of attempts that
+        # were each finding a real Fennekin — which reads as "the table
+        # is broken" rather than "the cursor is not moving", and buried
+        # the actual problem behind an apparent UI bug.
         if starter_id is not None and pkm.species != starter_id:
             got = next((n for n, i in all_starters.items()
                         if i == pkm.species), f"#{pkm.species}")
+            _broadcast_candidate(ctx, attempt, pkm)
             log.warning(f"  attempt {attempt}: WRONG starter — got "
                         f"{got.title()} (#{pkm.species}), wanted "
                         f"{starter_name.title()} (#{starter_id}). "
-                        f"Cursor misfire; resetting.")
+                        f"The cursor is not reaching it; resetting.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
                 reason=f"wrong starter (got #{pkm.species}, "
@@ -752,7 +782,6 @@ def _run_starters(ctx, cfg):
         # the cutscene isn't yet the level field (transitional
         # state), so hardcode 5 for display rather than show a wrong
         # value like 84/48.
-        STARTER_LEVEL = 5
         if pkm.party:
             pkm.party = {**pkm.party, "level": STARTER_LEVEL}
         # Re-broadcast the strip with the corrected level too.
@@ -760,14 +789,7 @@ def _run_starters(ctx, cfg):
             broadcast_party(ctx, [pkm])
         except Exception:
             pass
-        ctx.dashboard.broadcast(
-            "candidate", attempt=attempt,
-            species=pkm.species, nickname=pkm.nickname,
-            shiny=pkm.shiny, nature=pkm.nature, gender=pkm.gender,
-            ivs=pkm.ivs, pid=pkm.pid, tsv=pkm.tsv, psv=pkm.psv,
-            ability_id=pkm.ability_id, ability_num=pkm.ability_num,
-            level=STARTER_LEVEL,
-            moves=pkm.moves)
+        _broadcast_candidate(ctx, attempt, pkm)
         log.info(f"  starter: #{pkm.species} {pkm.nickname or ''} "
                  f"Lv{STARTER_LEVEL} "
                  f"{'★SHINY★ ' if pkm.shiny else ''}"

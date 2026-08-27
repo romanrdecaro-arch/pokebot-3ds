@@ -42,10 +42,11 @@ input:
 # Mode-specific options
 soft_reset:
   read_slot: 0           # which party slot the gift Pokemon lands in
-  post_reset_wait: 12.0  # seconds after L+R+Start to wait for boot logos
-                         # (Nintendo 3DS + Game Freak) before pressing
-  post_reset_taps: 6     # (snorlax / lapras targets only)
-  post_reset_gap: 1.0    # (snorlax / lapras targets only)
+  # (snorlax / lapras targets only — the starter hunt no longer waits
+  # after a reset, it presses A straight through the boot logos)
+  post_reset_wait: 12.0
+  post_reset_taps: 6
+  post_reset_gap: 1.0
 
   # --- Starter hunt: hold Left, press A until it lands in the party --
   #
