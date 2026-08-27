@@ -780,3 +780,112 @@ def test_a_hold_button_with_no_hotkey_is_silent(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="pokebot.modes.soft_reset"):
         sr._warn_if_hotkey("DpadLeft")
     assert "Decrease Speed Limit" not in caplog.text
+
+
+# --------------------------------------------------------------------
+# Focus: only when the keys would not land otherwise
+# --------------------------------------------------------------------
+
+def test_azahar_is_not_focused_when_postmessage_works(monkeypatch):
+    """focus_azahar is not a cheap no-op.
+
+    It presses ALT globally, steals the foreground, and synthesises a
+    click into the MIDDLE of the Azahar window — which under mouse_mode
+    "restore" physically moves the pointer, and which lands at or near
+    the emulated touch screen. It ran on every attempt AND every reset.
+    PostMessage needs none of it.
+    """
+    world = World(presses_to_receive=3, shiny=True)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    ctx.input.needs_focus = lambda: False
+    _wire(monkeypatch, world, ctx)
+    # AFTER _wire, which patches focus_azahar itself — patching first
+    # made this assertion pass for the wrong reason.
+    focused = []
+    monkeypatch.setattr(sr, "focus_azahar",
+                        lambda *a, **k: focused.append(1) or True)
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    assert focused == [], (
+        f"focused Azahar {len(focused)} times despite PostMessage working")
+    assert ctx.stop_reason == "target hit"
+
+
+def test_azahar_is_focused_when_the_keys_need_it(monkeypatch):
+    """The pynput path DOES need Azahar in front, so still focus then."""
+    world = World(presses_to_receive=3, shiny=True)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    ctx.input.needs_focus = lambda: True
+    _wire(monkeypatch, world, ctx)
+    focused = []
+    monkeypatch.setattr(sr, "focus_azahar",
+                        lambda *a, **k: focused.append(1) or True)
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    assert focused, "did not focus Azahar when the keys required it"
+
+
+def test_an_old_driver_without_needs_focus_still_focuses(monkeypatch):
+    """Missing the method must not silently stop focusing altogether."""
+    focused = []
+    monkeypatch.setattr(sr, "focus_azahar",
+                        lambda *a, **k: focused.append(1) or True)
+
+    class Ctx:
+        input = type("I", (), {})()        # no needs_focus attribute
+
+    sr._focus_if_needed(Ctx())
+    assert focused == [1]
+
+
+# --------------------------------------------------------------------
+# Saying so when the keypresses stop going to Azahar
+# --------------------------------------------------------------------
+
+def test_a_degraded_input_path_is_reported(caplog):
+    """tap() always returned its route; nothing ever looked at it."""
+    import logging
+
+    class Ctx:
+        pass
+
+    ctx = Ctx()
+    with caplog.at_level(logging.WARNING, logger="pokebot.modes.soft_reset"):
+        sr._note_path(ctx, "pynput")
+    assert "focused" in caplog.text.lower(), caplog.text
+
+
+def test_no_input_route_at_all_is_an_error(caplog):
+    import logging
+
+    class Ctx:
+        pass
+
+    with caplog.at_level(logging.ERROR, logger="pokebot.modes.soft_reset"):
+        sr._note_path(Ctx(), "none")
+    assert "NO route" in caplog.text, caplog.text
+
+
+def test_the_working_path_says_nothing(caplog):
+    import logging
+
+    class Ctx:
+        pass
+
+    with caplog.at_level(logging.INFO, logger="pokebot.modes.soft_reset"):
+        sr._note_path(Ctx(), "postmessage")
+    assert caplog.text.strip() == "", caplog.text
+
+
+def test_the_degraded_path_is_reported_once_not_every_press(caplog):
+    """33 presses a second would otherwise bury the log."""
+    import logging
+
+    class Ctx:
+        pass
+
+    ctx = Ctx()
+    with caplog.at_level(logging.WARNING, logger="pokebot.modes.soft_reset"):
+        for _ in range(50):
+            sr._note_path(ctx, "pynput")
+    assert caplog.text.count("global keyboard") == 1, caplog.text

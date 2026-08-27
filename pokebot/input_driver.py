@@ -335,6 +335,28 @@ class InputDriver:
             self._azahar_hwnd = find_azahar_hwnd() or 0
         return vk, self._azahar_hwnd
 
+    def needs_focus(self) -> bool:
+        """Does input actually require Azahar to be the foreground window?
+
+        PostMessage does not — that is the whole point of it. Focusing
+        anyway is far from free: focus_azahar presses ALT globally,
+        steals the foreground with AttachThreadInput, and synthesises a
+        click into the middle of the window. Under mouse_mode "restore"
+        that click physically moves the pointer, and the middle of an
+        Azahar window is at or near the emulated TOUCH SCREEN — so a
+        call meant to make keys land can instead poke the game and
+        leave it somewhere the keys cannot get it out of.
+
+        Called before every focus attempt so the cost is only paid when
+        the keystrokes genuinely would not arrive otherwise.
+        """
+        if self.dry_run:
+            return False
+        if not sys.platform.startswith("win"):
+            return True
+        vk, hwnd = self._vk_and_hwnd("A")
+        return not (vk is not None and hwnd)
+
     def hold(self, button: str) -> bool:
         """Press a button and LEAVE it down until ``release``.
 

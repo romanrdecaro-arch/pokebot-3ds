@@ -92,6 +92,62 @@ _HOLD_BUTTON = "DpadLeft"
 _RESET_COOLDOWN_S = 0.0
 
 
+def _note_path(ctx, path) -> None:
+    """Say so the FIRST time keypresses stop going where they should.
+
+    ``tap`` has always returned which route it took — "postmessage",
+    "pynput", "none" — and nothing ever looked. So when the route
+    silently degraded, the mode simply pressed A into nowhere until its
+    timeout, with no clue in the log as to why. "pynput" means the keys
+    now go to whatever window is focused, which is how they end up
+    typed into the launcher.
+    """
+    if path is None or path == getattr(ctx, "_last_input_path", None):
+        return
+    ctx._last_input_path = path
+    if path == "postmessage":
+        return
+    if path == "none":
+        log.error("  keypresses have NO route to Azahar — neither "
+                  "PostMessage nor pynput is usable. Nothing is reaching "
+                  "the game.")
+    elif path == "pynput":
+        log.warning("  keypresses fell back to the global keyboard, which "
+                    "goes to whatever window is FOCUSED rather than to "
+                    "Azahar. If Azahar is not in front, they are landing "
+                    "somewhere else — the launcher, most likely.")
+    else:
+        log.info(f"  input path: {path}")
+
+
+def _focus_if_needed(ctx) -> None:
+    """Bring Azahar forward ONLY when the keys would not land otherwise.
+
+    This used to run unconditionally on every attempt and every reset,
+    and it is not a cheap no-op. focus_azahar presses ALT globally,
+    steals the foreground with AttachThreadInput, and synthesises a
+    click into the MIDDLE of the Azahar window — which under mouse_mode
+    "restore" physically moves the pointer, and which lands at or near
+    the emulated touch screen. A call meant to make keypresses land
+    could instead poke the game into a state the keypresses could not
+    get it out of, once per reset, while yanking the cursor away from
+    whatever the user was doing.
+
+    PostMessage needs none of it, so when PostMessage is available this
+    does nothing at all.
+    """
+    try:
+        if not ctx.input.needs_focus():
+            return
+    except AttributeError:
+        pass                      # older driver: keep the old behaviour
+    log.info("  keypresses need Azahar focused — bringing it forward")
+    try:
+        focus_azahar()
+    except Exception as exc:
+        log.warning(f"  couldn't focus Azahar: {exc}")
+
+
 def _warn_if_hotkey(button: str) -> None:
     """Say so when the button we are about to HOLD is an Azahar hotkey.
 
@@ -165,7 +221,7 @@ def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
                              f"({presses / max(elapsed, 1e-9):.0f}/s, "
                              f"{elapsed:.1f}s)")
                     return True
-            ctx.input.tap("A", hold_s=hold)
+            _note_path(ctx, ctx.input.tap("A", hold_s=hold))
             presses += 1
             if gap:
                 ctx._stop_evt.wait(gap)
@@ -247,10 +303,7 @@ def _reset_until_party_empty(ctx, detect_cb, timeout: float,
     if last_reset is not None:
         last_reset[:] = [time.monotonic()]
     ctx.input.soft_reset()
-    try:
-        focus_azahar()
-    except Exception:
-        pass
+    _focus_if_needed(ctx)
     deadline = time.monotonic() + timeout
     while not ctx.should_stop() and time.monotonic() < deadline:
         if not detect_cb():
@@ -651,11 +704,7 @@ def _run_lapras(ctx, cfg):
 
 def _run_starters(ctx, cfg):
     log.info("Mode: soft_reset (starter)")
-    try:
-        if focus_azahar():
-            log.info("  Azahar window focused.")
-    except Exception as e:
-        log.warning(f"  couldn't focus Azahar: {e}")
+    _focus_if_needed(ctx)
 
     player_ot = cfg.get("trainer_name", DEFAULT_OT_NAME)
     press_hold = float(cfg.get("press_hold", _PRESS_HOLD_S))
@@ -762,10 +811,7 @@ def _run_starters(ctx, cfg):
         attempt += 1
         log.info(f"Soft reset attempt #{attempt}")
         ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
-        try:
-            focus_azahar()
-        except Exception:
-            pass
+        _focus_if_needed(ctx)
 
         # 1. Press A until something lands in the party.
         #
