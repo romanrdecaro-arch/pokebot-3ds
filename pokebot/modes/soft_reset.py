@@ -751,20 +751,35 @@ def _run_starters(ctx, cfg):
                 return
             continue
 
-        # Species gate — accepts the chosen starter; logs+resets if
-        # the cursor landed on the wrong one (e.g. picked Fennekin
-        # when Chespin was requested).
+        # Species gate — resets when the cursor landed on the wrong
+        # starter (e.g. Fennekin when Chespin was requested).
         #
-        # The row goes to the table FIRST, whatever arrived. A rejected
-        # starter is still a Pokémon that was seen, and hiding it made
-        # Recently Seen sit empty through a whole run of attempts that
-        # were each finding a real Fennekin — which reads as "the table
-        # is broken" rather than "the cursor is not moving", and buried
-        # the actual problem behind an apparent UI bug.
-        if starter_id is not None and pkm.species != starter_id:
+        # It NEVER discards a target. The gate used to run before the
+        # target check, so a hunt configured for Chespin would have
+        # soft-reset a shiny Fennekin — thrown away the one outcome the
+        # whole hunt exists to find, on a species mismatch that PKHeX
+        # fixes in ten seconds. Species is a preference; a shiny is the
+        # point. So the target check comes first now, and a wrong-
+        # species target stops the bot with the mismatch called out.
+        #
+        # The row goes to the table FIRST either way. A rejected starter
+        # is still a Pokémon that was seen, and hiding it made Recently
+        # Seen sit empty through a whole run of attempts that were each
+        # finding a real Fennekin — which reads as "the table is broken"
+        # rather than "the cursor is not moving".
+        if pkm.party:
+            pkm.party = {**pkm.party, "level": STARTER_LEVEL}
+        _broadcast_candidate(ctx, attempt, pkm)
+
+        wrong_species = (starter_id is not None
+                         and pkm.species != starter_id)
+        has_rules = bool(ctx.target and ctx.target.rules)
+        is_target = (ctx.target.matches(pkm) if has_rules
+                     else not wrong_species and starter_id is not None)
+
+        if wrong_species and not is_target:
             got = next((n for n, i in all_starters.items()
                         if i == pkm.species), f"#{pkm.species}")
-            _broadcast_candidate(ctx, attempt, pkm)
             log.warning(f"  attempt {attempt}: WRONG starter — got "
                         f"{got.title()} (#{pkm.species}), wanted "
                         f"{starter_name.title()} (#{starter_id}). "
@@ -779,27 +794,20 @@ def _run_starters(ctx, cfg):
 
         # 3. Report + evaluate. X/Y starters are ALWAYS received at
         # Lv5 — the byte at 0xEC of the live party slot right after
-        # the cutscene isn't yet the level field (transitional
-        # state), so hardcode 5 for display rather than show a wrong
-        # value like 84/48.
-        if pkm.party:
-            pkm.party = {**pkm.party, "level": STARTER_LEVEL}
-        # Re-broadcast the strip with the corrected level too.
+        # the cutscene isn't yet the level field (transitional state),
+        # so STARTER_LEVEL is used rather than the read value, which
+        # displays as something like 84 or 48.
         try:
             broadcast_party(ctx, [pkm])
         except Exception:
             pass
-        _broadcast_candidate(ctx, attempt, pkm)
         log.info(f"  starter: #{pkm.species} {pkm.nickname or ''} "
                  f"Lv{STARTER_LEVEL} "
                  f"{'★SHINY★ ' if pkm.shiny else ''}"
                  f"nature={pkm.nature} IVs={pkm.ivs} "
                  f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
 
-        has_rules = bool(ctx.target and ctx.target.rules)
-        hit = (ctx.target.matches(pkm) if has_rules
-               else starter_id is not None)
-        if hit:
+        if is_target:
             reason = (ctx.target.describe(pkm) if has_rules
                       else f"starter #{pkm.species}")
             addr = getattr(pkm, "source_address", None)
@@ -807,9 +815,18 @@ def _run_starters(ctx, cfg):
                 save_target_pk6(ctx, addr, pkm,
                                 "shiny" if pkm.shiny else "starter")
             bar = "*" * 30
-            for line in (bar, f"  TARGET — attempt #{attempt}: {reason}",
-                         "  Bot STOPPED — it's in your party. Go SAVE!",
-                         bar):
+            lines = [bar, f"  TARGET — attempt #{attempt}: {reason}"]
+            if wrong_species:
+                got = next((n for n, i in all_starters.items()
+                            if i == pkm.species), f"#{pkm.species}")
+                lines += [
+                    f"  It is {got.title()} (#{pkm.species}), not the "
+                    f"{starter_name.title()} you picked —",
+                    "  kept anyway rather than reset away. Change the "
+                    "species in PKHeX.",
+                ]
+            lines += ["  Bot STOPPED — it's in your party. Go SAVE!", bar]
+            for line in lines:
                 log.info(line)
             ctx.dashboard.broadcast(
                 "target_hit", attempt=attempt, count=attempt,

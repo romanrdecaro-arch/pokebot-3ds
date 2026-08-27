@@ -609,3 +609,94 @@ def test_every_attempt_produces_exactly_one_table_row(monkeypatch):
                    if k == "soft_reset_attempt")
     candidates = sum(1 for k, _ in ctx.dashboard.sent if k == "candidate")
     assert candidates == attempts, f"{candidates} rows for {attempts} attempts"
+
+
+# --------------------------------------------------------------------
+# Never reset away a target over a species mismatch
+# --------------------------------------------------------------------
+
+def test_a_shiny_of_the_wrong_species_is_kept_not_reset(monkeypatch):
+    """The one outcome the whole hunt exists to find.
+
+    The species gate used to run before the target check, so a hunt
+    configured for Chespin would soft-reset a shiny Fennekin — throwing
+    away a 1-in-4096 roll over a mismatch PKHeX fixes in ten seconds.
+    Species is a preference; a shiny is the point.
+    """
+    world = World(presses_to_receive=3, species=653, shiny=True)  # Fennekin
+    ctx = FakeCtx(_cfg(starter="chespin"))                        # wanted 650
+    _wire(monkeypatch, world, ctx)
+
+    # Bound the loop. Resetting past this shiny is the bug under test,
+    # and the world keeps producing shiny Fennekin, so without a bound
+    # the regression hangs the suite instead of failing it.
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        ctx.request_stop("reset past the shiny")
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    assert ctx.stop_reason == "target hit", (
+        f"stopped with {ctx.stop_reason!r} — a shiny was reset away")
+    assert world.resets == 0, f"{world.resets} resets past a shiny"
+    hits = [p for k, p in ctx.dashboard.sent if k == "target_hit"]
+    assert hits and hits[0]["species"] == 653
+
+
+def test_the_kept_wrong_species_shiny_is_still_flagged(monkeypatch, caplog):
+    """Keeping it silently would look like the cursor had worked."""
+    import logging
+    world = World(presses_to_receive=3, species=653, shiny=True)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    _wire(monkeypatch, world, ctx)
+    # Bounded for the same reason as the test above: the world keeps
+    # producing shiny Fennekin, so a regression that resets past it
+    # would spin forever rather than report.
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        ctx.request_stop("reset past the shiny")
+
+    ctx.input.soft_reset = reset
+    with caplog.at_level(logging.INFO, logger="pokebot.modes.soft_reset"):
+        sr._run_starters(ctx, ctx.config["soft_reset"])
+    text = caplog.text
+    assert "Fennekin" in text, text
+    assert "PKHeX" in text, "did not say how to fix the species"
+
+
+def test_a_non_shiny_wrong_species_still_resets(monkeypatch):
+    """The gate still does its job when there is nothing to lose."""
+    world = World(presses_to_receive=3, species=653, shiny=False)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        world.species, world.shiny = 650, True
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+    assert world.resets == 1, "did not reset a plain wrong-species starter"
+    assert ctx.stop_reason == "target hit"
+
+
+def test_the_right_species_but_not_a_target_still_resets(monkeypatch):
+    world = World(presses_to_receive=3, species=650, shiny=False)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        world.shiny = True
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+    assert world.resets == 1
+    assert ctx.stop_reason == "target hit"
