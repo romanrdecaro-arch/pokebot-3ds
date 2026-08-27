@@ -307,19 +307,80 @@ class InputDriver:
         self._held_keys.discard(key)
         self._kb.release(key)
 
-    def hold(self, button: str):
-        key = self._key_for(button)
+    @staticmethod
+    def _post_down(hwnd: int, vk: int) -> bool:
+        try:
+            from .platform_utils import post_key_down
+        except Exception:
+            return False
+        try:
+            return bool(post_key_down(hwnd, vk))
+        except Exception as exc:
+            log.warning(f"post_key_down failed: {exc}")
+            return False
+
+    def _vk_and_hwnd(self, button: str):
+        """(vk, hwnd) for the PostMessage path, or (None, 0)."""
+        if not sys.platform.startswith("win"):
+            return None, 0
+        try:
+            from .platform_utils import find_azahar_hwnd, char_to_vk
+        except Exception:
+            return None, 0
+        char = getattr(self.binds, button, None)
+        vk = char_to_vk(char) if char else None
+        if vk is None:
+            return None, 0
+        if not self._azahar_hwnd:
+            self._azahar_hwnd = find_azahar_hwnd() or 0
+        return vk, self._azahar_hwnd
+
+    def hold(self, button: str) -> bool:
+        """Press a button and LEAVE it down until ``release``.
+
+        Prefers PostMessage for the same reason ``tap`` does — it does
+        not need Azahar focused, and pynput's SendInput wrapper crashes
+        on Python 3.14. Qt tracks key state from the down/up events, so
+        a WM_KEYDOWN with no matching WM_KEYUP reads as held for as long
+        as we leave it that way.
+
+        Returns True when the key is actually down somewhere. Callers
+        that care whether the hold took can check it; ``close()``
+        releases anything still held either way.
+        """
+        _check_button(button)
         if self.dry_run:
             log.info(f"[DRY] hold  {button}")
-            return
-        self._press(key)
+            return False
+        vk, hwnd = self._vk_and_hwnd(button)
+        if vk is not None and hwnd:
+            if self._post_down(hwnd, vk):
+                self._held_vks.add(vk)
+                return True
+            self._azahar_hwnd = 0        # stale handle; retry next time
+        if self._kb is None:
+            return False
+        self._press(self._key_for(button))
+        return True
 
-    def release(self, button: str):
-        key = self._key_for(button)
+    def release(self, button: str) -> None:
+        """Let go of a button held by ``hold``. Safe to call twice."""
+        _check_button(button)
         if self.dry_run:
             log.info(f"[DRY] release {button}")
             return
-        self._release(key)
+        vk, hwnd = self._vk_and_hwnd(button)
+        if vk is not None and vk in self._held_vks:
+            try:
+                from .platform_utils import post_key_up
+                post_key_up(hwnd or self._azahar_hwnd, vk)
+            except Exception as exc:
+                log.warning(f"could not release {button}: {exc}")
+            self._held_vks.discard(vk)
+        if self._kb is not None:
+            key = self._key_for(button)
+            if key in self._held_keys:
+                self._release(key)
 
     def combo(self, *buttons: str, hold_s: float = 0.1):
         """Press multiple buttons together briefly, then release all."""

@@ -30,9 +30,24 @@ from pokebot.modes import soft_reset as sr        # noqa: E402
 class FakeInput:
     def __init__(self):
         self.events = []
+        #: Buttons currently held. A direction latched here at the end
+        #: of a run is one latched in Azahar for real.
+        self.held = set()
+        self.hold_works = True
 
     def tap(self, button, hold_s=0.05):
         self.events.append(button)
+
+    def hold(self, button):
+        self.events.append(f"HOLD:{button}")
+        if not self.hold_works:
+            return False
+        self.held.add(button)
+        return True
+
+    def release(self, button):
+        self.events.append(f"RELEASE:{button}")
+        self.held.discard(button)
 
     def soft_reset(self, hold_s=0.5):
         self.events.append("RESET")
@@ -202,19 +217,27 @@ def _run(world, monkeypatch, **over):
 # The explicit ask: no directional presses
 # --------------------------------------------------------------------
 
-def test_no_directional_presses_are_ever_sent(monkeypatch):
-    """The cursor navigation is gone. A only."""
+def test_left_is_never_tapped_only_held(monkeypatch):
+    """The stepwise cursor navigation is gone.
+
+    A tap only moves the cursor if it lands while the selection is up,
+    so it has to be aimed at a moment in a cutscene the bot cannot see.
+    Holding needs no aim.
+    """
     world = World(presses_to_receive=4, shiny=True)
     ctx = _run(world, monkeypatch, starter="chespin")
-    directions = [e for e in ctx.input.events if "Dpad" in e or "Circle" in e]
-    assert directions == [], f"still pressing {directions}"
+    taps = [e for e in ctx.input.events
+            if "Dpad" in e and not e.startswith(("HOLD:", "RELEASE:"))]
+    assert taps == [], f"still tapping directions: {taps}"
 
 
-def test_only_a_is_pressed_during_an_attempt(monkeypatch):
+def test_only_a_is_tapped_during_an_attempt(monkeypatch):
     """Not B either — the old sequence mashed B to receive."""
     world = World(presses_to_receive=4, shiny=True)
     ctx = _run(world, monkeypatch, starter="chespin")
-    assert set(ctx.input.events) <= {"A", "RESET"}, set(ctx.input.events)
+    tapped = {e for e in ctx.input.events
+              if not e.startswith(("HOLD:", "RELEASE:")) and e != "RESET"}
+    assert tapped <= {"A"}, tapped
 
 
 def test_the_cursor_sequence_helper_is_gone() -> None:
@@ -328,3 +351,182 @@ def test_the_wrong_starter_is_reported_and_reset(monkeypatch):
     reasons = [p.get("reason", "") for k, p in ctx.dashboard.sent
                if k == "read_failure"]
     assert any("wrong starter" in r for r in reasons), reasons
+
+
+# --------------------------------------------------------------------
+# Holding Left for the whole sequence
+# --------------------------------------------------------------------
+
+def test_left_is_held_before_the_first_a_press(monkeypatch):
+    """Held for the WHOLE sequence means from before press one."""
+    world = World(presses_to_receive=4, shiny=True)
+    ctx = _run(world, monkeypatch, starter="chespin")
+    ev = ctx.input.events
+    assert "HOLD:DpadLeft" in ev, ev
+    assert ev.index("HOLD:DpadLeft") < ev.index("A"), (
+        f"pressed A before holding Left: {ev[:5]}")
+
+
+def test_left_is_released_when_the_sequence_ends(monkeypatch):
+    """A latched direction outlives the bot process.
+
+    The player would take back a game that is still walking, and the
+    next attempt would start with a key down nothing ever releases.
+    """
+    world = World(presses_to_receive=4, shiny=True)
+    ctx = _run(world, monkeypatch, starter="chespin")
+    assert ctx.input.held == set(), f"still held: {ctx.input.held}"
+
+
+def test_left_is_released_even_when_the_attempt_times_out(monkeypatch):
+    world = World(presses_to_receive=10 ** 9)      # never arrives
+    ctx = _run(world, monkeypatch, starter="chespin", receive_timeout=0.3)
+    assert ctx.input.held == set(), f"still held after a timeout: {ctx.input.held}"
+
+
+def test_left_is_released_before_the_reset(monkeypatch):
+    """L+R+Start with a direction still latched is a different combo."""
+    world = World(presses_to_receive=3, shiny=False)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        assert ctx.input.held == set(), (
+            f"reset with {ctx.input.held} still held")
+        real_reset(hold_s)
+        world.shiny = True
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+    assert world.resets == 1
+
+
+def test_left_is_re_held_for_every_attempt(monkeypatch):
+    """Each attempt is its own sequence, so each gets its own hold."""
+    world = World(presses_to_receive=3, shiny=False)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        if world.resets >= 2:
+            world.shiny = True
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+    assert ctx.input.events.count("HOLD:DpadLeft") == 3
+    assert ctx.input.events.count("RELEASE:DpadLeft") == 3
+
+
+def test_a_hold_that_fails_warns_but_still_runs(monkeypatch):
+    """Losing the hold should not abandon an otherwise working attempt."""
+    world = World(presses_to_receive=4, shiny=True)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    _wire(monkeypatch, world, ctx)
+    ctx.input.hold_works = False
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+    assert ctx.stop_reason == "target hit"
+    assert "A" in ctx.input.events
+
+
+def test_the_hold_button_is_configurable(monkeypatch):
+    """Azahar binds the Circle Pad to different keys than the D-pad."""
+    world = World(presses_to_receive=4, shiny=True)
+    ctx = _run(world, monkeypatch, starter="chespin",
+               hold_button="CircleLeft")
+    assert "HOLD:CircleLeft" in ctx.input.events
+    assert "HOLD:DpadLeft" not in ctx.input.events
+
+
+def test_the_hold_can_be_turned_off(monkeypatch):
+    world = World(presses_to_receive=4, shiny=True)
+    ctx = _run(world, monkeypatch, starter="chespin", hold_button="")
+    assert not any(e.startswith("HOLD:") for e in ctx.input.events)
+
+
+def test_a_bogus_hold_button_is_rejected_before_pressing_anything(monkeypatch):
+    """Better than a ValueError from deep inside the driver mid-hunt."""
+    world = World(presses_to_receive=4, shiny=True)
+    ctx = _run(world, monkeypatch, starter="chespin", hold_button="Leftish")
+    assert ctx.stop_reason and "hold_button" in ctx.stop_reason
+    assert ctx.input.events == []
+
+
+# --------------------------------------------------------------------
+# The driver's hold/release, which the sequence above depends on
+# --------------------------------------------------------------------
+
+def _driver(monkeypatch, posted):
+    """An InputDriver whose PostMessage calls land in ``posted``."""
+    from pokebot import input_driver as idrv
+
+    drv = idrv.InputDriver.__new__(idrv.InputDriver)
+    drv.binds = idrv.KeyBinds()
+    drv.dry_run = False
+    drv._kb = None
+    drv._azahar_hwnd = 4242
+    drv._postmsg_warned = False
+    drv._held_keys = set()
+    drv._held_vks = set()
+
+    monkeypatch.setattr(idrv.sys, "platform", "win32")
+    monkeypatch.setattr(
+        "pokebot.platform_utils.find_azahar_hwnd", lambda: 4242)
+    monkeypatch.setattr(
+        "pokebot.platform_utils.char_to_vk", lambda c: ord(c[:1].upper()))
+    monkeypatch.setattr(
+        "pokebot.platform_utils.post_key_down",
+        lambda h, vk: posted.append(("down", h, vk)) or True)
+    monkeypatch.setattr(
+        "pokebot.platform_utils.post_key_up",
+        lambda h, vk: posted.append(("up", h, vk)) or True)
+    return drv
+
+
+def test_driver_hold_posts_a_keydown_with_no_keyup(monkeypatch):
+    """That asymmetry IS the hold — Qt reads key state from the events."""
+    posted = []
+    drv = _driver(monkeypatch, posted)
+    assert drv.hold("DpadLeft") is True
+    assert [k for k, _, _ in posted] == ["down"]
+    assert drv._held_vks == {ord("F")}          # DpadLeft binds to 'f'
+
+
+def test_driver_release_posts_the_matching_keyup(monkeypatch):
+    posted = []
+    drv = _driver(monkeypatch, posted)
+    drv.hold("DpadLeft")
+    drv.release("DpadLeft")
+    assert [k for k, _, _ in posted] == ["down", "up"]
+    assert drv._held_vks == set()
+
+
+def test_driver_release_is_safe_to_call_twice(monkeypatch):
+    """The sequence releases in a finally, which can double up."""
+    posted = []
+    drv = _driver(monkeypatch, posted)
+    drv.hold("DpadLeft")
+    drv.release("DpadLeft")
+    drv.release("DpadLeft")
+    assert [k for k, _, _ in posted] == ["down", "up"]
+
+
+def test_driver_close_releases_a_still_held_direction(monkeypatch):
+    """A latched key outlives the process and leaves Azahar walking."""
+    posted = []
+    drv = _driver(monkeypatch, posted)
+    drv.hold("DpadLeft")
+    drv.close()
+    assert ("up", 4242, ord("F")) in posted
+    assert drv._held_vks == set()
+
+
+def test_driver_hold_rejects_an_unknown_button(monkeypatch):
+    import pytest
+    posted = []
+    drv = _driver(monkeypatch, posted)
+    with pytest.raises(ValueError):
+        drv.hold("Leftish")
+    assert posted == []

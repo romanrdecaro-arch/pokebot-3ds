@@ -47,13 +47,21 @@ soft_reset:
   post_reset_taps: 6     # (snorlax / lapras targets only)
   post_reset_gap: 1.0    # (snorlax / lapras targets only)
 
-  # --- Starter hunt: press A until something lands in the party ------
+  # --- Starter hunt: hold Left, press A until it lands in the party --
   #
-  # There is NO cursor navigation. The old sequence walked the cursor
-  # with DpadLeft/DpadRight on a fixed one-second cadence and assumed
-  # the cutscene was exactly where the timings said; a misfire meant
-  # receiving the wrong starter and burning the attempt. Save in front
-  # of the starter you want, with an EMPTY party.
+  # Left is HELD for the whole sequence rather than tapped. A tap only
+  # moves the cursor if it lands while the selection is actually up, so
+  # the old stepwise sequence had to aim each press at a moment in a
+  # cutscene whose timing the bot cannot see; a misfire meant receiving
+  # the wrong starter and burning the attempt. A held direction is
+  # already down whenever the game gets round to reading it.
+  #
+  # So you get the starter at the held end of the row. Set this to
+  # CircleLeft if the title acts on the Circle Pad, DpadRight for the
+  # other end, or leave it empty ("") for no hold at all.
+  hold_button: DpadLeft
+  #
+  # Save in front of the starter table with an EMPTY party.
   #
   # press_hold sets the rate, the same way it does for the Celebi hunt.
   # The floor is Azahar's: a key posted to its window is picked up when

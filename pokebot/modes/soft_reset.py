@@ -4,7 +4,8 @@ Soft-reset mode (starters / gifts).
 Save in front of the starter table with an EMPTY party, then per
 attempt the bot:
 
-  1. Presses A, fast, until a Pokémon lands in the party.
+  1. Holds Left and presses A, fast, until a Pokémon lands in the
+     party.
   2. Detects the received Pokémon by CONTENT — observe.get_party()
      locates the player-owned party in RAM by scanning for
      checksum-valid PK6 whose OT is the trainer (the same
@@ -15,13 +16,20 @@ attempt the bot:
   4. Hit → stop + alert (it's in your party, go save). Miss → soft
      reset (L+R+Start), wait for the party to empty, and repeat.
 
-There is NO cursor navigation. The old sequence walked the cursor with
-DpadLeft/DpadRight on a fixed one-second cadence, and every step of it
-assumed the cutscene was exactly where the timings said — a cursor
+Left is HELD for the whole sequence rather than tapped. The old
+sequence walked the cursor with individual DpadLeft/DpadRight presses
+on a fixed one-second cadence, and a tap only moves the cursor if it
+lands while the selection is actually up — so every step had to be
+aimed at a moment in a cutscene whose timing the bot cannot see, and a
 misfire meant receiving the wrong starter and burning the attempt.
-Whichever starter sits under the default cursor is the one taken, so
-save in front of the one you want; the ``starter`` setting is now only
-used to check what actually arrived.
+A held direction needs no aim: it is already down whenever the game
+gets round to reading it, and it survives the cursor being re-centred
+partway through.
+
+So the starter taken is the one at the held end of the row, and the
+``starter`` setting is now only used to check what actually arrived.
+Set ``soft_reset.hold_button`` to CircleLeft if the title acts on the
+Circle Pad, DpadRight for the other end, or "" for no hold at all.
 
 config.yaml soft_reset.trainer_name MUST match your in-game OT (it's
 how the party is found). Defaults to games.DEFAULT_OT_NAME.
@@ -61,18 +69,30 @@ _PRESS_HOLD_FLOOR = 0.01
 #: the nickname prompt.
 _DETECT_EVERY_S = 0.15
 
+#: Held down for the whole starter sequence, so the cursor sits on the
+#: leftmost starter whenever the game gets round to reading the d-pad.
+#: Set soft_reset.hold_button to "CircleLeft" if the title acts on the
+#: Circle Pad instead, or to "" for no hold at all.
+_HOLD_BUTTON = "DpadLeft"
+
 
 def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
-                           detect_cb, detect_every: float
-                           = _DETECT_EVERY_S) -> bool:
-    """Press A until something lands in the party.
+                           detect_cb, detect_every: float = _DETECT_EVERY_S,
+                           hold_button: str = _HOLD_BUTTON) -> bool:
+    """Hold Left and press A until something lands in the party.
 
     Replaces the old fixed, hand-timed sequence — 1x DpadLeft, 25x A,
     two cursor presses, then up to 30x B on one-second gaps, about a
     minute of pressing whose every step assumed the cutscene was where
-    the timings said it would be. There is no cursor navigation here at
-    all: whichever starter sits under the default cursor is the one
-    taken, so save in front of the one you want.
+    the timings said it would be.
+
+    Left is HELD for the whole sequence rather than tapped. A tap only
+    moves the cursor if it lands while the selection is actually up, so
+    it has to be aimed at a moment in a cutscene whose timing the bot
+    cannot see; holding needs no such aim, because the direction is
+    already down whenever the game gets round to reading it. It also
+    survives the cursor being re-centred partway through, which a tap
+    fired earlier does not.
 
     Driven by the party rather than by a clock, exactly like the Celebi
     hunt: press, check, stop the moment a Pokemon appears. That is also
@@ -84,21 +104,35 @@ def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
     started = time.monotonic()
     next_check = 0.0
     presses = 0
-    while not ctx.should_stop() and time.monotonic() < deadline:
-        now = time.monotonic()
-        if now >= next_check:
-            next_check = now + detect_every
-            if detect_cb():
-                elapsed = now - started
-                log.info(f"  received after {presses} A presses "
-                         f"({presses / max(elapsed, 1e-9):.0f}/s, "
-                         f"{elapsed:.1f}s)")
-                return True
-        ctx.input.tap("A", hold_s=hold)
-        presses += 1
-        if gap:
-            ctx._stop_evt.wait(gap)
-    return False
+    if hold_button:
+        if ctx.input.hold(hold_button):
+            log.info(f"  holding {hold_button} for the whole sequence")
+        else:
+            log.warning(f"  could not hold {hold_button} — the cursor may "
+                        f"not reach the intended starter.")
+    try:
+        while not ctx.should_stop() and time.monotonic() < deadline:
+            now = time.monotonic()
+            if now >= next_check:
+                next_check = now + detect_every
+                if detect_cb():
+                    elapsed = now - started
+                    log.info(f"  received after {presses} A presses "
+                             f"({presses / max(elapsed, 1e-9):.0f}/s, "
+                             f"{elapsed:.1f}s)")
+                    return True
+            ctx.input.tap("A", hold_s=hold)
+            presses += 1
+            if gap:
+                ctx._stop_evt.wait(gap)
+        return False
+    finally:
+        # Always, on every path. A direction left latched in Azahar
+        # outlives the bot process: the player takes back a game that
+        # is still walking, and the next attempt starts with a key down
+        # that nothing will ever release.
+        if hold_button:
+            ctx.input.release(hold_button)
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +583,14 @@ def _run_starters(ctx, cfg):
     press_hold = float(cfg.get("press_hold", _PRESS_HOLD_S))
     press_gap = float(cfg.get("press_interval", _PRESS_GAP_S))
     detect_every = float(cfg.get("detect_every", _DETECT_EVERY_S))
+    hold_button = str(cfg.get("hold_button", _HOLD_BUTTON) or "")
+    if hold_button:
+        from ..input_driver import BUTTON_NAMES
+        if hold_button not in BUTTON_NAMES:
+            log.error(f"  soft_reset.hold_button {hold_button!r} is not a "
+                      f"button name; known: {', '.join(sorted(BUTTON_NAMES))}")
+            ctx.request_stop(f"unknown hold_button {hold_button!r}")
+            return
     # The cutscene has its own unskippable animations, so this bounds
     # a stuck attempt rather than pacing a working one.
     receive_timeout = float(cfg.get("receive_timeout", 180.0))
@@ -587,10 +629,13 @@ def _run_starters(ctx, cfg):
             log.warning(f"  unknown starter {starter_name!r} for "
                         f"{ctx.game.key}; known: "
                         f"{list(all_starters)}")
-    log.info("  No cursor navigation: whichever starter is under the "
-             "default cursor is the one taken, so save in front of the "
-             "one you want. The starter setting is only used to check "
-             "what arrived.")
+    if hold_button:
+        log.info(f"  {hold_button} is HELD for the whole sequence, so the "
+                 f"cursor sits on that end of the row. The starter setting "
+                 f"is only used to check what actually arrived.")
+    else:
+        log.info("  No directional hold: whichever starter is under the "
+                 "default cursor is the one taken.")
 
     # An attempt is "party empty -> press A -> party has one". Starting
     # with a mon already there means the save is not where the hunt
@@ -644,7 +689,7 @@ def _run_starters(ctx, cfg):
         # mashing A deep into the nickname keyboard.
         if not _spam_a_until_received(ctx, press_hold, press_gap,
                                       receive_timeout, _party_has_mon,
-                                      detect_every):
+                                      detect_every, hold_button):
             if ctx.should_stop():
                 return
             log.error(f"  nothing reached the party in "
