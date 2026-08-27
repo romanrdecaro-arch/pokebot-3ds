@@ -83,6 +83,17 @@ soft_reset:
                          # what keeps the spam out of the nickname prompt.
   receive_timeout: 180   # give up on an attempt after this long, and say
                          # so — this is also how a dead input path shows
+  # Shortest gap between soft resets. X/Y's L+R+Start is not a screen
+  # transition — the game asks the 3DS to relaunch it, so Azahar tears
+  # the whole title down and rebuilds it: ExHeader parse, Vulkan
+  # renderer re-init, pipeline and shader disk caches reloaded, a 512 MB
+  # upload buffer allocated afresh. 16 of those in 250 seconds was
+  # measured, and Azahar died partway through one of them.
+  #
+  # 0 leaves the rate uncapped. Raise it if Azahar keeps crashing: it
+  # costs hunt speed and buys the emulator time to finish rebuilding
+  # itself before being asked to do it again. Try 20-30 first.
+  reset_cooldown: 0
   reset_timeout: 30      # how long to wait for the party to empty after
                          # L+R+Start. If it never does, the reset did not
                          # register and the hunt stops rather than

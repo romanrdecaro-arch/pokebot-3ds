@@ -700,3 +700,83 @@ def test_the_right_species_but_not_a_target_still_resets(monkeypatch):
     sr._run_starters(ctx, ctx.config["soft_reset"])
     assert world.resets == 1
     assert ctx.stop_reason == "target hit"
+
+
+# --------------------------------------------------------------------
+# Rate-limiting the title relaunches
+# --------------------------------------------------------------------
+
+def test_reset_cooldown_spaces_out_the_relaunches(monkeypatch):
+    """Every soft reset makes Azahar rebuild the whole title.
+
+    L+R+Start is not a screen transition: the game asks the 3DS to
+    relaunch it, so Azahar re-parses the ExHeader, re-initialises the
+    Vulkan renderer and reallocates a 512 MB upload buffer. Measured 16
+    of those in 250 seconds, and Azahar died partway through one.
+    """
+    import time as _t
+    world = World(presses_to_receive=2, shiny=False)
+    ctx = FakeCtx(_cfg(starter="chespin", reset_cooldown=0.4))
+    _wire(monkeypatch, world, ctx)
+    stamps = []
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        stamps.append(_t.monotonic())
+        real_reset(hold_s)
+        if world.resets >= 2:
+            world.shiny = True
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    assert len(stamps) >= 2, stamps
+    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+    assert min(gaps) >= 0.35, f"resets only {min(gaps):.2f}s apart"
+
+
+def test_no_cooldown_by_default(monkeypatch):
+    """The default must not silently slow the hunt back down."""
+    import time as _t
+    world = World(presses_to_receive=2, shiny=False)
+    ctx = FakeCtx(_cfg(starter="chespin"))
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        if world.resets >= 2:
+            world.shiny = True
+
+    ctx.input.soft_reset = reset
+    t0 = _t.monotonic()
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+    assert _t.monotonic() - t0 < 1.5, "a default cooldown crept in"
+
+
+def test_a_hold_button_that_is_an_azahar_hotkey_is_flagged(monkeypatch, caplog):
+    """CircleLeft IS the Left arrow, which Azahar uses for speed limit.
+
+    Holding it walks the emulation speed to nothing rather than moving
+    a cursor, and nothing on screen looks wrong while it happens.
+    """
+    import logging
+    monkeypatch.setattr(sr, "_warn_if_hotkey", sr._warn_if_hotkey)
+    monkeypatch.setattr("pokebot.azahar_config.load_active_profile_binds",
+                        lambda: {"CircleLeft": "Left"})
+    monkeypatch.setattr("pokebot.azahar_config.load_hotkeys",
+                        lambda: {"left": "Decrease Speed Limit"})
+    with caplog.at_level(logging.WARNING, logger="pokebot.modes.soft_reset"):
+        sr._warn_if_hotkey("CircleLeft")
+    assert "Decrease Speed Limit" in caplog.text, caplog.text
+
+
+def test_a_hold_button_with_no_hotkey_is_silent(monkeypatch, caplog):
+    import logging
+    monkeypatch.setattr("pokebot.azahar_config.load_active_profile_binds",
+                        lambda: {"DpadLeft": "f"})
+    monkeypatch.setattr("pokebot.azahar_config.load_hotkeys",
+                        lambda: {"left": "Decrease Speed Limit"})
+    with caplog.at_level(logging.WARNING, logger="pokebot.modes.soft_reset"):
+        sr._warn_if_hotkey("DpadLeft")
+    assert "Decrease Speed Limit" not in caplog.text

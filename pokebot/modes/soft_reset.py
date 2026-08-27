@@ -76,6 +76,49 @@ _DETECT_EVERY_S = 0.15
 #: Circle Pad instead, or to "" for no hold at all.
 _HOLD_BUTTON = "DpadLeft"
 
+#: Shortest gap between soft resets.
+#:
+#: X/Y's L+R+Start is not a screen transition — the game asks the 3DS to
+#: relaunch it, so Azahar tears the whole title down and rebuilds it:
+#: ExHeader parse, Vulkan renderer re-init, pipeline and shader disk
+#: caches reloaded, a 512 MB upload buffer allocated afresh. Measured 16
+#: of those in 250 seconds once the attempt loop got fast, and Azahar
+#: died partway through one of them — its log stops mid-line inside
+#: vk_stream_buffer CreateBuffers.
+#:
+#: 0 keeps the reset rate uncapped. Raise it if Azahar keeps falling
+#: over: it costs hunt speed and buys the emulator time to finish
+#: rebuilding itself before being asked to do it again.
+_RESET_COOLDOWN_S = 0.0
+
+
+def _warn_if_hotkey(button: str) -> None:
+    """Say so when the button we are about to HOLD is an Azahar hotkey.
+
+    Azahar binds Left and Right to Decrease/Increase Speed Limit out of
+    the box, and CircleLeft IS the Left arrow. Holding it does not nudge
+    a cursor — it walks the emulation speed down to nothing, silently,
+    with nothing on screen looking wrong. Holding makes this far worse
+    than tapping ever did, so it is worth a look at the real config
+    rather than a guess.
+    """
+    try:
+        from ..azahar_config import load_hotkeys, load_active_profile_binds
+        binds = load_active_profile_binds() or {}
+        key = binds.get(button)
+        if not key:
+            return
+        action = load_hotkeys().get(str(key).strip().lower())
+        if action:
+            log.warning(
+                f"  {button} is bound to {key!r}, which Azahar also uses as "
+                f"the hotkey for {action!r}. Holding it down will trigger "
+                f"that, not move the cursor — rebind it in Azahar "
+                f"(Emulation > Configure > Hotkeys) or use a different "
+                f"soft_reset.hold_button.")
+    except Exception as exc:
+        log.debug(f"hotkey check skipped: {exc}")
+
 
 def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
                            detect_cb, detect_every: float = _DETECT_EVERY_S,
@@ -176,7 +219,9 @@ def _broadcast_candidate(ctx, attempt: int, pkm) -> None:
 
 def _reset_until_party_empty(ctx, detect_cb, timeout: float,
                              hold: float = _PRESS_HOLD_S,
-                             gap: float = _PRESS_GAP_S) -> bool:
+                             gap: float = _PRESS_GAP_S,
+                             cooldown: float = _RESET_COOLDOWN_S,
+                             last_reset: list | None = None) -> bool:
     """Soft-reset and start pressing A straight away.
 
     There is no wait for the boot logos. The old one was 12 seconds of
@@ -191,6 +236,16 @@ def _reset_until_party_empty(ctx, detect_cb, timeout: float,
     landed: if it never does, the reset did nothing and the caller
     stops rather than pressing on forever.
     """
+    if cooldown and last_reset and last_reset[0]:
+        waited = time.monotonic() - last_reset[0]
+        if waited < cooldown:
+            log.info(f"  waiting {cooldown - waited:.1f}s before the next "
+                     f"reset (reset_cooldown)")
+            ctx._stop_evt.wait(cooldown - waited)
+            if ctx.should_stop():
+                return False
+    if last_reset is not None:
+        last_reset[:] = [time.monotonic()]
     ctx.input.soft_reset()
     try:
         focus_azahar()
@@ -606,6 +661,7 @@ def _run_starters(ctx, cfg):
     press_hold = float(cfg.get("press_hold", _PRESS_HOLD_S))
     press_gap = float(cfg.get("press_interval", _PRESS_GAP_S))
     detect_every = float(cfg.get("detect_every", _DETECT_EVERY_S))
+    reset_cooldown = float(cfg.get("reset_cooldown", _RESET_COOLDOWN_S))
     hold_button = str(cfg.get("hold_button", _HOLD_BUTTON) or "")
     if hold_button:
         from ..input_driver import BUTTON_NAMES
@@ -614,6 +670,11 @@ def _run_starters(ctx, cfg):
                       f"button name; known: {', '.join(sorted(BUTTON_NAMES))}")
             ctx.request_stop(f"unknown hold_button {hold_button!r}")
             return
+        _warn_if_hotkey(hold_button)
+    if reset_cooldown:
+        log.info(f"  reset_cooldown {reset_cooldown:.1f}s — each soft reset "
+                 f"makes Azahar relaunch the whole title, so this caps how "
+                 f"often it has to.")
     # The cutscene has its own unskippable animations, so this bounds
     # a stuck attempt rather than pacing a working one.
     receive_timeout = float(cfg.get("receive_timeout", 180.0))
@@ -677,10 +738,13 @@ def _run_starters(ctx, cfg):
         ctx.request_stop("party not empty at start")
         return
 
+    _last_reset: list = [0.0]
+
     def _reset_or_stop() -> bool:
         """Reset and confirm it took, or stop the hunt saying so."""
         if _reset_until_party_empty(ctx, _party_has_mon, reset_timeout,
-                                    press_hold, press_gap):
+                                    press_hold, press_gap,
+                                    reset_cooldown, _last_reset):
             return True
         if ctx.should_stop():
             return False

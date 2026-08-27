@@ -222,6 +222,38 @@ def bottom_screen_button(button_native_xy: tuple[int, int],
     return (x_frac, y_frac)
 
 
+def load_hotkeys() -> dict[str, str]:
+    """Azahar's Main Window shortcuts, as {key sequence: action}.
+
+    Worth reading before the bot holds a direction down. Azahar binds
+    Left and Right to "Decrease/Increase Speed Limit" out of the box, so
+    holding CircleLeft — which IS the Left arrow — does not nudge a
+    cursor, it walks the emulation speed down to nothing. Same keys,
+    completely different outcome, and nothing in the game would look
+    broken while it happened.
+    """
+    path = find_config_path()
+    if path is None:
+        return {}
+    try:
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return {}
+    import urllib.parse
+    out: dict[str, str] = {}
+    for line in raw.splitlines():
+        if not line.startswith("Shortcuts"):
+            continue
+        head, _, seq = line.partition("=")
+        if not seq.strip() or not head.endswith("KeySeq"):
+            continue
+        parts = head.split("\\")
+        if len(parts) < 3:
+            continue
+        out[seq.strip().lower()] = urllib.parse.unquote(parts[-2])
+    return out
+
+
 def load_active_profile_binds() -> Optional[dict[str, str]]:
     """Read the active-profile keybindings out of Azahar's qt-config.ini.
 
