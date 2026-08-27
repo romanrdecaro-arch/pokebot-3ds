@@ -395,5 +395,6 @@ def wait_for_emulator(host: str = "127.0.0.1", port: int = CITRA_PORT,
         time.sleep(0.5)
     raise RPCError(f"Azahar RPC at {host}:{port} did not respond within "
                    f"{timeout}s. Make sure Azahar is running with a ROM "
-                   f"loaded and that scripting is enabled in Emulation > "
-                   f"Configure > General. Last error: {last_err}")
+                   f"loaded, and that Emulation > Configure > Debug > "
+                   f"'Enable RPC server' is ticked -- it is OFF on a "
+                   f"fresh install. Last error: {last_err}")

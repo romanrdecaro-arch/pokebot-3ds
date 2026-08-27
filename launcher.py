@@ -2048,12 +2048,39 @@ class _App(tk.Tk):
     def _selected_window(self):
         return self._window_choices.get(self._window_var.get())
 
+    @staticmethod
+    def _azahar_window_open() -> bool:
+        """Is an emulator window on screen right now?
+
+        Distinguishes "Azahar isn't running" from "Azahar is running
+        but won't talk to us", which need opposite fixes.
+        """
+        try:
+            from pokebot.platform_utils import list_azahar_windows
+            return bool(list_azahar_windows())
+        except Exception:
+            return False
+
     def _apply_status(self, status: dict):
         state = status.get("state", "no_rpc")
         if state == "no_rpc":
-            self._azahar_lbl.config(text="● Azahar not detected", fg=_DANGER)
-            self._game_detect_lbl.config(
-                text="Open Azahar and load a Gen 6/7 game.")
+            # "No RPC" has two unrelated causes, and calling both of
+            # them "not detected" sent a user hunting for an emulator
+            # that was open in front of them. When a window is up, the
+            # emulator is fine and its RPC server is simply switched
+            # off -- which is the default on a fresh install. Say which
+            # of the two it is, and where the switch lives.
+            if self._azahar_window_open():
+                self._azahar_lbl.config(
+                    text="● Azahar up, RPC server off", fg=_DANGER)
+                self._game_detect_lbl.config(
+                    text="Emulation > Configure > Debug > tick "
+                         "'Enable RPC server', then restart Azahar.")
+            else:
+                self._azahar_lbl.config(text="● Azahar not detected",
+                                        fg=_DANGER)
+                self._game_detect_lbl.config(
+                    text="Open Azahar and load a Gen 6/7 game.")
             self._game_display_lbl.config(text="Waiting for Azahar…",
                                           fg=_MUTED)
             if self._game_var.get():

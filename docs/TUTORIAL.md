@@ -18,7 +18,11 @@ the launcher flow is identical for every supported Gen 6/7 game.
 
 Open Azahar and verify:
 
-- *Emulation → Configure → General → Enable scripting* is **on**.
+- *Emulation → Configure → Debug → Enable RPC server* is **on**.
+  This is **off by default on a fresh install** and is the single
+  most common reason the launcher says Azahar is not detected while
+  the window is plainly open. If the checkbox is greyed out, close
+  the running game first, tick it, then reload the ROM.
 - *Emulation → Configure → Debug* — make sure **GDB stub is OFF**
   (`Use GDB stub` unchecked). With it on, the emulator silently waits
   for a debugger and the bot's RPC requests get ignored.

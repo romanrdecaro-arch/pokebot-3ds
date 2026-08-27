@@ -43,11 +43,12 @@ PKHeX-Plugins adds the LiveHeX feature on top of vanilla PKHeX.
 
 ## Step 3 — Configure Azahar for live RPC
 
-Make sure scripting is enabled (this is what both LiveHeX and the
-bot use):
+Make sure the RPC server is enabled (this is what both LiveHeX and
+the bot use). It is **off by default on a fresh install**:
 
-1. In Azahar, **Emulation → Configure → General**.
-2. Tick **Enable scripting** if it isn't already.
+1. In Azahar, **Emulation → Configure → Debug**.
+2. Tick **Enable RPC server** if it isn't already. If the checkbox is
+   greyed out, close the running game first, then tick it.
 3. Click OK and load your Pokémon X/Y save.
 4. Walk to the overworld with at least one Pokémon in slot 0
    (e.g. Fennekin if you've already picked the starter).
