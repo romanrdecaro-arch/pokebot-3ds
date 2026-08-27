@@ -93,6 +93,17 @@ soft_reset:
   # 0 leaves the rate uncapped. Raise it if Azahar keeps crashing: it
   # costs hunt speed and buys the emulator time to finish rebuilding
   # itself before being asked to do it again. Try 20-30 first.
+  # Seconds of NO memory reads BEFORE the reset combo is sent.
+  #
+  # The mirror of reload_read_grace below. Evaluating an attempt ends in
+  # a party scan, so reads were going out right up to the instant
+  # L+R+Start landed — and Azahar services RPC on its own thread, so a
+  # read sent a moment earlier can still be in flight when the teardown
+  # begins. A grace afterwards cannot help with one already sent.
+  #
+  # Half a second is far longer than a loopback UDP queue needs.
+  pre_reset_quiet: 0.5
+
   # Seconds after a soft reset during which the bot reads NO memory.
   #
   # L+R+Start makes the game ask the 3DS to relaunch it, so Azahar spends

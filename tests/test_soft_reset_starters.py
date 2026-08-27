@@ -230,7 +230,8 @@ def _cfg(**over):
     base = {"press_hold": 0.0, "press_interval": 0.0, "detect_every": 0.0,
             "receive_timeout": 2.0, "reset_timeout": 1.0,
             "post_reset_wait": 0.0, "detect_tries": 2, "detect_gap": 0.0,
-            "reload_read_grace": 0.0, "trainer_name": "ROMAN"}
+            "reload_read_grace": 0.0, "pre_reset_quiet": 0.0,
+            "trainer_name": "ROMAN"}
     base.update(over)
     return base
 
@@ -924,7 +925,8 @@ def test_the_degraded_path_is_reported_once_not_every_press(caplog):
 # Not reading Azahar's memory while it tears the title down
 # --------------------------------------------------------------------
 
-def _reload_probe(grace, read_every, timeout, empties_after=None):
+def _reload_probe(grace, read_every, timeout, empties_after=None,
+                  quiet=0.0):
     """Drive _reset_until_party_empty directly.
 
     Deliberately not through _run_starters: the surrounding flow reads
@@ -962,10 +964,11 @@ def _reload_probe(grace, read_every, timeout, empties_after=None):
             return False              # party gone: reload finished
         return True
 
+    entered = _t.monotonic()
     ok = sr._reset_until_party_empty(
         Ctx(), detect, timeout, hold=0.005, gap=0.0, cooldown=0.0,
-        last_reset=None, grace=grace, read_every=read_every)
-    return ok, t0[0], reads, presses
+        last_reset=None, grace=grace, read_every=read_every, quiet=quiet)
+    return ok, t0[0], reads, presses, entered
 
 
 def test_no_memory_is_read_during_the_reload_grace():
@@ -978,7 +981,7 @@ def test_no_memory_is_read_during_the_reload_grace():
     mid-teardown dereferences memory being freed. This loop used to
     issue a twelve-read party scan every iteration with no delay.
     """
-    ok, t_reset, reads, _ = _reload_probe(
+    ok, t_reset, reads, _, _entered = _reload_probe(
         grace=0.5, read_every=0.1, timeout=2.0, empties_after=0.8)
     assert ok, "never saw the party empty"
     during = [t - t_reset for t in reads if t - t_reset < 0.5]
@@ -991,7 +994,7 @@ def test_reload_polling_is_throttled_not_flat_out():
 
     Asked for read_every=0, which is what the old loop effectively did.
     """
-    ok, t_reset, reads, _ = _reload_probe(
+    ok, t_reset, reads, _, _entered = _reload_probe(
         grace=0.0, read_every=0.0, timeout=1.0, empties_after=None)
     assert not ok
     assert len(reads) > 1, reads
@@ -1007,7 +1010,7 @@ def test_a_is_still_pressed_during_the_reload_grace():
     The boot logos, the title and CONTINUE all still need pressing
     through, which is the whole reason the 12-second wait was removed.
     """
-    ok, t_reset, _, presses = _reload_probe(
+    ok, t_reset, _, presses, _entered = _reload_probe(
         grace=0.5, read_every=0.1, timeout=2.0, empties_after=0.8)
     during = [t for t in presses if t - t_reset < 0.5]
     assert len(during) > 5, (
@@ -1089,3 +1092,40 @@ def test_the_launcher_no_longer_offers_a_starter_dropdown() -> None:
                  "_refresh_starter_options"):
         assert gone not in src, f"{gone} still in launcher.py"
     assert '"--starter"' not in src or "chosen_starter = None" in src
+
+
+# --------------------------------------------------------------------
+# Quiet before the reset, not just after it
+# --------------------------------------------------------------------
+
+def test_the_reset_waits_for_reads_to_drain_first():
+    """The mirror of the post-reset grace, and the half still open.
+
+    Evaluating an attempt ends in a party scan, so reads were going out
+    right up to the instant L+R+Start landed. Azahar services RPC on its
+    own thread, so a read sent a moment earlier can still be in flight
+    when the teardown starts — and a grace AFTER the reset cannot help
+    with a read that already went out before it.
+    """
+    ok, t_reset, reads, _p, entered = _reload_probe(
+        grace=0.0, read_every=0.1, timeout=2.0, empties_after=0.1,
+        quiet=0.4)
+    assert ok
+    assert t_reset - entered >= 0.35, (
+        f"reset fired {(t_reset - entered) * 1000:.0f}ms after entry; "
+        f"asked for 400ms of quiet first")
+
+
+def test_nothing_is_read_during_the_pre_reset_quiet():
+    ok, t_reset, reads, _p, entered = _reload_probe(
+        grace=0.0, read_every=0.1, timeout=2.0, empties_after=0.1,
+        quiet=0.4)
+    before = [t for t in reads if t < t_reset]
+    assert before == [], f"{len(before)} reads between entry and the reset"
+
+
+def test_the_quiet_period_can_be_turned_off():
+    ok, t_reset, _r, _p, entered = _reload_probe(
+        grace=0.0, read_every=0.1, timeout=2.0, empties_after=0.1,
+        quiet=0.0)
+    assert t_reset - entered < 0.2, "waited despite quiet=0"

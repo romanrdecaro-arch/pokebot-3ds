@@ -76,6 +76,19 @@ _DETECT_EVERY_S = 0.15
 #: Circle Pad instead, or to "" for no hold at all.
 _HOLD_BUTTON = "DpadLeft"
 
+#: Seconds of NO memory reads before the reset combo is sent.
+#:
+#: The mirror of the grace below, and the half that was still open.
+#: Evaluating an attempt ends with a party scan, so reads were going out
+#: right up to the instant L+R+Start landed — and Azahar services RPC on
+#: its own thread, so a datagram sent a millisecond earlier can still be
+#: mid-flight when the teardown begins. A grace AFTER the reset cannot
+#: help with a read that already went out before it.
+#:
+#: Half a second is far longer than a loopback UDP queue needs to drain,
+#: and it costs half a second per attempt.
+_PRE_RESET_QUIET_S = 0.5
+
 #: Seconds after a soft reset during which the bot reads NO memory.
 #:
 #: L+R+Start makes the game ask the 3DS to relaunch it, so Azahar spends
@@ -299,7 +312,8 @@ def _reset_until_party_empty(ctx, detect_cb, timeout: float,
                              cooldown: float = _RESET_COOLDOWN_S,
                              last_reset: list | None = None,
                              grace: float = _RELOAD_READ_GRACE_S,
-                             read_every: float = _DETECT_EVERY_S) -> bool:
+                             read_every: float = _DETECT_EVERY_S,
+                             quiet: float = _PRE_RESET_QUIET_S) -> bool:
     """Soft-reset and start pressing A straight away.
 
     There is no wait for the boot logos. The old one was 12 seconds of
@@ -322,6 +336,15 @@ def _reset_until_party_empty(ctx, detect_cb, timeout: float,
             ctx._stop_evt.wait(cooldown - waited)
             if ctx.should_stop():
                 return False
+    # Let the last reads drain before asking for the relaunch. The
+    # caller has just finished evaluating an attempt, which ends in a
+    # party scan; Azahar services RPC on its own thread, so a read sent
+    # a moment ago can still be in flight when the teardown starts, and
+    # no amount of grace afterwards helps with one already sent.
+    if quiet:
+        ctx._stop_evt.wait(quiet)
+        if ctx.should_stop():
+            return False
     if last_reset is not None:
         last_reset[:] = [time.monotonic()]
     ctx.input.soft_reset()
@@ -743,6 +766,7 @@ def _run_starters(ctx, cfg):
     detect_every = float(cfg.get("detect_every", _DETECT_EVERY_S))
     reset_cooldown = float(cfg.get("reset_cooldown", _RESET_COOLDOWN_S))
     reload_grace = float(cfg.get("reload_read_grace", _RELOAD_READ_GRACE_S))
+    pre_reset_quiet = float(cfg.get("pre_reset_quiet", _PRE_RESET_QUIET_S))
     hold_button = str(cfg.get("hold_button", _HOLD_BUTTON) or "")
     if hold_button:
         from ..input_driver import BUTTON_NAMES
@@ -831,7 +855,8 @@ def _run_starters(ctx, cfg):
         if _reset_until_party_empty(ctx, _party_has_mon, reset_timeout,
                                     press_hold, press_gap,
                                     reset_cooldown, _last_reset,
-                                    reload_grace, detect_every):
+                                    reload_grace, detect_every,
+                                    pre_reset_quiet):
             return True
         if ctx.should_stop():
             return False
