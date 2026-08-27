@@ -76,6 +76,26 @@ _DETECT_EVERY_S = 0.15
 #: Circle Pad instead, or to "" for no hold at all.
 _HOLD_BUTTON = "DpadLeft"
 
+#: Seconds after a soft reset during which the bot reads NO memory.
+#:
+#: L+R+Start makes the game ask the 3DS to relaunch it, so Azahar spends
+#: the next moment destroying the running process and building a new
+#: one. Its RPC server holds a pointer to that process, and a ReadMemory
+#: landing mid-teardown dereferences memory being freed. Windows
+#: recorded four of those as 0xc0000005 access violations inside
+#: azahar.exe, all in ONE fault bucket, at the same fault offset, on
+#: both renderers — so it is this, not the graphics API.
+#:
+#: Pressing A through the boot logos is free and carries on throughout.
+#: It is only the READING that waits.
+_RELOAD_READ_GRACE_S = 4.0
+
+#: Floor on how often the party is polled while waiting for the reload,
+#: however fast the caller asks. The old loop read as fast as it could:
+#: a twelve-read party scan every iteration, some 400 reads a second,
+#: aimed at the emulator at the one moment it could least survive them.
+_MIN_RELOAD_READ_GAP_S = 0.25
+
 #: Shortest gap between soft resets.
 #:
 #: X/Y's L+R+Start is not a screen transition — the game asks the 3DS to
@@ -277,7 +297,9 @@ def _reset_until_party_empty(ctx, detect_cb, timeout: float,
                              hold: float = _PRESS_HOLD_S,
                              gap: float = _PRESS_GAP_S,
                              cooldown: float = _RESET_COOLDOWN_S,
-                             last_reset: list | None = None) -> bool:
+                             last_reset: list | None = None,
+                             grace: float = _RELOAD_READ_GRACE_S,
+                             read_every: float = _DETECT_EVERY_S) -> bool:
     """Soft-reset and start pressing A straight away.
 
     There is no wait for the boot logos. The old one was 12 seconds of
@@ -304,11 +326,20 @@ def _reset_until_party_empty(ctx, detect_cb, timeout: float,
         last_reset[:] = [time.monotonic()]
     ctx.input.soft_reset()
     _focus_if_needed(ctx)
-    deadline = time.monotonic() + timeout
+
+    # Press straight away, but do NOT read memory yet — see
+    # _RELOAD_READ_GRACE_S. Reading Azahar's memory while it tears the
+    # title down is what has been crashing it.
+    started = time.monotonic()
+    deadline = started + timeout
+    next_read = started + grace
     while not ctx.should_stop() and time.monotonic() < deadline:
-        if not detect_cb():
-            return True
-        ctx.input.tap("A", hold_s=hold)
+        now = time.monotonic()
+        if now >= next_read:
+            next_read = now + max(read_every, _MIN_RELOAD_READ_GAP_S)
+            if not detect_cb():
+                return True
+        _note_path(ctx, ctx.input.tap("A", hold_s=hold))
         if gap:
             ctx._stop_evt.wait(gap)
     return False
@@ -711,6 +742,7 @@ def _run_starters(ctx, cfg):
     press_gap = float(cfg.get("press_interval", _PRESS_GAP_S))
     detect_every = float(cfg.get("detect_every", _DETECT_EVERY_S))
     reset_cooldown = float(cfg.get("reset_cooldown", _RESET_COOLDOWN_S))
+    reload_grace = float(cfg.get("reload_read_grace", _RELOAD_READ_GRACE_S))
     hold_button = str(cfg.get("hold_button", _HOLD_BUTTON) or "")
     if hold_button:
         from ..input_driver import BUTTON_NAMES
@@ -764,11 +796,16 @@ def _run_starters(ctx, cfg):
                         f"{list(all_starters)}")
     if hold_button:
         log.info(f"  {hold_button} is HELD for the whole sequence, so the "
-                 f"cursor sits on that end of the row. The starter setting "
-                 f"is only used to check what actually arrived.")
+                 f"starter taken is the one at that end of the row.")
+    if starter_id is None:
+        log.info("  No starter configured — whatever arrives is evaluated, "
+                 "and the species can be changed in PKHeX afterwards.")
     else:
         log.info("  No directional hold: whichever starter is under the "
                  "default cursor is the one taken.")
+    log.info("  Stopping on: " + ("the configured target filter"
+                                  if (ctx.target and ctx.target.rules)
+                                  else "SHINY"))
 
     # An attempt is "party empty -> press A -> party has one". Starting
     # with a mon already there means the save is not where the hunt
@@ -793,7 +830,8 @@ def _run_starters(ctx, cfg):
         """Reset and confirm it took, or stop the hunt saying so."""
         if _reset_until_party_empty(ctx, _party_has_mon, reset_timeout,
                                     press_hold, press_gap,
-                                    reset_cooldown, _last_reset):
+                                    reset_cooldown, _last_reset,
+                                    reload_grace, detect_every):
             return True
         if ctx.should_stop():
             return False
@@ -884,8 +922,15 @@ def _run_starters(ctx, cfg):
         wrong_species = (starter_id is not None
                          and pkm.species != starter_id)
         has_rules = bool(ctx.target and ctx.target.rules)
+        # With no filter configured, SHINY is the criterion.
+        #
+        # It used to be "the species you picked", which was fine while a
+        # dropdown always supplied one. That dropdown is gone — the bot
+        # holds a direction and takes whatever is at that end of the row
+        # — so the old fallback would now be false on every attempt and
+        # the hunt would reset for ever without recognising a win.
         is_target = (ctx.target.matches(pkm) if has_rules
-                     else not wrong_species and starter_id is not None)
+                     else bool(pkm.shiny))
 
         if wrong_species and not is_target:
             got = next((n for n, i in all_starters.items()

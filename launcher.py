@@ -1588,28 +1588,18 @@ class _App(tk.Tk):
             values=["Starters"], state="readonly",
             style="Dark.TCombobox")
         self._sr_target_cb.pack(fill="x", pady=(0, 8))
-        self._sr_target_var.trace_add("write", self._on_sr_target_change)
 
-        # Starter picker — shown only when sr_target == "Starters".
-        self._starter_picker = tk.Frame(self._starter_frame, bg=_PANEL2)
-        tk.Label(self._starter_picker, text="Starter",
-                 bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(fill="x", pady=(0, 4))
-        self._starter_var = tk.StringVar(value="")
-        self._starter_cb = ttk.Combobox(self._starter_picker,
-                                        textvariable=self._starter_var,
-                                        values=[], state="readonly",
-                                        style="Dark.TCombobox")
-        self._starter_cb.pack(fill="x")
-        self._starter_hint = tk.Label(self._starter_picker, text="",
+        # No Starter picker. The bot cannot choose a starter any more:
+        # it holds a direction for the whole sequence and takes whatever
+        # sits at that end of the row. A dropdown promising a choice it
+        # could not deliver did nothing but tell the species gate to
+        # reject perfectly good attempts.
+        self._starter_hint = tk.Label(self._starter_frame, text="",
                                       bg=_PANEL2, fg=_MUTED,
                                       font=("Segoe UI", 9, "italic"),
                                       anchor="w",
                                       wraplength=235, justify="left")
         self._starter_hint.pack(fill="x", pady=(2, 8))
-        # Packed/unpacked by _on_sr_target_change.
-        self._starter_picker.pack(fill="x")
 
         # Trainer name + press-speed live in their own sub-frame so
         # the Starter picker above can be hidden / shown without
@@ -1902,7 +1892,6 @@ class _App(tk.Tk):
         if self._method_var.get() not in labels:
             self._method_var.set(labels[0] if labels else "")
         self._refresh_sr_target_options()
-        self._refresh_starter_options()
         self._on_method_change()
 
     def _selected_method(self):
@@ -1952,31 +1941,6 @@ class _App(tk.Tk):
         if self._sr_target_var.get() not in options:
             self._sr_target_var.set(options[0] if options else "Starters")
 
-    def _on_sr_target_change(self, *_):
-        """Show / hide the Starter picker — only relevant when the
-        soft-reset target is one of the three lab starters."""
-        if self._sr_target_var.get() == "Starters":
-            self._starter_picker.pack(
-                fill="x", before=self._sr_rest_frame)
-        else:
-            self._starter_picker.pack_forget()
-
-    def _refresh_starter_options(self):
-        """Repopulate the starter sub-dropdown for the current game.
-
-        Display names are properly capitalized ('Chespin', 'Fennekin'),
-        but the lowercase form is what flows through to the CLI flag.
-        """
-        try:
-            from pokebot.games import starters_for
-            names = list(starters_for(self._game_var.get()).keys())
-        except Exception:
-            names = []
-        display = [n.capitalize() for n in names]
-        self._starter_cb.configure(values=display)
-        if self._starter_var.get() not in display:
-            self._starter_var.set(display[0] if display else "")
-
     def _on_method_change(self, *_):
         m = self._selected_method()
         # Method descriptions removed by request — keep only the
@@ -1994,12 +1958,11 @@ class _App(tk.Tk):
         if m and m.mode == "soft_reset":
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
-            # Sync the Starter picker visibility with the current
-            # sr_target (Starters → show; others → hide).
-            self._on_sr_target_change()
             self._starter_hint.config(
-                text="Save in front of the starter table — see "
-                     "TUTORIAL.md for the exact position per game.")
+                text="Save in front of the starter table with an EMPTY "
+                     "party. Whichever starter is at the held end of the "
+                     "row is the one taken — change the species in PKHeX "
+                     "afterwards if you want a different one.")
         elif m and m.mode == "encounter":
             # Horde mode uses Sweet Scent, not walking — no movement
             # direction to pick, so the Movement panel stays hidden.
@@ -2174,17 +2137,10 @@ class _App(tk.Tk):
         if method.mode == "soft_reset":
             chosen_sr_target = self._sr_target_var.get().strip().lower() \
                 or "starters"
-            if chosen_sr_target == "starters":
-                picked = self._starter_var.get().strip()
-                if not picked:
-                    messagebox.showwarning(
-                        "Pick a starter",
-                        "Select which starter to hunt from the dropdown.")
-                    return
-                # Dropdown shows 'Chespin' but the bot expects 'chespin'.
-                chosen_starter = picked.lower()
-            else:
-                chosen_starter = None
+            # No --starter. The bot holds a direction and takes what is
+            # at that end of the row, so naming a species could only ever
+            # tell the gate to reject attempts that were fine.
+            chosen_starter = None
         else:
             chosen_starter = method.starter
         # Resolve the movement axis for encounter mode.

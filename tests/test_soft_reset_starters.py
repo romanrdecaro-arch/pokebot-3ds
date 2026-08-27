@@ -27,6 +27,11 @@ sys.path.insert(0, str(REPO))
 from pokebot.modes import soft_reset as sr        # noqa: E402
 
 
+def _now() -> float:
+    import time
+    return time.monotonic()
+
+
 class FakeInput:
     def __init__(self):
         self.events = []
@@ -36,6 +41,12 @@ class FakeInput:
         self.hold_works = True
 
     def tap(self, button, hold_s=0.05):
+        # The real tap costs hold_s — PostMessage down, sleep, up. A
+        # fake that returns instantly turns any time-bounded loop into a
+        # busy spin appending millions of entries, which reads as a hang.
+        if hold_s:
+            import time
+            time.sleep(hold_s)
         self.events.append(button)
 
     def hold(self, button):
@@ -144,7 +155,7 @@ class World:
     """
 
     def __init__(self, presses_to_receive=5, species=650, shiny=False,
-                 reset_works=True, start_with_mon=False):
+                 reset_works=True, start_with_mon=False, boot_s=0.0):
         self.presses = 0
         self.presses_to_receive = presses_to_receive
         self.species = species
@@ -152,16 +163,30 @@ class World:
         self.reset_works = reset_works
         self.party = [FakePkm(species, shiny)] if start_with_mon else []
         self.resets = 0
+        #: Timestamps of every party read, so a test can prove the bot
+        #: is not reading Azahar's memory while it tears the title down.
+        self.reads: list = []
+        self.reset_times: list = []
+        #: The real game spends seconds on boot logos, the title and
+        #: CONTINUE before it can hand over a starter. Without modelling
+        #: that, the fake refills the party on the very next press and
+        #: no post-reset window can be tested at all.
+        self.boot_s = boot_s
+        self.boot_until = 0.0
 
     def press(self, button):
         if button == "A":
             self.presses += 1
+            if _now() < self.boot_until:
+                return                      # still booting
             if self.presses >= self.presses_to_receive and not self.party:
                 self.party = [FakePkm(self.species, self.shiny)]
 
     def reset(self):
+        self.reset_times.append(_now())
         self.resets += 1
         self.presses = 0
+        self.boot_until = _now() + self.boot_s
         if self.reset_works:
             self.party = []
 
@@ -182,7 +207,11 @@ def _wire(monkeypatch, world, ctx):
     ctx.input.tap = tap
     ctx.input.soft_reset = reset
 
-    monkeypatch.setattr(sr, "quick_get_party", lambda c, ot: list(world.party))
+    def _quick(c, ot):
+        world.reads.append(_now())
+        return list(world.party)
+
+    monkeypatch.setattr(sr, "quick_get_party", _quick)
     monkeypatch.setattr(sr, "get_party",
                         lambda c, b, s, ot, contiguous=True: list(world.party))
     monkeypatch.setattr(sr, "broadcast_party", lambda c, p: None)
@@ -201,7 +230,7 @@ def _cfg(**over):
     base = {"press_hold": 0.0, "press_interval": 0.0, "detect_every": 0.0,
             "receive_timeout": 2.0, "reset_timeout": 1.0,
             "post_reset_wait": 0.0, "detect_tries": 2, "detect_gap": 0.0,
-            "trainer_name": "ROMAN"}
+            "reload_read_grace": 0.0, "trainer_name": "ROMAN"}
     base.update(over)
     return base
 
@@ -889,3 +918,174 @@ def test_the_degraded_path_is_reported_once_not_every_press(caplog):
         for _ in range(50):
             sr._note_path(ctx, "pynput")
     assert caplog.text.count("global keyboard") == 1, caplog.text
+
+
+# --------------------------------------------------------------------
+# Not reading Azahar's memory while it tears the title down
+# --------------------------------------------------------------------
+
+def _reload_probe(grace, read_every, timeout, empties_after=None):
+    """Drive _reset_until_party_empty directly.
+
+    Deliberately not through _run_starters: the surrounding flow reads
+    the party from several other places, and mixing those in makes it
+    impossible to say which loop issued which read.
+    """
+    import time as _t
+    reads, presses = [], []
+    t0 = [0.0]
+
+    class Inp:
+        def soft_reset(self, hold_s=0.5):
+            t0[0] = _t.monotonic()
+
+        def tap(self, button, hold_s=0.05):
+            if hold_s:
+                _t.sleep(hold_s)
+            presses.append(_t.monotonic())
+            return "postmessage"
+
+        def needs_focus(self):
+            return False
+
+    class Ctx:
+        input = Inp()
+        _stop_evt = threading.Event()
+
+        def should_stop(self):
+            return False
+
+    def detect():
+        now = _t.monotonic()
+        reads.append(now)
+        if empties_after is not None and now - t0[0] >= empties_after:
+            return False              # party gone: reload finished
+        return True
+
+    ok = sr._reset_until_party_empty(
+        Ctx(), detect, timeout, hold=0.005, gap=0.0, cooldown=0.0,
+        last_reset=None, grace=grace, read_every=read_every)
+    return ok, t0[0], reads, presses
+
+
+def test_no_memory_is_read_during_the_reload_grace():
+    """The crash: 0xc0000005 inside azahar.exe, ONE fault bucket, both
+    renderers, same fault offset.
+
+    L+R+Start makes the game ask the 3DS to relaunch it, so Azahar
+    spends the next moment destroying the running process. Its RPC
+    server holds a pointer to that process, and a ReadMemory landing
+    mid-teardown dereferences memory being freed. This loop used to
+    issue a twelve-read party scan every iteration with no delay.
+    """
+    ok, t_reset, reads, _ = _reload_probe(
+        grace=0.5, read_every=0.1, timeout=2.0, empties_after=0.8)
+    assert ok, "never saw the party empty"
+    during = [t - t_reset for t in reads if t - t_reset < 0.5]
+    assert during == [], (
+        f"{len(during)} memory reads inside the teardown window: {during}")
+
+
+def test_reload_polling_is_throttled_not_flat_out():
+    """400 reads a second at the emulator's worst moment was the bug.
+
+    Asked for read_every=0, which is what the old loop effectively did.
+    """
+    ok, t_reset, reads, _ = _reload_probe(
+        grace=0.0, read_every=0.0, timeout=1.0, empties_after=None)
+    assert not ok
+    assert len(reads) > 1, reads
+    gaps = [b - a for a, b in zip(reads, reads[1:])]
+    assert min(gaps) >= sr._MIN_RELOAD_READ_GAP_S * 0.9, (
+        f"reads only {min(gaps) * 1000:.0f}ms apart; floor is "
+        f"{sr._MIN_RELOAD_READ_GAP_S * 1000:.0f}ms")
+
+
+def test_a_is_still_pressed_during_the_reload_grace():
+    """Pressing is free; only the reading waits.
+
+    The boot logos, the title and CONTINUE all still need pressing
+    through, which is the whole reason the 12-second wait was removed.
+    """
+    ok, t_reset, _, presses = _reload_probe(
+        grace=0.5, read_every=0.1, timeout=2.0, empties_after=0.8)
+    during = [t for t in presses if t - t_reset < 0.5]
+    assert len(during) > 5, (
+        f"only {len(during)} presses during the grace window")
+
+
+# --------------------------------------------------------------------
+# No starter dropdown: shiny is the default criterion
+# --------------------------------------------------------------------
+
+def test_with_no_starter_and_no_filter_shiny_is_the_target(monkeypatch):
+    """The dropdown always used to supply a species, and the fallback
+    criterion was "the species you picked".
+
+    With the dropdown gone that fallback is false on every attempt, so
+    the hunt would reset for ever without ever recognising a win.
+    """
+    world = World(presses_to_receive=2, species=653, shiny=True)
+    ctx = FakeCtx(_cfg())                       # no starter, no rules
+    ctx.target = None
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        ctx.request_stop("reset past the shiny")
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    assert ctx.stop_reason == "target hit", ctx.stop_reason
+    assert world.resets == 0, "reset past a shiny with no filter set"
+
+
+def test_with_no_starter_a_plain_one_still_resets(monkeypatch):
+    """Otherwise the first starter of any kind would end the hunt."""
+    world = World(presses_to_receive=2, species=653, shiny=False)
+    ctx = FakeCtx(_cfg())
+    ctx.target = None
+    _wire(monkeypatch, world, ctx)
+    real_reset = ctx.input.soft_reset
+
+    def reset(hold_s=0.5):
+        real_reset(hold_s)
+        world.shiny = True
+
+    ctx.input.soft_reset = reset
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    assert world.resets == 1, f"{world.resets} resets"
+    assert ctx.stop_reason == "target hit"
+
+
+def test_no_species_gate_without_a_configured_starter(monkeypatch):
+    """Nothing should be rejected for being the "wrong" starter now."""
+    world = World(presses_to_receive=2, species=656, shiny=True)  # Froakie
+    ctx = FakeCtx(_cfg())
+    ctx.target = None
+    _wire(monkeypatch, world, ctx)
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    reasons = [p.get("reason", "") for k, p in ctx.dashboard.sent
+               if k == "read_failure"]
+    assert not any("wrong starter" in r for r in reasons), reasons
+    assert ctx.stop_reason == "target hit"
+
+
+def test_the_launcher_no_longer_offers_a_starter_dropdown() -> None:
+    """Requested: the dropdown was confusing the bot.
+
+    It promised a choice the bot cannot make — it holds a direction and
+    takes whatever is at that end of the row — and all it actually did
+    was tell the species gate to reject good attempts.
+    """
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "launcher.py").read_text(encoding="utf-8")
+    for gone in ("_starter_var", "_starter_cb", "_starter_picker",
+                 "_refresh_starter_options"):
+        assert gone not in src, f"{gone} still in launcher.py"
+    assert '"--starter"' not in src or "chosen_starter = None" in src

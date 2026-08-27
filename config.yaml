@@ -93,6 +93,18 @@ soft_reset:
   # 0 leaves the rate uncapped. Raise it if Azahar keeps crashing: it
   # costs hunt speed and buys the emulator time to finish rebuilding
   # itself before being asked to do it again. Try 20-30 first.
+  # Seconds after a soft reset during which the bot reads NO memory.
+  #
+  # L+R+Start makes the game ask the 3DS to relaunch it, so Azahar spends
+  # the next moment destroying the running process and building a new
+  # one. Its RPC server holds a pointer to that process, and a read
+  # landing mid-teardown dereferences memory being freed — Windows
+  # recorded four of those as 0xc0000005 access violations inside
+  # azahar.exe, all in ONE fault bucket, on both Vulkan and OpenGL.
+  #
+  # A presses carry on throughout; only the reading waits. Raise this if
+  # Azahar still crashes around resets.
+  reload_read_grace: 4.0
   reset_cooldown: 0
   reset_timeout: 30      # how long to wait for the party to empty after
                          # L+R+Start. If it never does, the reset did not
