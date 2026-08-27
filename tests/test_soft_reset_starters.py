@@ -1129,3 +1129,17 @@ def test_the_quiet_period_can_be_turned_off():
         grace=0.0, read_every=0.1, timeout=2.0, empties_after=0.1,
         quiet=0.0)
     assert t_reset - entered < 0.2, "waited despite quiet=0"
+
+
+def test_a_shiny_with_no_filter_is_labelled_shiny(monkeypatch):
+    """"starter #653" was accurate when the criterion was the species
+    from the dropdown. With the dropdown gone the criterion is
+    shininess, and the label has to say so."""
+    world = World(presses_to_receive=2, species=653, shiny=True)
+    ctx = FakeCtx(_cfg())
+    ctx.target = None
+    _wire(monkeypatch, world, ctx)
+    sr._run_starters(ctx, ctx.config["soft_reset"])
+
+    hits = [p for k, p in ctx.dashboard.sent if k == "target_hit"]
+    assert hits and hits[0]["reason"] == "SHINY", hits

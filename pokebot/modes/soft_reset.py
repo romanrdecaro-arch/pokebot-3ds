@@ -988,8 +988,13 @@ def _run_starters(ctx, cfg):
                  f"PID={pkm.pid:08X} PSV={pkm.psv} TSV={pkm.tsv}")
 
         if is_target:
+            # Without a filter the criterion is shininess, so say that.
+            # "starter #653" was accurate back when the criterion was the
+            # species from the dropdown; it now labels the one event the
+            # whole hunt exists for as though it were routine.
             reason = (ctx.target.describe(pkm) if has_rules
-                      else f"starter #{pkm.species}")
+                      else ("SHINY" if pkm.shiny
+                            else f"starter #{pkm.species}"))
             addr = getattr(pkm, "source_address", None)
             if addr is not None:
                 save_target_pk6(ctx, addr, pkm,
