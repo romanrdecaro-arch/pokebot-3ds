@@ -110,6 +110,39 @@ second machine.
 For a full first-time walkthrough including soft-resetting starters,
 see **[docs/TUTORIAL.md](docs/TUTORIAL.md)**.
 
+## Updating
+
+You should only ever download pokebot-3ds once. The launcher checks
+for a newer build when it opens and, if there is one, shows a bar with
+an **Update now** button.
+
+```
+python run.py --check-update     # is there a newer build?
+python run.py --update           # install it
+```
+
+It works for both kinds of install: a `git clone` fast-forwards with
+`git pull --ff-only`, and a zip install downloads the current zip,
+verifies its published SHA-256, and copies it over.
+
+**What an update will not touch:**
+
+| Kept | Why |
+|---|---|
+| `config.yaml` | your offsets, timings and target rules |
+| `targets/` | every `.pk6` you have caught |
+| `logs/` | encounter history |
+| `.pokebot_stats*.json` | phase and lifetime counters |
+
+Everything it *does* replace is copied to `.update-backup/<timestamp>/`
+first, and the three most recent backups are kept. Nothing installs on
+its own — the check is automatic, the install is a button press. To
+stop it checking at all, set `updates.check_on_start: false` in
+`config.yaml`.
+
+A git checkout with uncommitted changes is left alone rather than
+overwritten; commit or discard them and update again.
+
 ## Features
 
 - **Five bot modes** — `observe`, `encounter`, `horde`, `soft_reset`,

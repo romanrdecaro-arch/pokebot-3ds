@@ -1357,6 +1357,7 @@ class _App(tk.Tk):
 
         threading.Thread(target=self._status_poll_loop,
                          daemon=True, name="StatusPoll").start()
+        self._start_update_check()
 
     # ---- Layout -----------------------------------------------------------
 
@@ -1420,7 +1421,12 @@ class _App(tk.Tk):
 
         # Thin red accent stripe under the header — ties the brand colour
         # into the chrome instead of leaving it only on the Start button.
-        tk.Frame(self, bg=_ACCENT, height=2).pack(fill="x")
+        self._stripe = tk.Frame(self, bg=_ACCENT, height=2)
+        self._stripe.pack(fill="x")
+
+        # Update notice. Built now, shown only if a newer build exists,
+        # so an up-to-date install never sees a bar it cannot act on.
+        self._build_update_bar()
 
         # ── Body: sidebar + log ─────────────────────────────────────────────
         body = tk.Frame(self, bg=_BG)
@@ -1825,6 +1831,122 @@ class _App(tk.Tk):
                       highlightthickness=0)
         b.pack(fill="x", padx=12, pady=3)
         return b
+
+    # ---- Updates ----------------------------------------------------------
+
+    def _build_update_bar(self) -> None:
+        """A strip that appears only when a newer build is published."""
+        self._update_bar = tk.Frame(self, bg=_PANEL2, padx=14, pady=8)
+        self._update_lbl = tk.Label(self._update_bar, text="", bg=_PANEL2,
+                                    fg=_TEXT, font=("Segoe UI", 10),
+                                    anchor="w", justify="left")
+        self._update_lbl.pack(side="left", fill="x", expand=True)
+        self._update_btn = tk.Button(
+            self._update_bar, text="Update now", command=self._apply_update,
+            bg=_ACCENT, fg="white", relief="flat", bd=0,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            activebackground=_ACCENT, activeforeground="white",
+            padx=12, pady=4, highlightthickness=0)
+        self._update_btn.pack(side="right", padx=(10, 0))
+        tk.Button(
+            self._update_bar, text="✕", command=self._hide_update_bar,
+            bg=_PANEL2, fg=_MUTED, relief="flat", bd=0,
+            font=("Segoe UI", 9), cursor="hand2",
+            activebackground=_PANEL2, activeforeground=_TEXT,
+            padx=6, pady=4, highlightthickness=0).pack(side="right")
+
+    def _show_update_bar(self, text: str) -> None:
+        self._update_lbl.config(text=text)
+        self._update_bar.pack(fill="x", after=self._stripe)
+
+    def _hide_update_bar(self) -> None:
+        self._update_bar.pack_forget()
+
+    def _start_update_check(self) -> None:
+        """Ask GitHub what the current build is, off the UI thread."""
+        from pokebot import updater
+        if not updater.should_check_on_start(self._cfg):
+            return
+        threading.Thread(target=self._update_check_worker,
+                         daemon=True, name="UpdateCheck").start()
+
+    def _update_check_worker(self) -> None:
+        try:
+            from pokebot import updater
+            result = updater.check(ROOT)
+        except Exception as exc:
+            # A version check is never worth taking the launcher down
+            # for; the bot works perfectly well un-updated.
+            detail = str(exc)
+            self.after(0, lambda: self._log(
+                f"Update check failed: {detail}", "muted"))
+            return
+        self.after(0, self._on_update_checked, result)
+
+    def _on_update_checked(self, result) -> None:
+        if not result.ok:
+            self._log(f"Update check: {result.detail}", "muted")
+            return
+        if not result.available:
+            self._log(f"Up to date ({result.local.short}).", "muted")
+            return
+        subject = (result.remote.subject or "").strip()
+        self._show_update_bar(
+            "A newer build is available — " + result.detail
+            + (f'   "{subject}"' if subject else ""))
+        self._log(f"Update available: {result.detail}", "good")
+
+    def _apply_update(self) -> None:
+        # Replacing files under a running bot is how you get a half-new
+        # tree and a confusing traceback. Make it stop first.
+        if self._bot.running:
+            messagebox.showwarning(
+                "Bot is running",
+                "Stop the bot before updating — its files are in use.")
+            return
+        if not messagebox.askyesno(
+                "Update pokebot-3ds",
+                "Download and install the latest build?\n\n"
+                "Your config.yaml, your targets/ exports and your stats "
+                "are kept. Replaced files are backed up so you can roll "
+                "back."):
+            return
+        self._update_btn.config(state="disabled", text="Updating…")
+        threading.Thread(target=self._update_apply_worker,
+                         daemon=True, name="UpdateApply").start()
+
+    def _update_apply_worker(self) -> None:
+        try:
+            from pokebot import updater
+            result = updater.apply_update(
+                ROOT, on_log=lambda m: self.after(0, self._log, f"  {m}"))
+            if result.ok:
+                updater.prune_backups(ROOT)
+        except Exception as exc:
+            detail = str(exc)
+            self.after(0, lambda: self._log(
+                f"Update failed: {detail}", "error"))
+            self.after(0, lambda: self._update_btn.config(
+                state="normal", text="Update now"))
+            return
+        self.after(0, self._on_update_applied, result)
+
+    def _on_update_applied(self, result) -> None:
+        self._update_btn.config(state="normal", text="Update now")
+        if not result.ok:
+            self._log(f"Update failed: {result.detail}", "error")
+            messagebox.showerror("Update failed", result.detail)
+            return
+        self._log(result.detail, "good")
+        self._hide_update_bar()
+        if result.restart_required:
+            messagebox.showinfo(
+                "Update installed",
+                result.detail
+                + "\n\nClose and reopen pokebot-3ds to run the new "
+                  "version.")
+        else:
+            messagebox.showinfo("Already current", result.detail)
 
     def _build_log(self, parent):
         # Two-tab Notebook: "Recently Seen" (sprite encounter table) + "Log".

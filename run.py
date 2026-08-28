@@ -31,6 +31,45 @@ def _target_preset(name: str) -> dict:
     return _TARGET_PRESETS[name]
 
 
+def _run_update(do_apply: bool) -> int:
+    """Handle --check-update / --update, then exit.
+
+    Kept out of main()'s body so the update path never touches config
+    loading, RPC or input -- it must work on an install too broken to
+    start the bot, which is exactly when someone reaches for it.
+    """
+    from pokebot import updater
+
+    root = Path(__file__).resolve().parent
+    result = updater.check(root)
+
+    print(f"Installed: {result.local.describe()}")
+    if not result.ok:
+        print(f"Could not check for updates: {result.detail}")
+        return 1
+    print(f"Published: {result.remote.short}"
+          + (f" — {result.remote.subject}" if result.remote.subject else ""))
+    print(result.detail)
+
+    if not result.available:
+        return 0
+    if not do_apply:
+        print("\nRun 'python run.py --update' to install it.")
+        return 0
+
+    print("\nUpdating...")
+    applied = updater.apply_update(root, on_log=lambda m: print(f"  {m}"))
+    print(applied.detail)
+    if not applied.ok:
+        return 1
+    if applied.backup:
+        print(f"Previous files kept in {applied.backup}")
+    updater.prune_backups(root)
+    if applied.restart_required:
+        print("Update complete. Restart the bot to use it.")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="pokebot-3ds")
     ap.add_argument("--config", default="config.yaml",
@@ -99,6 +138,13 @@ def main(argv=None):
                          "all but Azahar may ignore it; cursor is the "
                          "old behaviour that leaves the pointer on the "
                          "button.")
+    ap.add_argument("--check-update", action="store_true",
+                    help="report whether a newer build is published, "
+                         "then exit without starting the bot")
+    ap.add_argument("--update", action="store_true",
+                    help="upgrade this install in place, then exit. "
+                         "Your config.yaml, targets/ and stats are "
+                         "left untouched.")
     args = ap.parse_args(argv)
 
     logging.basicConfig(
@@ -106,6 +152,9 @@ def main(argv=None):
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    if args.check_update or args.update:
+        return _run_update(do_apply=args.update)
 
     cfg_path = Path(args.config)
     if cfg_path.exists():

@@ -43,6 +43,34 @@ jobs:
           echo "subject=$(git log -1 --pretty=%s)"          >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +'%Y-%m-%d %H:%M UTC')"      >> "$GITHUB_OUTPUT"
 
+      # A zip install has no .git, so it cannot tell which commit it came
+      # from -- and without that, in-app updating has nothing to compare.
+      # Stamp the sha into the tree before zipping, and publish the same
+      # file as its own release asset so the update check is one small
+      # GET against a stable URL instead of a rate-limited API call.
+      #
+      # Values arrive as env vars rather than ${{ }} interpolated into
+      # the script: a commit subject is attacker-controlled text, and
+      # pasting it into a shell line is how it would get executed.
+      - name: Stamp the build
+        env:
+          SHA:     ${{ github.sha }}
+          SHORT:   ${{ steps.meta.outputs.sha }}
+          BUILT:   ${{ steps.meta.outputs.date }}
+          SUBJECT: ${{ steps.meta.outputs.subject }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          with open("BUILD_INFO.json", "w", encoding="utf-8") as fh:
+              json.dump({
+                  "sha":     os.environ["SHA"],
+                  "short":   os.environ["SHORT"],
+                  "built":   os.environ["BUILT"],
+                  "subject": os.environ["SUBJECT"],
+              }, fh, indent=2)
+          PY
+          cat BUILD_INFO.json
+
       - name: Build downloadable zip
         run: |
           mkdir -p dist
@@ -59,6 +87,7 @@ jobs:
                "*.local.yaml" \
                "dist/*"
           sha256sum dist/pokebot-3ds.zip | tee dist/SHA256SUMS.txt
+          cp BUILD_INFO.json dist/BUILD_INFO.json
           ls -la dist/
 
       # Reusing one rolling release keeps GitHub's original publish
@@ -93,6 +122,12 @@ jobs:
             **Latest commit:** ${{ steps.meta.outputs.subject }}
             (`${{ github.sha }}`)
 
+            ## Already have pokebot-3ds?
+
+            Don't download this. Open the launcher and press
+            **Check for updates** — it upgrades in place and keeps your
+            `config.yaml`, your `targets/` exports and your stats.
+
             ## How to run
 
             1. Download `pokebot-3ds.zip` from the Assets below.
@@ -107,6 +142,7 @@ jobs:
           files: |
             dist/pokebot-3ds.zip
             dist/SHA256SUMS.txt
+            dist/BUILD_INFO.json
           make_latest: true
           # Re-use the same tag every push. Without this the action
           # would refuse to overwrite an existing release.

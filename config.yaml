@@ -262,3 +262,19 @@ logging:
   event_log: true
   # event_log_path: logs/events.jsonl   # default; pinned windows get
   #                                     # logs/events-pid<PID>.jsonl
+
+# In-app updates.
+#
+# The launcher checks GitHub once at startup and, if a newer build is
+# published, shows a bar with an "Update now" button. Nothing is ever
+# downloaded or installed without you pressing it.
+#
+# An update replaces program files only. This config.yaml, your
+# targets/ exports, your logs and your stats are never touched, and
+# every replaced file is copied to .update-backup/<timestamp>/ first.
+#
+# From the command line:
+#     python run.py --check-update
+#     python run.py --update
+updates:
+  check_on_start: true

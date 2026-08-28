@@ -89,3 +89,8 @@ targets/
 # Per-run bot statistics and scratch diagnostics
 .pokebot_stats.json
 check_bounds.txt
+
+# Update machinery: BUILD_INFO.json is stamped by CI into the release
+# zip, and .update-backup/ holds the files an in-place update replaced.
+BUILD_INFO.json
+.update-backup/
