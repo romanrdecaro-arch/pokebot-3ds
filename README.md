@@ -25,11 +25,70 @@ PKHeX-compatible `.pk6` files automatically.
 > and emulator copies you legally own. No ROMs, saves, or game assets
 > are distributed here.
 
+## Requirements
+
+pokebot-3ds is a thin client: it reads a few hundred bytes over
+loopback UDP and posts keystrokes. **Azahar sets the hardware bar, not
+the bot.** Measured footprint of the bot itself:
+
+| | |
+|---|---|
+| Bot process | **21 MB** RSS |
+| GUI launcher | **+30 MB** (Tk + Pillow) |
+| Per encounter | ~6 reads, 302 bytes |
+| Network | loopback UDP only — no internet needed |
+| Disk | ~8 MB, plus Azahar and your own ROM |
+
+### Software
+
+- **OS** — Windows 10/11 (64-bit) is the fully supported target: input
+  goes through `PostMessage`, so Azahar does **not** need to be the
+  focused window and you can keep using your PC while it hunts.
+  macOS and Linux work, but fall back to global key injection, which
+  means Azahar must stay focused.
+- **Python 3.10 or newer.** CI tests 3.10 and 3.12.
+- **Tk** for the GUI launcher — bundled with the python.org installers;
+  on Debian/Ubuntu `sudo apt install python3-tk`.
+- **Azahar**, with:
+  - *Emulation → Configure → **Debug** → Enable RPC server* — **on**
+    (off by default; if the box is greyed out, close the running game
+    first)
+  - *Emulation → Configure → Debug → Use GDB stub* — **off**; it
+    hijacks the same channel and the bot's requests get ignored
+- **Dependencies install themselves** on first launch: `pynput` (input)
+  and `PyYAML` (config). `Pillow` is optional — without it the launcher
+  falls back to a drawn logo.
+
+### Hardware
+
+Reference machine that runs a hunt comfortably at 705% emulation speed,
+with Azahar sitting at ~2.0 GB resident:
+
+> Ryzen 7 5800X (8C/16T) · 32 GB RAM · RTX 4070 Ti
+
+That is comfortably above what is needed. As a practical floor, aim for
+a 64-bit quad-core, 8 GB of RAM, and a GPU with OpenGL 4.3 or Vulkan
+support. Single-thread speed matters more than core count — 3DS
+emulation does not spread across many cores, so a fast 4-core beats a
+slow 16-core. Reset-hunt throughput is bound by how quickly Azahar can
+replay the game's boot and intro, so CPU clock is the one spec that
+directly buys you more attempts per hour.
+
+### One emulator per machine
+
+Azahar's RPC server is hardcoded to UDP port **45987** with no setting
+to change it, and the port cannot be shared. A second Azahar on the
+same PC starts with **no RPC at all** — and a second bot pointed at it
+will silently connect to the *first* instance instead, driving one
+window while reading another's memory. To hunt in parallel, use a
+second machine.
+
 ## Quick start
 
 1. **Install [Azahar](https://github.com/azahar-emu/azahar)** and load
-   your Gen 6/7 game. Make sure *Emulation → Configure → General →
-   Enable scripting* is on.
+   your Gen 6/7 game. Tick *Emulation → Configure → **Debug** → Enable
+   RPC server* — it is **off by default**, and leaving it off is the
+   single most common reason the launcher reports no emulator.
 
 2. **Get pokebot-3ds.** Either grab the
    [latest build](https://github.com/romanrdecaro-arch/pokebot-3ds/releases/latest/download/pokebot-3ds.zip)

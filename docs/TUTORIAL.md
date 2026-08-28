@@ -13,6 +13,8 @@ the launcher flow is identical for every supported Gen 6/7 game.
 - A Gen 6/7 Pokémon ROM you legally own, loaded in Azahar.
 - This repo cloned. `python launcher.py` (or double-click
   `pokebot-3ds.bat` on Windows).
+- Python 3.10+. See [Requirements](../README.md#requirements) for the
+  full software and hardware list.
 
 ## Step 1 — One-time setup in Azahar
 
