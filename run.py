@@ -47,8 +47,10 @@ def _run_update(do_apply: bool) -> int:
     if not result.ok:
         print(f"Could not check for updates: {result.detail}")
         return 1
+    # ASCII only: the Windows console is cp1252 by default and turns a
+    # printed em-dash into a replacement glyph.
     print(f"Published: {result.remote.short}"
-          + (f" — {result.remote.subject}" if result.remote.subject else ""))
+          + (f" - {result.remote.subject}" if result.remote.subject else ""))
     print(result.detail)
 
     if not result.available:
