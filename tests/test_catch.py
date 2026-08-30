@@ -416,6 +416,79 @@ def test_the_throw_is_followed_by_a_burst_of_b_presses():
     assert ctx.input.taps.count("B") >= 25
 
 
+def test_the_ball_is_confirmed_with_a_so_it_is_actually_thrown():
+    """Touching the ball only selects it; A is what throws it."""
+    ctx = FakeCtx()
+    catch.catch_wild(ctx, fast_plan(intro_taps=0, post_throw_taps=0,
+                                    attempts=1, confirm_window=0.0),
+                     TARGET_KEY, party_after(0))
+
+    assert "A" in ctx.input.taps
+
+
+def test_the_throw_confirm_comes_after_the_ball_touch():
+    """An A press before the ball is selected picks the wrong thing."""
+    ctx = FakeCtx()
+    order: list[str] = []
+    real_tap, real_touch = ctx.input.tap, ctx.input.tap_touch
+    ctx.input.tap = lambda b, hold_s=0.05: (order.append(b),
+                                            real_tap(b, hold_s))[1]
+    ctx.input.tap_touch = lambda x, y, hold_s=0.08: (
+        order.append("touch"), real_touch(x, y, hold_s))[1]
+
+    catch.catch_wild(ctx, fast_plan(intro_taps=0, post_throw_taps=0,
+                                    attempts=1, confirm_window=0.0),
+                     TARGET_KEY, party_after(0))
+
+    assert order.index("A") > _last_index(order, "touch")
+
+
+def _last_index(seq, value):
+    return len(seq) - 1 - seq[::-1].index(value)
+
+
+def test_the_throw_confirm_is_configurable():
+    plan = catch.CatchPlan.from_config({"catch_throw_taps": 2,
+                                        "catch_throw_button": "Y"})
+    assert plan.throw_taps == 2
+    assert plan.throw_button == "Y"
+
+
+def test_the_throw_confirm_defaults_to_one_a_press():
+    plan = catch.CatchPlan.from_config({})
+    assert plan.throw_taps == 1
+    assert plan.throw_button == "A"
+
+
+def test_every_retry_confirms_its_own_throw():
+    ctx = FakeCtx()
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0, post_throw_taps=0,
+                                          attempts=3, confirm_window=0.0),
+                           TARGET_KEY, lambda: set())
+
+    assert res.attempts == 3
+    assert ctx.input.taps.count("A") == 3
+
+
+def test_stopping_before_the_confirm_throws_nothing():
+    ctx = FakeCtx()
+
+    real = ctx.input.tap_touch
+
+    def stop_on_ball(x, y, hold_s=0.08):
+        ok = real(x, y, hold_s)
+        if len(ctx.input.touches) == 3:      # the ball was just selected
+            ctx.request_stop("user")
+        return ok
+
+    ctx.input.tap_touch = stop_on_ball
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0), TARGET_KEY,
+                           party_after(99))
+
+    assert not res.caught
+    assert "A" not in ctx.input.taps
+
+
 def test_the_b_burst_comes_after_the_ball_not_before():
     """Pressing B before the ball lands backs out of the bag."""
     ctx = FakeCtx()
@@ -455,7 +528,7 @@ def test_the_b_burst_can_be_switched_off():
     catch.catch_wild(ctx, fast_plan(intro_taps=0, post_throw_taps=0,
                                     attempts=1, confirm_window=0.0),
                      TARGET_KEY, party_after(99))
-    assert len(ctx.input.taps) == 1           # the single confirm poll
+    assert ctx.input.taps.count("B") == 1     # the single confirm poll
 
 
 def test_stopping_during_the_b_burst_ends_the_catch():

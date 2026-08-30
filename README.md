@@ -210,9 +210,10 @@ In `encounter` / `horde` mode the bot no longer just stops when it
 finds a shiny — it catches it and keeps hunting. The sequence is the
 same three touches you would make yourself:
 
-**BAG → POKÉ BALLS → first slot in the pocket**, then a burst of `B`
-presses to blast through "Gotcha!", the Pokédex entry and the nickname
-prompt.
+**BAG → POKÉ BALLS → first slot in the pocket → A**, then a burst of
+`B` presses to blast through "Gotcha!", the Pokédex entry and the
+nickname prompt. (Touching the ball only selects it; the `A` is what
+actually throws it.)
 
 **Movement never stops for a battle.** A wild encounter used to be ~12
 seconds of the bot standing still; those waits are now spent walking,

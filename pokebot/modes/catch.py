@@ -52,6 +52,13 @@ class CatchPlan:
     menu_settle: float = 1.5     # command menu draw
     bag_settle: float = 1.2      # bag pocket list draw
     pocket_settle: float = 1.2   # item list draw
+    # Touching the ball only SELECTS it -- the game still wants a
+    # confirm before it leaves your hand. Without this the sequence
+    # sits on the item screen and no ball is ever thrown.
+    select_settle: float = 0.5   # let the selection register
+    throw_button: str = "A"
+    throw_taps: int = 1
+    throw_tap_gap: float = 0.3
     throw_settle: float = 6.0    # ball throw + shake + Gotcha!
     # The throw is followed by a long chain of text boxes -- shakes,
     # "Gotcha!", the Pokedex entry, the nickname prompt, "sent to Box".
@@ -112,6 +119,10 @@ class CatchPlan:
             confirm_gap=num("catch_confirm_gap", 1.0),
             post_throw_taps=max(0, int(num("catch_post_throw_taps", 25))),
             post_throw_gap=num("catch_post_throw_gap", 0.12),
+            select_settle=num("catch_select_settle", 0.5),
+            throw_button=str(rcfg.get("catch_throw_button", "A")),
+            throw_taps=max(0, int(num("catch_throw_taps", 1))),
+            throw_tap_gap=num("catch_throw_tap_gap", 0.3),
         )
 
 
@@ -230,6 +241,20 @@ def catch_wild(ctx, plan: CatchPlan, target_key: int,
             return CatchResult(False, "stopped in the ball pocket",
                                attempt, t.sent, t.failed)
         t.at("ball", plan.ball)
+
+        # The touch only highlights the ball. Confirm it so the throw
+        # actually happens.
+        if not _wait(ctx, plan.select_settle):
+            return CatchResult(False, "stopped selecting the ball",
+                               attempt, t.sent, t.failed)
+        for _ in range(max(0, plan.throw_taps)):
+            if ctx.should_stop():
+                return CatchResult(False, "stopped before the throw",
+                                   attempt, t.sent, t.failed)
+            ctx.input.tap(plan.throw_button, hold_s=0.05)
+            ctx._stop_evt.wait(plan.throw_tap_gap)
+        log.info(f"  catch: {plan.throw_taps} x {plan.throw_button} "
+                 f"to throw it")
 
         # Throw + shakes + "Gotcha!". Nothing to read yet.
         if not _wait(ctx, plan.throw_settle):
