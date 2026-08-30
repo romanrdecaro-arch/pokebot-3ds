@@ -41,11 +41,20 @@ def test_button_check_accepts_every_real_bind() -> None:
 
 
 def test_walk_directions_are_not_single_letter_names() -> None:
-    """Guard the root cause: `a, b` is what made the collision possible."""
+    """Guard the root cause: `a, b` is what made the collision possible.
+
+    The direction pair and the alternating counter now live on
+    ``encounter.Walker`` instead of in run()'s scope, so the encounter
+    loop rebinding a name cannot reach them at all — a stronger fix
+    than renaming the locals. Both old shapes must stay gone; that the
+    Walker actually survives a shadowing loop variable is asserted in
+    test_encounter_walk.py.
+    """
     source = (Path(__file__).resolve().parents[1]
               / "pokebot" / "modes" / "encounter.py").read_text(encoding="utf-8")
     assert "    a, b = _BTN[movement]" not in source
-    assert "walk_a, walk_b = _BTN[movement]" in source
+    assert "walk_a, walk_b" not in source
+    assert "Walker(ctx, _BTN[movement]" in source
 
 
 # --------------------------------------------------------------------

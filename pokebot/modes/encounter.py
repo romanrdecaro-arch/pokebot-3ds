@@ -25,6 +25,7 @@ flee_delay, run_touch.
 from __future__ import annotations
 
 import logging
+import time
 
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
@@ -73,6 +74,52 @@ def _refresh_party(ctx, party_base, party_stride, player_ot):
     empty set when party_base isn't configured."""
     party = get_party(ctx, party_base, party_stride, player_ot)
     return broadcast_party(ctx, party)   # broadcasts only on change
+
+
+class Walker:
+    """Alternates the two movement buttons.
+
+    Every second a wild battle is on screen is a second the player is
+    not in the grass, so the flee sequence spends its waits walking
+    instead of sleeping: by the time the battle fades out the player is
+    already moving and the next encounter is already being rolled.
+
+    Direction presses in a battle only slide the command-menu cursor,
+    which is harmless here because RUN is reached by touch, not by the
+    cursor. Movement stops the moment a target is found -- from then on
+    nothing should be moving the cursor under the catch sequence.
+    """
+
+    def __init__(self, ctx, buttons, hold_s: float, gap: float):
+        self.ctx = ctx
+        self.buttons = buttons
+        self.hold_s = max(0.01, float(hold_s))
+        self.gap = max(0.0, float(gap))
+        self.step = 0
+
+    def one_step(self) -> None:
+        """One direction press, alternating each call."""
+        # B is held for the press, so the player runs -- and in a
+        # battle that same B press clears a text box.
+        self.ctx.input.move_running(self.buttons[self.step % 2],
+                                    hold_s=self.hold_s)
+        self.step += 1
+        if self.gap:
+            self.ctx._stop_evt.wait(self.gap)
+
+    def wait(self, seconds: float) -> None:
+        """Spend ``seconds`` walking rather than standing still."""
+        if seconds <= 0:
+            return
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self.ctx.should_stop():
+                return
+            self.one_step()
+
+    def idle(self, seconds: float) -> None:
+        """A plain wait, for when moving would be wrong."""
+        self.ctx._stop_evt.wait(seconds)
 
 
 def _run_fraction(layout, run_local, override):
@@ -166,13 +213,25 @@ def _use_sweet_scent(ctx, gap: float) -> None:
         ctx._stop_evt.wait(gap)
 
 
-def _flee(ctx, layout, run_local, override, run_settle: float) -> None:
+def _flee(ctx, layout, run_local, override, run_settle: float,
+          walker: "Walker | None" = None) -> None:
     """Clear the appearance text so the command menu is up, wait for
-    it to render, touch RUN, then clear the got-away text."""
+    it to render, touch RUN, then clear the got-away text.
+
+    Given a ``walker``, every wait here is spent moving instead of
+    standing still. move_running holds B for each step, so the walking
+    also does the text-clearing these taps used to do on their own.
+    """
+    def pause(seconds: float) -> None:
+        if walker is not None:
+            walker.wait(seconds)
+        else:
+            ctx._stop_evt.wait(seconds)
+
     for _ in range(4):
         ctx.input.tap("B", hold_s=0.05)
-        ctx._stop_evt.wait(0.35)
-    ctx._stop_evt.wait(run_settle)            # let the menu draw
+        pause(0.35)
+    pause(run_settle)                         # let the menu draw
     fx, fy, how = _run_fraction(layout, run_local, override)
     ok = ctx.input.tap_touch(fx, fy, hold_s=0.08)
     log.info(f"  flee: touch RUN @ ({fx:.3f},{fy:.3f}) [{how}] "
@@ -182,11 +241,11 @@ def _flee(ctx, layout, run_local, override, run_settle: float) -> None:
     # take a while, especially after a horde or a fishing battle —
     # if we fire the next action too early it gets eaten by the
     # lingering battle UI. Give the transition real room.
-    ctx._stop_evt.wait(2.0)                  # wait for "Got away!"
+    pause(2.0)                               # wait for "Got away!"
     for _ in range(3):                       # clear "Got away!" text
         ctx.input.tap("B", hold_s=0.05)
-        ctx._stop_evt.wait(0.6)
-    ctx._stop_evt.wait(2.0)                  # post-battle slide-back
+        pause(0.6)
+    pause(2.0)                               # post-battle slide-back
 
 
 def run(ctx) -> None:
@@ -201,7 +260,8 @@ def run(ctx) -> None:
         movement = "horizontal"
     player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
         "trainer_name", DEFAULT_OT_NAME)
-    walk_hold = float(rcfg.get("walk_hold", 0.35))
+    walk_hold = float(rcfg.get("walk_hold", 0.10))
+    walk_gap = float(rcfg.get("walk_gap", 0.05))
     flee_delay = float(rcfg.get("flee_delay", 5.0))
     run_settle = float(rcfg.get("run_settle", 1.5))
     idle_action = str(rcfg.get("idle_action", "walk")).lower()
@@ -262,12 +322,13 @@ def run(ctx) -> None:
     log.info(f"  baseline: {len(seen)} pre-existing non-party PK6 "
              f"ignored. Walking…")
 
-    # Named, not "a, b": these live for the whole run loop and used to
-    # be clobbered by the "for a, p in ordered" encounter loop below,
-    # which rebound `a` to a PK6 *address*. The next walk step then
-    # passed an int as a button name and killed the run.
-    walk_a, walk_b = _BTN[movement]
-    step = 0
+    # The Walker owns the alternating step and the button pair. It
+    # used to be two loose locals plus a counter, which the encounter
+    # loop below clobbered by rebinding `a` to a PK6 *address* — the
+    # next walk step then passed an int as a button name and killed
+    # the run. Keeping the state inside the object makes that
+    # impossible to repeat.
+    walker = Walker(ctx, _BTN[movement], walk_hold, walk_gap)
     encounters = 0
 
     while not ctx.should_stop():
@@ -344,10 +405,12 @@ def run(ctx) -> None:
                 return
             if not dry:
                 # Wait out the battle intro/animation so the command
-                # menu (and the RUN button) is actually on screen.
-                ctx._stop_evt.wait(flee_delay)
+                # menu (and the RUN button) is actually on screen —
+                # walking through it, so the player is already moving
+                # when the battle lets go.
+                walker.wait(flee_delay)
                 _flee(ctx, screen_layout, run_local, run_override,
-                      run_settle)
+                      run_settle, walker)
             continue                          # don't walk this iter
 
         # No new wild → overworld / stale lingering → take the
@@ -381,9 +444,6 @@ def run(ctx) -> None:
             continue
         # Hold B while moving so the player RUNS (covers grass faster
         # → more encounters per minute).
-        ctx.input.move_running(walk_a if step % 2 == 0 else walk_b,
-                               hold_s=walk_hold)
-        step += 1
-        ctx._stop_evt.wait(0.12)
+        walker.one_step()
 
     log.info(f"Shiny hunt stopped after {encounters} encounter(s).")

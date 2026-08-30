@@ -53,6 +53,12 @@ class CatchPlan:
     bag_settle: float = 1.2      # bag pocket list draw
     pocket_settle: float = 1.2   # item list draw
     throw_settle: float = 6.0    # ball throw + shake + Gotcha!
+    # The throw is followed by a long chain of text boxes -- shakes,
+    # "Gotcha!", the Pokedex entry, the nickname prompt, "sent to Box".
+    # Hammering B through all of them is far quicker than waiting each
+    # one out, and B answers "no" to the nickname prompt on the way.
+    post_throw_taps: int = 25
+    post_throw_gap: float = 0.12
 
     attempts: int = 5
     confirm_window: float = 12.0  # per attempt, watching the party
@@ -104,6 +110,8 @@ class CatchPlan:
             attempts=max(1, int(num("catch_attempts", 5))),
             confirm_window=num("catch_confirm_window", 12.0),
             confirm_gap=num("catch_confirm_gap", 1.0),
+            post_throw_taps=max(0, int(num("catch_post_throw_taps", 25))),
+            post_throw_gap=num("catch_post_throw_gap", 0.12),
         )
 
 
@@ -227,6 +235,15 @@ def catch_wild(ctx, plan: CatchPlan, target_key: int,
         if not _wait(ctx, plan.throw_settle):
             return CatchResult(False, "stopped during the throw",
                                attempt, t.sent, t.failed)
+
+        # Blast through the post-throw text chain.
+        if plan.post_throw_taps:
+            log.info(f"  catch: {plan.post_throw_taps} x B to clear the "
+                     f"catch text")
+            _dismiss(ctx, plan.post_throw_taps, plan.post_throw_gap)
+            if ctx.should_stop():
+                return CatchResult(False, "stopped clearing the text",
+                                   attempt, t.sent, t.failed)
 
         if _confirm(ctx, plan, target_key, party_keys_fn):
             log.info(f"  CAUGHT on attempt {attempt} — it is in the party.")

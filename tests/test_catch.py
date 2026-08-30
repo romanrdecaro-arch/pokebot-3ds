@@ -402,3 +402,76 @@ def test_settling_after_the_battle_clears_leftover_text():
     ctx = FakeCtx()
     catch.settle_after_battle(ctx, taps=3, gap=0.1, tail=1.0)
     assert ctx.input.taps == ["B", "B", "B"]
+
+
+# ----------------------------------------------------------------------
+# Clearing the post-throw text chain
+# ----------------------------------------------------------------------
+def test_the_throw_is_followed_by_a_burst_of_b_presses():
+    ctx = FakeCtx()
+    catch.catch_wild(ctx, fast_plan(intro_taps=0, post_throw_taps=25),
+                     TARGET_KEY, party_after(0))
+
+    # 25 after the throw, before the confirm loop starts tapping.
+    assert ctx.input.taps.count("B") >= 25
+
+
+def test_the_b_burst_comes_after_the_ball_not_before():
+    """Pressing B before the ball lands backs out of the bag."""
+    ctx = FakeCtx()
+
+    order: list[str] = []
+    real_tap, real_touch = ctx.input.tap, ctx.input.tap_touch
+    ctx.input.tap = lambda b, hold_s=0.05: (order.append("B"),
+                                            real_tap(b, hold_s))[1]
+    ctx.input.tap_touch = lambda x, y, hold_s=0.08: (
+        order.append(f"touch{len(ctx.input.touches)}"),
+        real_touch(x, y, hold_s))[1]
+
+    catch.catch_wild(ctx, fast_plan(intro_taps=0, post_throw_taps=25),
+                     TARGET_KEY, party_after(0))
+
+    assert order[:3] == ["touch0", "touch1", "touch2"]
+    assert order[3] == "B"
+
+
+def test_the_b_burst_is_configurable():
+    plan = catch.CatchPlan.from_config({"catch_post_throw_taps": 7})
+    assert plan.post_throw_taps == 7
+
+
+def test_the_b_burst_defaults_to_25():
+    assert catch.CatchPlan.from_config({}).post_throw_taps == 25
+
+
+def test_the_b_burst_can_be_switched_off():
+    """Zero means no burst.
+
+    The confirm loop still taps B at least once per attempt -- that is
+    how it walks the party while watching -- so the assertion is about
+    the burst being gone, not about silence.
+    """
+    ctx = FakeCtx()
+    catch.catch_wild(ctx, fast_plan(intro_taps=0, post_throw_taps=0,
+                                    attempts=1, confirm_window=0.0),
+                     TARGET_KEY, party_after(99))
+    assert len(ctx.input.taps) == 1           # the single confirm poll
+
+
+def test_stopping_during_the_b_burst_ends_the_catch():
+    ctx = FakeCtx()
+
+    real = ctx.input.tap
+
+    def stop_after_five(b, hold_s=0.05):
+        real(b, hold_s)
+        if len(ctx.input.taps) >= 5:
+            ctx.request_stop("user")
+
+    ctx.input.tap = stop_after_five
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0, attempts=3),
+                           TARGET_KEY, party_after(99))
+
+    assert not res.caught
+    assert res.attempts == 1                  # did not start a 2nd throw
+    assert len(ctx.input.touches) == 3

@@ -221,7 +221,12 @@ random_encounters:
   enemy_dv_check: paranoid
   flee_settle: 1.2           # pause before the RUN sequence (Gen 2)
   movement: horizontal       # horizontal (Left/Right) | vertical (Up/Down)
-  walk_hold: 0.20            # seconds per step (short = quick back-and-forth)
+  # Seconds per direction press, and the pause between presses.
+  # Short = the player flips direction faster = more grass steps per
+  # second = more encounters. These presses also continue THROUGH the
+  # battle (see below), so shortening them speeds the whole hunt.
+  walk_hold: 0.10
+  walk_gap: 0.05
   # Seconds to wait AFTER detecting a wild before fleeing — lets the
   # battle intro/animation finish so the RUN button is actually
   # touchable. Raise if the flee fires before the menu appears.
@@ -244,6 +249,12 @@ random_encounters:
   # null to auto-position from screen_layout + window size (robust to
   # resizing). Set e.g. [0.78, 0.72] only to pin it manually.
   run_touch: null
+
+  # Movement does NOT stop for a battle. The flee sequence spends its
+  # waits walking, so the player is already moving the instant the
+  # battle releases — that dead time used to be pure loss. Movement
+  # stops the moment a shiny is found, so nothing is nudging the menu
+  # cursor while the catch sequence runs.
 
   # --- What happens when the hunt finds its target ------------------
   #   catch - throw balls at it, then carry on hunting (default)
@@ -272,6 +283,12 @@ random_encounters:
   catch_pocket_settle: 1.2   # item list draw
   catch_throw_settle: 6.0    # throw + shakes + "Gotcha!"
   catch_confirm_window: 12.0 # per attempt, watching the party for it
+  # After the ball is thrown the game runs a long chain of text boxes:
+  # shakes, "Gotcha!", the Pokédex entry, the nickname prompt, "sent
+  # to Box". Hammering B is much faster than waiting each one out, and
+  # B answers "no" to the nickname prompt on the way past.
+  catch_post_throw_taps: 25
+  catch_post_throw_gap: 0.12
 
 # Target / filter is configured in the launcher (Hunt → Target filter).
 # Default is "Shiny only". To override from the CLI: pass --target shiny
