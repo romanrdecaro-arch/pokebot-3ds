@@ -227,13 +227,33 @@ random_encounters:
   # battle (see below), so shortening them speeds the whole hunt.
   walk_hold: 0.10
   walk_gap: 0.05
-  # Seconds to wait AFTER detecting a wild before fleeing — lets the
-  # battle intro/animation finish so the RUN button is actually
-  # touchable. Raise if the flee fires before the menu appears.
-  flee_delay: 5.0
-  # Extra wait after clearing the intro text, before touching RUN —
-  # lets the command menu finish drawing so the touch lands.
-  run_settle: 0.5
+  # --- Getting out of a battle --------------------------------------
+  #
+  # These were tuned against a 100% emulator and cost 12.7 s an
+  # encounter. Azahar runs this hunt around 600%, where the same
+  # animations take roughly a sixth of the time, so most of that was
+  # the bot waiting for something already finished. Total is now
+  # ~3.4 s.
+  #
+  # Cutting them risks the RUN touch landing before the menu is drawn,
+  # which strands the bot in a battle it cannot see — stuck_timeout
+  # below is what makes that recoverable. Raise these (and lower
+  # stuck_timeout) if you see stalls in the log.
+  flee_delay: 1.5        # battle intro, before anything is pressed
+  flee_intro_taps: 4     # B, to clear "a wild X appeared!"
+  flee_intro_gap: 0.15
+  run_settle: 0.3        # command menu draw, before touching RUN
+  flee_got_away: 0.8     # "Got away!" text
+  flee_clear_taps: 3     # B, to clear it
+  flee_clear_gap: 0.25
+  flee_tail: 0.8         # battle fade + overworld slide-back
+  #
+  # Stall watchdog. Running through grass produces an encounter every
+  # few seconds, so a long silence is not bad luck — it almost always
+  # means the RUN touch missed and the bot is stepping into a battle
+  # menu it cannot see, forever. After this many seconds with no new
+  # encounter the flee sequence is thrown again. 0 disables it.
+  stuck_timeout: 60
   # Azahar screen layout — how the two 3DS screens are arranged in
   # the window. The RUN-button position is computed from this + the
   # live window size, so it stays correct at ANY window size.

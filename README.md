@@ -215,6 +215,15 @@ same three touches you would make yourself:
 nickname prompt. (Touching the ball only selects it; the `A` is what
 actually throws it.)
 
+**Fleeing is fast, with a watchdog.** The flee sequence was tuned
+against a 100% emulator and cost 12.7 s per encounter; Azahar runs this
+hunt around 600%, where the same animations take about a sixth of that.
+It is now ~4.8 s. Trimming that far risks the RUN touch landing before
+the menu is drawn, which strands the bot in a battle it cannot see — so
+`stuck_timeout` (default 60 s with no new encounter) re-sends the whole
+flee sequence. Stalls are counted in the log so you can tell whether
+your timings are too tight.
+
 **Movement never stops for a battle.** A wild encounter used to be ~12
 seconds of the bot standing still; those waits are now spent walking,
 so the player is already back in the grass the instant the battle

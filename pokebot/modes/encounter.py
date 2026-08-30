@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
@@ -74,6 +75,66 @@ def _refresh_party(ctx, party_base, party_stride, player_ot):
     empty set when party_base isn't configured."""
     party = get_party(ctx, party_base, party_stride, player_ot)
     return broadcast_party(ctx, party)   # broadcasts only on change
+
+
+@dataclass(frozen=True)
+class FleePlan:
+    """How long to spend getting out of a battle.
+
+    The old numbers were tuned against a 100% emulator and cost 12.7 s
+    an encounter. Azahar runs this hunt around 600%, where every one of
+    those animations is roughly six times shorter, so most of that was
+    the bot waiting for something that had already finished.
+
+    Cutting them risks the RUN touch landing before the menu is drawn,
+    which strands the bot in a battle it cannot see -- so this is only
+    safe paired with ``stuck_timeout`` below, which notices the stall
+    and throws the sequence again.
+    """
+    delay: float = 1.5           # battle intro, before anything is pressed
+    intro_taps: int = 4          # B, to clear "a wild X appeared!"
+    intro_gap: float = 0.15
+    run_settle: float = 0.3      # command menu draw, before touching RUN
+    got_away: float = 0.8        # "Got away!" text
+    clear_taps: int = 3          # B, to clear it
+    clear_gap: float = 0.25
+    tail: float = 0.8            # battle fade + overworld slide-back
+    # No new encounter for this long means something is wrong -- almost
+    # always a RUN touch that missed, leaving the bot walking into a
+    # battle menu forever. Re-run the flee instead of hunting nothing.
+    stuck_timeout: float = 60.0
+
+    @classmethod
+    def from_config(cls, rcfg: dict | None) -> "FleePlan":
+        rcfg = rcfg or {}
+        d = cls()
+
+        def num(key: str, default: float) -> float:
+            try:
+                return float(rcfg.get(key, default))
+            except (TypeError, ValueError):
+                log.warning(f"  {key}={rcfg.get(key)!r} is not a number; "
+                            f"using {default}")
+                return default
+
+        return cls(
+            delay=num("flee_delay", d.delay),
+            intro_taps=max(0, int(num("flee_intro_taps", d.intro_taps))),
+            intro_gap=num("flee_intro_gap", d.intro_gap),
+            run_settle=num("run_settle", d.run_settle),
+            got_away=num("flee_got_away", d.got_away),
+            clear_taps=max(0, int(num("flee_clear_taps", d.clear_taps))),
+            clear_gap=num("flee_clear_gap", d.clear_gap),
+            tail=num("flee_tail", d.tail),
+            stuck_timeout=max(0.0, num("stuck_timeout", d.stuck_timeout)),
+        )
+
+    @property
+    def total(self) -> float:
+        """Scripted seconds per flee, for the startup log line."""
+        return (self.delay + self.intro_taps * self.intro_gap
+                + self.run_settle + self.got_away
+                + self.clear_taps * self.clear_gap + self.tail)
 
 
 class Walker:
@@ -213,7 +274,7 @@ def _use_sweet_scent(ctx, gap: float) -> None:
         ctx._stop_evt.wait(gap)
 
 
-def _flee(ctx, layout, run_local, override, run_settle: float,
+def _flee(ctx, layout, run_local, override, plan: FleePlan,
           walker: "Walker | None" = None) -> None:
     """Clear the appearance text so the command menu is up, wait for
     it to render, touch RUN, then clear the got-away text.
@@ -228,24 +289,24 @@ def _flee(ctx, layout, run_local, override, run_settle: float,
         else:
             ctx._stop_evt.wait(seconds)
 
-    for _ in range(4):
+    for _ in range(plan.intro_taps):
         ctx.input.tap("B", hold_s=0.05)
-        pause(0.35)
-    pause(run_settle)                         # let the menu draw
+        pause(plan.intro_gap)
+    pause(plan.run_settle)                    # let the menu draw
     fx, fy, how = _run_fraction(layout, run_local, override)
     ok = ctx.input.tap_touch(fx, fy, hold_s=0.08)
     log.info(f"  flee: touch RUN @ ({fx:.3f},{fy:.3f}) [{how}] "
-             f"after {run_settle:.1f}s settle "
+             f"after {plan.run_settle:.2f}s settle "
              f"-> {'sent' if ok else 'FAILED (touch unavailable)'}")
-    # "Got away!" text + battle fade-out + return-to-overworld can
-    # take a while, especially after a horde or a fishing battle —
-    # if we fire the next action too early it gets eaten by the
-    # lingering battle UI. Give the transition real room.
-    pause(2.0)                               # wait for "Got away!"
-    for _ in range(3):                       # clear "Got away!" text
+    # "Got away!" text + battle fade-out + return-to-overworld. Short
+    # because the emulator is running well above 100% — a stall here
+    # is caught by the stuck-timeout watchdog rather than by padding
+    # every single encounter against the worst case.
+    pause(plan.got_away)
+    for _ in range(plan.clear_taps):          # clear "Got away!" text
         ctx.input.tap("B", hold_s=0.05)
-        pause(0.6)
-    pause(2.0)                               # post-battle slide-back
+        pause(plan.clear_gap)
+    pause(plan.tail)                          # post-battle slide-back
 
 
 def run(ctx) -> None:
@@ -262,8 +323,7 @@ def run(ctx) -> None:
         "trainer_name", DEFAULT_OT_NAME)
     walk_hold = float(rcfg.get("walk_hold", 0.10))
     walk_gap = float(rcfg.get("walk_gap", 0.05))
-    flee_delay = float(rcfg.get("flee_delay", 5.0))
-    run_settle = float(rcfg.get("run_settle", 1.5))
+    flee_plan = FleePlan.from_config(rcfg)
     idle_action = str(rcfg.get("idle_action", "walk")).lower()
     sweet_scent_gap = float(rcfg.get("sweet_scent_gap", 1.0))
     sweet_scent_settle = float(rcfg.get("sweet_scent_settle", 4.0))
@@ -288,8 +348,9 @@ def run(ctx) -> None:
                 if idle_action == "walk"
                 else f", Sweet Scent gap={sweet_scent_gap:.1f}s, "
                      f"settle={sweet_scent_settle:.1f}s")
-             + f", flee_delay {flee_delay:.1f}s, "
-             + f"run_settle {run_settle:.1f}s)")
+             + f", flee ~{flee_plan.total:.1f}s/encounter"
+             + (f", stall watchdog {flee_plan.stuck_timeout:.0f}s)"
+                if flee_plan.stuck_timeout else ", no stall watchdog)"))
     log.info(f"  foe window=[{foe_base:#010x},"
              f"{foe_base + foe_len:#010x})  layout={screen_layout} "
              f"run_local={run_local}"
@@ -330,6 +391,8 @@ def run(ctx) -> None:
     # impossible to repeat.
     walker = Walker(ctx, _BTN[movement], walk_hold, walk_gap)
     encounters = 0
+    stalls = 0
+    last_progress = time.monotonic()
 
     while not ctx.should_stop():
         # Re-read the party every loop (cheap once the window is
@@ -408,9 +471,10 @@ def run(ctx) -> None:
                 # menu (and the RUN button) is actually on screen —
                 # walking through it, so the player is already moving
                 # when the battle lets go.
-                walker.wait(flee_delay)
+                walker.wait(flee_plan.delay)
                 _flee(ctx, screen_layout, run_local, run_override,
-                      run_settle, walker)
+                      flee_plan, walker)
+            last_progress = time.monotonic()
             continue                          # don't walk this iter
 
         # No new wild → overworld / stale lingering → take the
@@ -442,8 +506,32 @@ def run(ctx) -> None:
             # before the next iteration's scan or recast.
             ctx._stop_evt.wait(1.0)
             continue
+        # Watchdog. Walking produces an encounter every few seconds, so
+        # a long silence does not mean bad luck — it almost always
+        # means the RUN touch missed and the bot is stepping into a
+        # battle menu it cannot see, forever. Throw the flee sequence
+        # again rather than hunting nothing.
+        #
+        # Safe to fire in the overworld too: it is B presses either
+        # side of one touch, and the trailing B presses close anything
+        # the touch happened to open.
+        if (flee_plan.stuck_timeout
+                and time.monotonic() - last_progress
+                > flee_plan.stuck_timeout):
+            stalls += 1
+            log.warning(
+                f"  no encounter for {flee_plan.stuck_timeout:.0f}s "
+                f"(stall #{stalls}) — re-sending the RUN sequence in "
+                f"case a battle is still open")
+            if not dry:
+                _flee(ctx, screen_layout, run_local, run_override,
+                      flee_plan, walker)
+            last_progress = time.monotonic()
+            continue
+
         # Hold B while moving so the player RUNS (covers grass faster
         # → more encounters per minute).
         walker.one_step()
 
-    log.info(f"Shiny hunt stopped after {encounters} encounter(s).")
+    log.info(f"Shiny hunt stopped after {encounters} encounter(s)"
+             + (f", {stalls} stall(s) recovered." if stalls else "."))

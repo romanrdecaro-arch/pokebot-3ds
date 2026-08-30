@@ -21,6 +21,13 @@ sys.path.insert(0, str(REPO))
 
 from pokebot.modes import encounter  # noqa: E402
 
+# Timings small enough that the tests run instantly; the shipped
+# values are asserted separately below.
+FAST = encounter.FleePlan(delay=0.0, intro_gap=0.0, run_settle=0.0,
+                          got_away=0.0, clear_gap=0.0, tail=0.0)
+SLOW = encounter.FleePlan(delay=1.0, intro_gap=1.0, run_settle=1.0,
+                          got_away=1.0, clear_gap=1.0, tail=1.0)
+
 
 class FakeInput:
     def __init__(self):
@@ -133,9 +140,14 @@ def test_idle_waits_without_moving():
 # ----------------------------------------------------------------------
 def test_fleeing_keeps_walking_through_its_waits():
     w, ctx = make_walker()
+    # Non-zero waits: FAST's zeroes mean there is nothing to walk
+    # through, which would make this pass for the wrong reason.
+    brief = encounter.FleePlan(delay=0.0, intro_gap=0.01,
+                               run_settle=0.01, got_away=0.01,
+                               clear_gap=0.01, tail=0.01)
 
     encounter._flee(ctx, "side_by_side", [0.5, 0.86], [0.7, 0.7],
-                    run_settle=0.02, walker=w)
+                    brief, walker=w)
 
     assert ctx.input.touches, "RUN was never touched"
     assert ctx.input.moves, "the flee stood still the whole time"
@@ -146,7 +158,7 @@ def test_fleeing_without_a_walker_still_works():
     ctx = FakeCtx()
 
     encounter._flee(ctx, "side_by_side", [0.5, 0.86], [0.7, 0.7],
-                    run_settle=0.02)
+                    FAST)
 
     assert ctx.input.touches
     assert ctx.input.moves == []
@@ -155,14 +167,14 @@ def test_fleeing_without_a_walker_still_works():
 def test_fleeing_still_touches_run_exactly_once():
     w, ctx = make_walker()
     encounter._flee(ctx, "side_by_side", [0.5, 0.86], [0.7, 0.7],
-                    run_settle=0.02, walker=w)
+                    FAST, walker=w)
     assert len(ctx.input.touches) == 1
 
 
 def test_fleeing_still_clears_the_text_boxes():
     w, ctx = make_walker()
     encounter._flee(ctx, "side_by_side", [0.5, 0.86], [0.7, 0.7],
-                    run_settle=0.02, walker=w)
+                    FAST, walker=w)
     assert ctx.input.taps.count("B") >= 7      # 4 before, 3 after
 
 
@@ -172,7 +184,7 @@ def test_a_stop_during_the_flee_does_not_keep_walking():
     ctx.request_stop("stop")
 
     encounter._flee(ctx, "side_by_side", [0.5, 0.86], [0.7, 0.7],
-                    run_settle=1.0, walker=w)
+                    SLOW, walker=w)
 
     assert ctx.input.moves == []
 
@@ -239,3 +251,76 @@ def test_walker_timings_are_sanitised(hold, gap, expect_hold):
     w = encounter.Walker(ctx, ("DpadLeft", "DpadRight"), hold, gap)
     assert w.hold_s == expect_hold
     assert w.gap >= 0.0
+
+
+# ----------------------------------------------------------------------
+# Flee timings
+# ----------------------------------------------------------------------
+def test_the_flee_is_much_faster_than_it_was():
+    """It cost 12.7 s an encounter against a 100% emulator."""
+    import yaml
+
+    cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    plan = encounter.FleePlan.from_config(cfg["random_encounters"])
+    assert plan.total < 6.0, f"flee still costs {plan.total:.1f}s"
+
+
+def test_the_flee_total_adds_up():
+    plan = encounter.FleePlan(delay=1.0, intro_taps=2, intro_gap=0.5,
+                              run_settle=0.5, got_away=1.0,
+                              clear_taps=2, clear_gap=0.5, tail=1.0)
+    assert plan.total == pytest.approx(1.0 + 1.0 + 0.5 + 1.0 + 1.0 + 1.0)
+
+
+def test_flee_timings_come_from_config():
+    plan = encounter.FleePlan.from_config(
+        {"flee_delay": 0.25, "run_settle": 0.1, "flee_tail": 0.2})
+    assert plan.delay == 0.25
+    assert plan.run_settle == 0.1
+    assert plan.tail == 0.2
+
+
+def test_a_junk_flee_timing_falls_back_to_the_default():
+    plan = encounter.FleePlan.from_config({"flee_delay": "quickly"})
+    assert plan.delay == encounter.FleePlan().delay
+
+
+def test_tap_counts_cannot_go_negative():
+    plan = encounter.FleePlan.from_config({"flee_intro_taps": -5})
+    assert plan.intro_taps == 0
+
+
+def test_the_stall_watchdog_is_on_by_default():
+    import yaml
+
+    cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    plan = encounter.FleePlan.from_config(cfg["random_encounters"])
+    assert plan.stuck_timeout == 60.0
+
+
+def test_the_stall_watchdog_can_be_disabled():
+    assert encounter.FleePlan.from_config({"stuck_timeout": 0}).stuck_timeout == 0
+
+
+def test_a_negative_stuck_timeout_is_clamped_not_inverted():
+    """A negative would otherwise fire the watchdog on every step."""
+    assert encounter.FleePlan.from_config(
+        {"stuck_timeout": -30}).stuck_timeout == 0
+
+
+def test_the_watchdog_resend_is_the_whole_flee_sequence():
+    """The re-send must be safe to fire in the overworld too.
+
+    It is B presses either side of one touch, so whatever the touch
+    happens to open in the overworld gets closed again straight after.
+    """
+    ctx = FakeCtx()
+    w, _ = make_walker(ctx)
+
+    encounter._flee(ctx, "side_by_side", [0.5, 0.86], [0.7, 0.7],
+                    FAST, walker=w)
+
+    taps = ctx.input.taps
+    assert taps[:4] == ["B"] * 4        # before the touch
+    assert taps[-3:] == ["B"] * 3       # and after it
+    assert len(ctx.input.touches) == 1
