@@ -28,6 +28,7 @@ import logging
 
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
+from . import catch
 from .observe import (scan_nonparty, get_party,
                        broadcast_party, _report_encounter,
                        _level_from_exp)
@@ -38,7 +39,8 @@ _BTN = {"horizontal": ("DpadLeft", "DpadRight"),
         "vertical":   ("DpadUp", "DpadDown")}
 
 
-def _alert(ctx, pkm, addr: int, count: int) -> None:
+def _alert(ctx, pkm, addr: int, count: int,
+           will_catch: bool = False) -> None:
     bar = "*" * 30
     for line in (
         bar,
@@ -47,7 +49,9 @@ def _alert(ctx, pkm, addr: int, count: int) -> None:
         f"~Lv{_level_from_exp(pkm.exp)} {pkm.gender}  "
         f"PID={pkm.pid:08X}  nature={pkm.nature}",
         f"  IVs {pkm.ivs}  @ {addr:#010x}",
-        "  Bot STOPPED — battle left on screen. Catch it!",
+        ("  Catching it now — do not touch the controls."
+         if will_catch
+         else "  Bot STOPPED — battle left on screen. Catch it!"),
         bar,
     ):
         log.info(line)
@@ -208,6 +212,14 @@ def run(ctx) -> None:
                                  "side_by_side")).lower()
     run_local = rcfg.get("run_local") or [0.5, 0.86]
     run_override = rcfg.get("run_touch")     # None ⇒ auto-geometry
+    # What to do when the hunt finds what it was hunting for.
+    on_target = str(rcfg.get("on_target", "catch")).lower()
+    if on_target not in ("catch", "stop"):
+        log.warning(f"  on_target={on_target!r} is not 'catch' or 'stop'; "
+                    f"defaulting to catch")
+        on_target = "catch"
+    catch_plan = catch.CatchPlan.from_config(rcfg)
+    caught = 0
 
     ensure_targets_dir()                    # targets/ shows up now
     log.info(f"Mode: shiny hunt — random encounters "
@@ -295,8 +307,40 @@ def run(ctx) -> None:
                 seen = {p.encryption_key for _, p in cands}
             if target_hit is not None:
                 addr, p = target_hit
-                _alert(ctx, p, addr, encounters)
-                ctx.request_stop("shiny / target found")
+                will_catch = (on_target == "catch") and not dry
+                _alert(ctx, p, addr, encounters, will_catch)
+                if not will_catch:
+                    ctx.request_stop("shiny / target found")
+                    return
+                result = catch.catch_wild(
+                    ctx, catch_plan, p.encryption_key,
+                    lambda: _refresh_party(ctx, party_base, party_stride,
+                                           player_ot) or set())
+                if result.caught:
+                    caught += 1
+                    log.info(f"  CAUGHT #{caught}: {result.detail}. "
+                             f"Back to hunting.")
+                    ctx.dashboard.broadcast(
+                        "target_caught", species=p.species,
+                        shiny=bool(p.shiny), count=encounters,
+                        caught=caught)
+                    catch.settle_after_battle(ctx)
+                    party_keys = _refresh_party(
+                        ctx, party_base, party_stride,
+                        player_ot) or party_keys
+                    continue
+                # Unconfirmed. Stopping is the safe end: the wild may
+                # still be on screen, and walking away from a shiny to
+                # resume hunting is not a recoverable mistake.
+                log.error(f"  CATCH FAILED: {result.detail}")
+                log.error("  Bot STOPPED with the battle still open — "
+                          "finish it by hand.")
+                ctx.dashboard.broadcast(
+                    "target_hit", count=encounters,
+                    reason=f"catch failed — {result.detail}",
+                    species=p.species, shiny=bool(p.shiny),
+                    nature=p.nature, ivs=p.ivs)
+                ctx.request_stop("catch failed")
                 return
             if not dry:
                 # Wait out the battle intro/animation so the command

@@ -245,6 +245,34 @@ random_encounters:
   # resizing). Set e.g. [0.78, 0.72] only to pin it manually.
   run_touch: null
 
+  # --- What happens when the hunt finds its target ------------------
+  #   catch - throw balls at it, then carry on hunting (default)
+  #   stop  - halt with the battle open and let you catch it by hand
+  on_target: catch
+  # The catch is BAG → POKÉ BALLS → first slot in the pocket, i.e.
+  # whatever ball sits top-left. Put the ball you want thrown there;
+  # a Master Ball catches on the first attempt every time.
+  #
+  # Positions are fractions of the 3DS TOUCH screen, same convention
+  # as run_local, so they stay correct at any window size. Measured
+  # from X/Y's wild-battle UI — only nudge these if a touch misses.
+  bag_local:   [0.135, 0.86]   # BAG, bottom-left of the command menu
+  balls_local: [0.743, 0.205]  # POKÉ BALLS, top-right bag pocket
+  ball_local:  [0.245, 0.117]  # first item row in the pocket
+  # Hard WINDOW-fraction overrides, as run_touch is for RUN. Normally
+  # unset: bag_touch / balls_touch / ball_touch.
+  #
+  # A ball that isn't a Master Ball can break out, which hands the
+  # turn back — so the sequence repeats until the catch shows up in
+  # your party, or these attempts run out. The bot STOPS rather than
+  # walking away from an unconfirmed shiny.
+  catch_attempts: 5
+  catch_menu_settle: 1.5     # command menu draw, before touching BAG
+  catch_bag_settle: 1.2      # pocket list draw
+  catch_pocket_settle: 1.2   # item list draw
+  catch_throw_settle: 6.0    # throw + shakes + "Gotcha!"
+  catch_confirm_window: 12.0 # per attempt, watching the party for it
+
 # Target / filter is configured in the launcher (Hunt → Target filter).
 # Default is "Shiny only". To override from the CLI: pass --target shiny
 # (or any|perfect5|perfect6|shiny+perfect4) to run.py.

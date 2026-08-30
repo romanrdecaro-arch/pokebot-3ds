@@ -94,6 +94,12 @@ def _format_target_hit(f: dict) -> str:
             f"{f.get('reason', '?')}")
 
 
+def _format_caught(f: dict) -> str:
+    star = " (shiny)" if f.get("shiny") else ""
+    return (f"  *** CAUGHT *** #{f.get('species', '?')}{star} on "
+            f"enc#{f.get('count', '?')} - {f.get('caught', '?')} this run")
+
+
 def _format_offset_scan(f: dict) -> str | None:
     target = f.get("target", "party_base")
     state = f.get("state", "?")
@@ -122,6 +128,7 @@ def _format_read_failure(f: dict) -> str:
 _FORMATTERS = {
     "encounter":    _format_encounter,
     "target_hit":   _format_target_hit,
+    "target_caught": _format_caught,
     "offset_scan":  _format_offset_scan,
     "candidate":    _format_candidate,
     "read_failure": _format_read_failure,

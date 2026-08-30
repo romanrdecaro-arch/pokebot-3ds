@@ -2545,6 +2545,12 @@ class _App(tk.Tk):
             self._log(f"  → encounter: species #{sp}", "muted")
         elif kind == "target_hit":
             self._log(f"  ★ TARGET HIT — {evt.get('reason', '?')}", "good")
+        elif kind == "target_caught":
+            sp = evt.get("species", "?")
+            star = " ★" if evt.get("shiny") else ""
+            self._log(f"  ● CAUGHT species #{sp}{star} "
+                      f"({evt.get('caught', '?')} this run) — hunt continues",
+                      "good")
         elif kind == "read_failure":
             self._log(f"  ! read failure: {evt.get('reason', '?')}", "warn")
         elif kind == "offset_scan":

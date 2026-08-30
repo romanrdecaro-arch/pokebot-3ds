@@ -204,6 +204,30 @@ Fennekin / Froakie).
 | `soft_reset` | Starters / legendaries / gifts — sequence, evaluate, L+R+Start     |
 | `livehex`    | Bridges Azahar to PKHeX for live box / trainer editing             |
 
+## Auto-catching
+
+In `encounter` / `horde` mode the bot no longer just stops when it
+finds a shiny — it catches it and keeps hunting. The sequence is the
+same three touches you would make yourself:
+
+**BAG → POKÉ BALLS → first slot in the pocket.**
+
+Put the ball you want thrown in that first slot. A Master Ball catches
+on the first attempt every time; anything else can break out, so the
+sequence repeats (up to `catch_attempts`, default 5) until the catch is
+**confirmed in your party** — read from game memory, not assumed from
+timing. `B` is tapped throughout to clear "Gotcha!", the Pokédex entry
+and the nickname prompt.
+
+If the catch cannot be confirmed, the bot **stops with the battle still
+open** rather than walking away from a shiny. It also stops immediately
+if touch input isn't reaching Azahar, instead of throwing five balls at
+a window that receives nothing.
+
+Set `random_encounters.on_target: stop` to go back to the old behaviour.
+Touch points are fractions of the 3DS touch screen (`bag_local`,
+`balls_local`, `ball_local`), so they stay correct at any window size.
+
 ## Targets
 
 Build a target from any combination of these rules in `config.yaml`:
