@@ -281,14 +281,19 @@ random_encounters:
   #   stop  - halt with the battle open and let you catch it by hand
   on_target: catch
   #
-  # What to do when a throw cannot be confirmed.
-  #   stop   - leave the battle on screen so a genuinely failed catch
-  #            is recoverable by hand (default; losing a shiny is not).
-  #   resume - keep hunting regardless.
-  # A FULL PARTY overrides this to resume either way: the catch goes to
-  # a PC box where no party read can see it, so calling that a failure
-  # and stopping the hunt would be wrong.
-  on_catch_fail: stop
+  # What to do when a throw cannot be confirmed from the party.
+  #   resume - keep hunting regardless (default).
+  #   stop   - leave the battle on screen to finish by hand.
+  #
+  # An unconfirmed catch is usually a catch that WORKED and went
+  # somewhere the party scan cannot see: a PC box when the party is
+  # full, or back under an encryption key that read differently. The
+  # .pk6 is exported before the ball is ever thrown, so the record
+  # survives either way and stopping the hunt buys nothing.
+  #
+  # On resume the bot runs the flee sequence first, so it leaves the
+  # battle whether or not the ball landed.
+  on_catch_fail: resume
   # The catch is BAG → POKÉ BALLS → first slot in the pocket, i.e.
   # whatever ball sits top-left. Put the ball you want thrown there;
   # a Master Ball catches on the first attempt every time.

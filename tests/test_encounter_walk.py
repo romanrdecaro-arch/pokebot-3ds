@@ -254,6 +254,23 @@ def test_walker_timings_are_sanitised(hold, gap, expect_hold):
 
 
 # ----------------------------------------------------------------------
+# A catch must not end the hunt
+# ----------------------------------------------------------------------
+def test_an_unconfirmed_catch_resumes_by_default():
+    """A caught shiny that lands in a PC box used to stop the hunt."""
+    import yaml
+
+    cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["random_encounters"]["on_catch_fail"] == "resume"
+
+
+def test_stopping_on_an_unconfirmed_catch_is_still_available():
+    src = (REPO / "pokebot" / "modes" / "encounter.py").read_text(
+        encoding="utf-8")
+    assert '"stop", "resume"' in src
+
+
+# ----------------------------------------------------------------------
 # Flee timings
 # ----------------------------------------------------------------------
 def test_the_flee_is_much_faster_than_it_was():

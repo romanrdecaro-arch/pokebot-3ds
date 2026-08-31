@@ -224,6 +224,14 @@ the menu is drawn, which strands the bot in a battle it cannot see — so
 flee sequence. Stalls are counted in the log so you can tell whether
 your timings are too tight.
 
+**A catch never ends the hunt.** Confirmation looks for the wild's
+encryption key in your party *or* for the party simply growing. When
+neither is visible — a full party sends the catch to a PC box, where no
+party read can see it — the bot flees and keeps hunting rather than
+halting on a catch that probably worked. The `.pk6` is exported before
+the ball is thrown, so the record survives regardless. Set
+`on_catch_fail: stop` to leave the battle on screen instead.
+
 **Movement never stops for a battle.** A wild encounter used to be ~12
 seconds of the bot standing still; those waits are now spent walking,
 so the player is already back in the grass the instant the battle

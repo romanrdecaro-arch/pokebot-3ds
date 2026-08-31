@@ -333,15 +333,19 @@ def run(ctx) -> None:
     run_local = rcfg.get("run_local") or [0.5, 0.86]
     run_override = rcfg.get("run_touch")     # None ⇒ auto-geometry
     # What to do when the hunt finds what it was hunting for.
-    # What to do when a throw cannot be confirmed. "stop" leaves the
-    # battle on screen so a genuinely-failed catch is recoverable by
-    # hand; "resume" keeps hunting. A full party overrides this to
-    # resume either way — see the catch branch below.
-    on_catch_fail = str(rcfg.get("on_catch_fail", "stop")).lower()
+    # What to do when a throw cannot be confirmed from the party.
+    #
+    # "resume" by default: an unconfirmed catch is usually a catch that
+    # worked and went somewhere the party scan cannot see — a PC box,
+    # or under a key that read back differently. Halting the hunt on
+    # that is the more common mistake, and the .pk6 is exported before
+    # the throw either way, so nothing is lost by carrying on. "stop"
+    # leaves the battle on screen instead.
+    on_catch_fail = str(rcfg.get("on_catch_fail", "resume")).lower()
     if on_catch_fail not in ("stop", "resume"):
         log.warning(f"  on_catch_fail={on_catch_fail!r} is not 'stop' or "
-                    f"'resume'; using 'stop'")
-        on_catch_fail = "stop"
+                    f"'resume'; using 'resume'")
+        on_catch_fail = "resume"
     on_target = str(rcfg.get("on_target", "catch")).lower()
     if on_target not in ("catch", "stop"):
         log.warning(f"  on_target={on_target!r} is not 'catch' or 'stop'; "
@@ -486,9 +490,15 @@ def run(ctx) -> None:
                     return
                 log.warning(
                     "  Resuming the hunt. Its .pk6 is already saved in "
-                    "targets/, and the encounter is in the log, so "
-                    "check the game before the next one.")
-                catch.settle_after_battle(ctx)
+                    "targets/ and the encounter is in the log — check "
+                    "your party and PC box when you get a moment.")
+                # Flee rather than just settling. If the ball landed,
+                # the battle is already over and this is B presses
+                # around a harmless touch; if it did not, this is what
+                # gets us out of the battle instead of walking into a
+                # menu until the stall watchdog notices.
+                _flee(ctx, screen_layout, run_local, run_override,
+                      flee_plan, walker)
                 party_keys = _refresh_party(
                     ctx, party_base, party_stride,
                     player_ot) or party_keys
