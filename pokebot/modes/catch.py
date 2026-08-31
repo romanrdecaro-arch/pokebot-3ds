@@ -133,6 +133,10 @@ class CatchResult:
     attempts: int = 0
     touches_sent: int = 0
     touches_failed: int = 0
+    # The party was already full, so the catch went to a PC box and no
+    # party read could ever have confirmed it. Distinguishes "probably
+    # worked, unverifiable" from "genuinely did not work".
+    party_full: bool = False
 
     @property
     def ok(self) -> bool:
@@ -220,6 +224,25 @@ def catch_wild(ctx, plan: CatchPlan, target_key: int,
     log.info(f"  CATCHING: BAG -> POKE BALLS -> slot 1 "
              f"(up to {plan.attempts} attempt(s))")
 
+    # Snapshot the party BEFORE the throw, so "the party grew" is a
+    # usable second signal alongside the encryption key.
+    try:
+        before = party_keys_fn() or set()
+    except Exception as exc:
+        log.debug(f"  catch: pre-throw party read failed: {exc}")
+        before = set()
+
+    # A full party sends the catch straight to a PC box, where neither
+    # signal can ever see it: the hunt would stop on a catch that
+    # actually worked. Say so up front rather than after the fact.
+    party_full = len(before) >= PARTY_SIZE
+    if party_full:
+        log.warning(
+            f"  catch: the party is full ({len(before)}), so a caught "
+            f"Pokemon goes to a PC box where this cannot verify it. "
+            f"The catch will be reported unconfirmed even if it works "
+            f"— free a party slot to get proper confirmation.")
+
     for attempt in range(1, plan.attempts + 1):
         if ctx.should_stop():
             return CatchResult(False, "stopped before the throw",
@@ -270,7 +293,7 @@ def catch_wild(ctx, plan: CatchPlan, target_key: int,
                 return CatchResult(False, "stopped clearing the text",
                                    attempt, t.sent, t.failed)
 
-        if _confirm(ctx, plan, target_key, party_keys_fn):
+        if _confirm(ctx, plan, target_key, party_keys_fn, before):
             log.info(f"  CAUGHT on attempt {attempt} — it is in the party.")
             return CatchResult(True, f"caught on attempt {attempt}",
                                attempt, t.sent, t.failed)
@@ -287,19 +310,45 @@ def catch_wild(ctx, plan: CatchPlan, target_key: int,
         log.warning(f"  catch attempt {attempt} not confirmed; "
                     f"{'retrying' if attempt < plan.attempts else 'giving up'}")
 
-    return CatchResult(False, f"not confirmed after {plan.attempts} attempt(s)",
-                       plan.attempts, t.sent, t.failed)
+    return CatchResult(
+        False,
+        (f"thrown {plan.attempts}x but the party is full, so it cannot "
+         f"be verified from here — check your PC box"
+         if party_full
+         else f"not confirmed after {plan.attempts} attempt(s)"),
+        plan.attempts, t.sent, t.failed, party_full=party_full)
+
+
+PARTY_SIZE = 6
 
 
 def _confirm(ctx, plan: CatchPlan, target_key: int,
-             party_keys_fn: Callable[[], set]) -> bool:
-    """Tap through the post-catch text, watching for it in the party."""
+             party_keys_fn: Callable[[], set],
+             before: set | None = None) -> bool:
+    """Tap through the post-catch text, watching for it in the party.
+
+    Two signals, either of which is proof:
+
+      * the wild's encryption key turns up in the party -- definitive
+      * the party simply got bigger -- it can only have grown because
+        something new joined it, and the only thing joining right now
+        is the mon we just threw a ball at
+
+    The second exists because the first quietly fails whenever the key
+    read back differs from the one seen in the wild slot, which turned
+    a successful catch into "CATCH FAILED" and stopped the hunt.
+    """
+    before = before if before is not None else set()
     deadline = max(1, int(plan.confirm_window / max(plan.confirm_gap, 0.05)))
     for _ in range(deadline):
         if ctx.should_stop():
             return False
         try:
-            if target_key in (party_keys_fn() or set()):
+            keys = party_keys_fn() or set()
+            if target_key in keys:
+                return True
+            if len(keys) > len(before):
+                log.info("  catch: the party grew — treating that as caught")
                 return True
         except Exception as exc:
             log.debug(f"  catch: party re-read failed: {exc}")

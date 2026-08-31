@@ -280,6 +280,15 @@ random_encounters:
   #   catch - throw balls at it, then carry on hunting (default)
   #   stop  - halt with the battle open and let you catch it by hand
   on_target: catch
+  #
+  # What to do when a throw cannot be confirmed.
+  #   stop   - leave the battle on screen so a genuinely failed catch
+  #            is recoverable by hand (default; losing a shiny is not).
+  #   resume - keep hunting regardless.
+  # A FULL PARTY overrides this to resume either way: the catch goes to
+  # a PC box where no party read can see it, so calling that a failure
+  # and stopping the hunt would be wrong.
+  on_catch_fail: stop
   # The catch is BAG → POKÉ BALLS → first slot in the pocket, i.e.
   # whatever ball sits top-left. Put the ball you want thrown there;
   # a Master Ball catches on the first attempt every time.

@@ -416,6 +416,88 @@ def test_the_throw_is_followed_by_a_burst_of_b_presses():
     assert ctx.input.taps.count("B") >= 25
 
 
+# ----------------------------------------------------------------------
+# Confirming the catch
+# ----------------------------------------------------------------------
+def test_a_growing_party_confirms_the_catch():
+    """The key read back need not match the one seen in the wild slot.
+
+    When it doesn't, the key check alone reported CATCH FAILED on a
+    catch that worked, and the hunt stopped.
+    """
+    ctx = FakeCtx()
+    calls = {"n": 0}
+
+    def party():
+        calls["n"] += 1
+        # Two before the throw, three once it lands -- none of them the
+        # target's key.
+        return {1, 2} if calls["n"] <= 1 else {1, 2, 3}
+
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0), TARGET_KEY, party)
+
+    assert res.caught, res.detail
+
+
+def test_a_static_party_is_still_not_a_catch():
+    ctx = FakeCtx()
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0, attempts=1),
+                           TARGET_KEY, lambda: {1, 2})
+    assert not res.caught
+
+
+def test_a_shrinking_party_is_not_a_catch():
+    """Guard the comparison direction."""
+    ctx = FakeCtx()
+    calls = {"n": 0}
+
+    def party():
+        calls["n"] += 1
+        return {1, 2, 3} if calls["n"] <= 1 else {1, 2}
+
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0, attempts=1),
+                           TARGET_KEY, party)
+    assert not res.caught
+
+
+def test_the_key_still_confirms_the_catch():
+    ctx = FakeCtx()
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0),
+                           TARGET_KEY, party_after(0))
+    assert res.caught
+
+
+def test_a_full_party_is_flagged_rather_than_called_a_failure():
+    """Six in the party means the catch goes to a box, unverifiable."""
+    ctx = FakeCtx()
+    full = {10, 11, 12, 13, 14, 15}
+
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0, attempts=1),
+                           TARGET_KEY, lambda: full)
+
+    assert not res.caught
+    assert res.party_full
+    assert "PC box" in res.detail or "box" in res.detail
+
+
+def test_a_non_full_party_is_not_flagged_as_full():
+    ctx = FakeCtx()
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0, attempts=1),
+                           TARGET_KEY, lambda: {1, 2})
+    assert not res.party_full
+
+
+def test_a_party_read_that_explodes_does_not_crash_the_catch():
+    ctx = FakeCtx()
+
+    def boom():
+        raise RuntimeError("rpc died")
+
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0, attempts=1),
+                           TARGET_KEY, boom)
+    assert not res.caught       # reported, not raised
+
+
 def test_the_ball_is_confirmed_with_a_so_it_is_actually_thrown():
     """Touching the ball only selects it; A is what throws it."""
     ctx = FakeCtx()

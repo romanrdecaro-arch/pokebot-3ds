@@ -333,6 +333,15 @@ def run(ctx) -> None:
     run_local = rcfg.get("run_local") or [0.5, 0.86]
     run_override = rcfg.get("run_touch")     # None ⇒ auto-geometry
     # What to do when the hunt finds what it was hunting for.
+    # What to do when a throw cannot be confirmed. "stop" leaves the
+    # battle on screen so a genuinely-failed catch is recoverable by
+    # hand; "resume" keeps hunting. A full party overrides this to
+    # resume either way — see the catch branch below.
+    on_catch_fail = str(rcfg.get("on_catch_fail", "stop")).lower()
+    if on_catch_fail not in ("stop", "resume"):
+        log.warning(f"  on_catch_fail={on_catch_fail!r} is not 'stop' or "
+                    f"'resume'; using 'stop'")
+        on_catch_fail = "stop"
     on_target = str(rcfg.get("on_target", "catch")).lower()
     if on_target not in ("catch", "stop"):
         log.warning(f"  on_target={on_target!r} is not 'catch' or 'stop'; "
@@ -453,19 +462,38 @@ def run(ctx) -> None:
                         ctx, party_base, party_stride,
                         player_ot) or party_keys
                     continue
-                # Unconfirmed. Stopping is the safe end: the wild may
-                # still be on screen, and walking away from a shiny to
-                # resume hunting is not a recoverable mistake.
-                log.error(f"  CATCH FAILED: {result.detail}")
-                log.error("  Bot STOPPED with the battle still open — "
-                          "finish it by hand.")
+                # Unconfirmed. Two very different situations wear this
+                # same label, so they get different endings.
+                #
+                # A full party sends the catch to a PC box, where no
+                # party read can ever see it — the throw very likely
+                # worked and stopping the hunt would be wrong. Anything
+                # else means the ball may genuinely have failed, and
+                # walking away from a shiny is not recoverable.
+                log.error(f"  CATCH UNCONFIRMED: {result.detail}")
+                resume = (on_catch_fail == "resume") or result.party_full
                 ctx.dashboard.broadcast(
                     "target_hit", count=encounters,
-                    reason=f"catch failed — {result.detail}",
+                    reason=f"catch unconfirmed — {result.detail}",
                     species=p.species, shiny=bool(p.shiny),
                     nature=p.nature, ivs=p.ivs)
-                ctx.request_stop("catch failed")
-                return
+                if not resume:
+                    log.error("  Bot STOPPED with the battle still open "
+                              "— finish it by hand. Set "
+                              "on_catch_fail: resume to keep hunting "
+                              "instead.")
+                    ctx.request_stop("catch failed")
+                    return
+                log.warning(
+                    "  Resuming the hunt. Its .pk6 is already saved in "
+                    "targets/, and the encounter is in the log, so "
+                    "check the game before the next one.")
+                catch.settle_after_battle(ctx)
+                party_keys = _refresh_party(
+                    ctx, party_base, party_stride,
+                    player_ot) or party_keys
+                last_progress = time.monotonic()
+                continue
             if not dry:
                 # Wait out the battle intro/animation so the command
                 # menu (and the RUN button) is actually on screen —
