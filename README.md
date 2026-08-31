@@ -150,7 +150,10 @@ overwritten; commit or discard them and update again.
 - **Target system** — filter by shininess, IVs, nature, gender,
   species, or ability; combine rules with AND/OR
 - **PKHeX-compatible export** — every shiny / target hit is saved as
-  a `.pk6` file in `targets/`, ready to drop straight into PKHeX
+  a `.pk6` file in `targets/`, ready to drop straight into PKHeX.
+  A caught wild is re-exported *after* capture: a Pokémon in the foe
+  slot has no OT, ball, version or met data until the game writes them
+  at capture, so a pre-capture dump is one PKHeX rejects
 - **GUI launcher** ([launcher.py](launcher.py)) — auto-installs deps,
   live-detects Azahar + your loaded game, animated party + Recently
   Seen tab, persistent phase / total / best-SV / best-IV stats

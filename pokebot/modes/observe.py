@@ -433,7 +433,16 @@ def _desc(pkm, addr: int) -> str:
             f"TID={pkm.ot_tid} SID={pkm.ot_sid}")
 
 
-def _report_encounter(ctx, pkm, addr: int, count: int, via: str) -> None:
+def _report_encounter(ctx, pkm, addr: int, count: int, via: str):
+    """Log/broadcast an encounter, saving a .pk6 for a hit.
+
+    Returns the saved path (or None). For a WILD hit that path is the
+    pre-capture record, which PKHeX will reject — a wild Pokémon has
+    no OT, ball, version or met data until it is caught. Callers that
+    go on to catch it should re-export with
+    ``pk6_export.save_caught_pk6`` and pass this path as
+    ``supersedes``.
+    """
     log.info(f"WILD ({via}) {_desc(pkm, addr)} "
              f"PSV={pkm.psv} TSV={pkm.tsv}"
              f"{'  <<< SHINY >>>' if pkm.shiny else ''}")
@@ -443,16 +452,18 @@ def _report_encounter(ctx, pkm, addr: int, count: int, via: str) -> None:
         "encounter", source="wild", address=f"{addr:#010x}",
         count=count, **payload)
     is_target_hit = bool(ctx.target and ctx.target.matches(pkm))
+    saved = None
     if pkm.shiny or is_target_hit:
         from ..pk6_export import save_target_pk6
-        save_target_pk6(ctx, addr, pkm,
-                        "shiny" if pkm.shiny else "wild")
+        saved = save_target_pk6(ctx, addr, pkm,
+                                "shiny" if pkm.shiny else "wild")
     if is_target_hit:
         log.info(f"*** TARGET HIT *** {ctx.target.describe(pkm)}")
         ctx.dashboard.broadcast(
             "target_hit", count=count,
             reason=ctx.target.describe(pkm), species=pkm.species,
             shiny=pkm.shiny, nature=pkm.nature, ivs=pkm.ivs)
+    return saved
 
 
 # ---------------------------------------------------------------------------

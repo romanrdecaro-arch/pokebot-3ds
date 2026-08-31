@@ -17,6 +17,15 @@ Filename pattern:
 
 ``label`` is a short tag the caller passes (``"starter"`` /
 ``"wild"`` / ``"shiny"``) so attempts are easy to skim at a glance.
+
+**Ownership matters.** A wild Pokemon in the foe slot is complete in
+every stat -- species, PID, IVs, nature -- but has no OWNER: the OT
+name, ball, game version, met location and trainer memories are
+written by the game at the moment of CAPTURE. Exporting from the foe
+slot therefore produces a file PKHeX rejects ("OT Name too short",
+"unable to match an encounter from origin game"). A starter export is
+legal because it is read from the party, already owned. Callers that
+catch what they found should re-export with :func:`save_caught_pk6`.
 """
 from __future__ import annotations
 
@@ -109,4 +118,75 @@ def save_target_pk6(ctx, addr: int, pkm, label: str) -> Path | None:
         log.warning(f"  .pk6 save: write {path} failed: {e}")
         return None
     log.info(f"  saved target → targets/{fname}")
+    return path
+
+
+# Ownership fields the game writes only when a Pokémon is CAUGHT.
+# Their absence is what makes a foe-slot export illegal in PKHeX.
+_OT_NAME = slice(0xB0, 0xC8)
+_BALL = 0xDC
+_VERSION = 0xDF
+
+
+def is_owned_record(plain: bytes) -> bool:
+    """Has this record been caught by a trainer yet?
+
+    A wild Pokémon in the foe slot is fully formed — species, PID, IVs,
+    nature, everything the hunt cares about — but it has no OWNER. The
+    OT name, ball, game version, met location and trainer memories are
+    written at the moment of capture. Exporting before that produces a
+    file PKHeX rejects with "OT Name too short" and "unable to match an
+    encounter from origin game", even though every stat in it is right.
+    """
+    if len(plain) < 232:
+        return False
+    has_ot = any(plain[_OT_NAME])
+    return bool(has_ot and plain[_VERSION] and plain[_BALL])
+
+
+def save_caught_pk6(ctx, pkm, party, label: str = "shiny",
+                    supersedes: Path | None = None) -> Path | None:
+    """Re-export a target from the party AFTER it has been caught.
+
+    The pre-throw export is the only copy guaranteed to exist, but it
+    is the pre-capture record and PKHeX will not accept it. Once the
+    mon is in the party the game has filled in the ownership fields, so
+    re-reading it there is what produces a legal file.
+
+    ``supersedes`` is the pre-capture path; it is removed once a better
+    file has been written, so nobody loads the illegal one by mistake.
+    """
+    match = None
+    for p in party or ():
+        if (getattr(p, "source_address", 0)
+                and p.pid == pkm.pid and p.species == pkm.species):
+            match = p
+            break
+    if match is None:
+        log.warning(
+            "  .pk6 save: the catch is not in the party, so the saved "
+            "file is the PRE-CAPTURE record — PKHeX will call it "
+            "invalid (no OT, no met data). It went to a PC box if your "
+            "party is full; re-export it from the box with PKHeX.")
+        return None
+
+    path = save_target_pk6(ctx, match.source_address, pkm, label)
+    if path is None:
+        return None
+
+    try:
+        if not is_owned_record(path.read_bytes()):
+            log.warning("  .pk6 save: re-read from the party still has "
+                        "no owner set; keeping it, but PKHeX may "
+                        "reject it.")
+    except OSError:
+        pass
+
+    if supersedes and supersedes != path and supersedes.exists():
+        try:
+            supersedes.unlink()
+            log.info(f"  removed the pre-capture copy "
+                     f"({supersedes.name}) — it was not legal")
+        except OSError as exc:
+            log.debug(f"  could not remove {supersedes}: {exc}")
     return path

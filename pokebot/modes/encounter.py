@@ -77,6 +77,26 @@ def _refresh_party(ctx, party_base, party_stride, player_ot):
     return broadcast_party(ctx, party)   # broadcasts only on change
 
 
+def _export_caught(ctx, pkm, party_base, party_stride, player_ot,
+                   precapture) -> None:
+    """Save the legal copy of a target once the game has owned it.
+
+    ``contiguous=False``: a just-caught mon can land in the live battle
+    buffer at an address off the save-block grid, and the contiguity
+    filter used for the party STRIP would hide it here.
+    """
+    from ..pk6_export import save_caught_pk6
+    try:
+        party = get_party(ctx, party_base, party_stride, player_ot,
+                          contiguous=False)
+        save_caught_pk6(ctx, pkm, party, "shiny" if pkm.shiny else "wild",
+                        supersedes=precapture)
+    except Exception as exc:
+        # Never let an export problem end a hunt -- the pre-capture
+        # file is still on disk and holds every stat.
+        log.warning(f"  .pk6 re-export after the catch failed: {exc}")
+
+
 @dataclass(frozen=True)
 class FleePlan:
     """How long to spend getting out of a battle.
@@ -429,12 +449,18 @@ def run(ctx) -> None:
             log.info(f"  encounter: {n} new wild "
                      f"{'(horde)' if n > 1 else '(single)'}")
             target_hit = None
+            precapture = None
             for addr, p in ordered:
                 seen.add(p.encryption_key)
                 encounters += 1
-                _report_encounter(ctx, p, addr, encounters, "new-key")
+                saved = _report_encounter(ctx, p, addr, encounters,
+                                          "new-key")
                 if target_hit is None and _is_target(ctx, p):
                     target_hit = (addr, p)
+                    # The pre-capture record: correct in every stat but
+                    # unowned, so PKHeX rejects it. Kept only until the
+                    # catch lets us re-export a legal one over it.
+                    precapture = saved
             # "and cands" matters: rebuilding from an empty scan wipes
             # `seen` entirely, and the next poll re-reports a wild still
             # lingering in the foe buffer as a brand-new encounter.
@@ -467,6 +493,13 @@ def run(ctx) -> None:
                     # through a second settle.
                     if catch_plan.confirm:
                         catch.settle_after_battle(ctx)
+                    # Re-export now that it has an owner. A wild record
+                    # has no OT, ball, version or met data -- the game
+                    # writes those at the moment of capture -- so the
+                    # file saved before the throw is one PKHeX will not
+                    # accept. This is the copy worth keeping.
+                    _export_caught(ctx, p, party_base, party_stride,
+                                   player_ot, precapture)
                     party_keys = _refresh_party(
                         ctx, party_base, party_stride,
                         player_ot) or party_keys
