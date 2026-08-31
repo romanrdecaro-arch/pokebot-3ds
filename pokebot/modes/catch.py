@@ -64,8 +64,18 @@ class CatchPlan:
     # "Gotcha!", the Pokedex entry, the nickname prompt, "sent to Box".
     # Hammering B through all of them is far quicker than waiting each
     # one out, and B answers "no" to the nickname prompt on the way.
-    post_throw_taps: int = 25
+    post_throw_taps: int = 10
     post_throw_gap: float = 0.12
+    # Whether to watch the party to prove the catch worked.
+    #
+    # The verification exists to catch a break-out and throw again. A
+    # Master Ball never breaks out, so with one selected the whole loop
+    # can only cost time and produce false failures -- reading the
+    # party mid-battle is the least reliable thing this mode does. With
+    # this off the throw is trusted, the bot goes straight back to
+    # walking, and the encounter watchdog is what notices if anything
+    # actually went wrong.
+    confirm: bool = True
 
     attempts: int = 5
     confirm_window: float = 12.0  # per attempt, watching the party
@@ -117,8 +127,9 @@ class CatchPlan:
             attempts=max(1, int(num("catch_attempts", 5))),
             confirm_window=num("catch_confirm_window", 12.0),
             confirm_gap=num("catch_confirm_gap", 1.0),
-            post_throw_taps=max(0, int(num("catch_post_throw_taps", 25))),
+            post_throw_taps=max(0, int(num("catch_post_throw_taps", 10))),
             post_throw_gap=num("catch_post_throw_gap", 0.12),
+            confirm=bool(rcfg.get("catch_confirm", True)),
             select_settle=num("catch_select_settle", 0.5),
             throw_button=str(rcfg.get("catch_throw_button", "A")),
             throw_taps=max(0, int(num("catch_throw_taps", 1))),
@@ -225,12 +236,17 @@ def catch_wild(ctx, plan: CatchPlan, target_key: int,
              f"(up to {plan.attempts} attempt(s))")
 
     # Snapshot the party BEFORE the throw, so "the party grew" is a
-    # usable second signal alongside the encryption key.
-    try:
-        before = party_keys_fn() or set()
-    except Exception as exc:
-        log.debug(f"  catch: pre-throw party read failed: {exc}")
-        before = set()
+    # usable second signal alongside the encryption key. Skipped
+    # entirely when nothing is going to be verified: this read happens
+    # mid-battle, where a miss costs a multi-second broad scan, and
+    # the whole point of that mode is to not pay for proof.
+    before: set = set()
+    if plan.confirm:
+        try:
+            before = party_keys_fn() or set()
+        except Exception as exc:
+            log.debug(f"  catch: pre-throw party read failed: {exc}")
+            before = set()
 
     # A full party sends the catch straight to a PC box, where neither
     # signal can ever see it: the hunt would stop on a catch that
@@ -292,6 +308,15 @@ def catch_wild(ctx, plan: CatchPlan, target_key: int,
             if ctx.should_stop():
                 return CatchResult(False, "stopped clearing the text",
                                    attempt, t.sent, t.failed)
+
+        # Trust the throw and get back to walking. Verification only
+        # earns its keep when a ball can break out; the caller's
+        # encounter watchdog covers the case where it did.
+        if not plan.confirm:
+            log.info("  catch: not verifying (catch_confirm off) — "
+                     "back to hunting")
+            return CatchResult(True, "ball thrown (not verified)",
+                               attempt, t.sent, t.failed)
 
         if _confirm(ctx, plan, target_key, party_keys_fn, before):
             log.info(f"  CAUGHT on attempt {attempt} — it is in the party.")

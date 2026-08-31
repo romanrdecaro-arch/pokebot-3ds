@@ -461,10 +461,16 @@ def run(ctx) -> None:
                         "target_caught", species=p.species,
                         shiny=bool(p.shiny), count=encounters,
                         caught=caught)
-                    catch.settle_after_battle(ctx)
+                    # With verification off the B burst has already
+                    # done the clearing, and the point of that mode is
+                    # to get straight back to walking -- so don't sit
+                    # through a second settle.
+                    if catch_plan.confirm:
+                        catch.settle_after_battle(ctx)
                     party_keys = _refresh_party(
                         ctx, party_base, party_stride,
                         player_ot) or party_keys
+                    last_progress = time.monotonic()
                     continue
                 # Unconfirmed. Two very different situations wear this
                 # same label, so they get different endings.

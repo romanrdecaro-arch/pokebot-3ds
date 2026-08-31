@@ -590,13 +590,79 @@ def test_the_b_burst_comes_after_the_ball_not_before():
     assert order[3] == "B"
 
 
+# ----------------------------------------------------------------------
+# Trusting the throw (Master Ball hunts)
+# ----------------------------------------------------------------------
+def test_an_unverified_throw_reports_caught_and_returns():
+    """No party read at all: throw, clear the text, back to walking."""
+    reads = []
+
+    def party():
+        reads.append(1)
+        return set()
+
+    ctx = FakeCtx()
+    res = catch.catch_wild(
+        ctx, fast_plan(intro_taps=0, confirm=False, attempts=5),
+        TARGET_KEY, party)
+
+    assert res.caught
+    assert res.attempts == 1              # never throws a second ball
+    assert reads == []                    # never read the party
+    assert "not verified" in res.detail
+
+
+def test_an_unverified_throw_still_throws_the_ball():
+    ctx = FakeCtx()
+    catch.catch_wild(ctx, fast_plan(intro_taps=0, confirm=False),
+                     TARGET_KEY, lambda: set())
+
+    assert len(ctx.input.touches) == 3     # bag, balls, ball
+    assert "A" in ctx.input.taps           # and the throw confirm
+
+
+def test_an_unverified_throw_clears_the_text_first():
+    ctx = FakeCtx()
+    catch.catch_wild(ctx, fast_plan(intro_taps=0, confirm=False,
+                                    post_throw_taps=10),
+                     TARGET_KEY, lambda: set())
+
+    assert ctx.input.taps.count("B") == 10
+
+
+def test_verification_stays_available():
+    """Anything that can break out still needs the confirm loop."""
+    ctx = FakeCtx()
+    res = catch.catch_wild(ctx, fast_plan(intro_taps=0, confirm=True,
+                                          attempts=2),
+                           TARGET_KEY, lambda: set())
+    assert not res.caught
+    assert res.attempts == 2               # it retried
+
+
+def test_the_shipped_config_trusts_the_throw():
+    import yaml
+
+    cfg = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "config.yaml")
+        .read_text(encoding="utf-8"))
+    plan = catch.CatchPlan.from_config(cfg["random_encounters"])
+    assert plan.confirm is False
+    assert plan.post_throw_taps == 10
+
+
+def test_the_library_default_still_verifies():
+    """Only the shipped config opts out; the default is conservative."""
+    assert catch.CatchPlan().confirm is True
+
+
 def test_the_b_burst_is_configurable():
     plan = catch.CatchPlan.from_config({"catch_post_throw_taps": 7})
     assert plan.post_throw_taps == 7
 
 
-def test_the_b_burst_defaults_to_25():
-    assert catch.CatchPlan.from_config({}).post_throw_taps == 25
+def test_the_b_burst_defaults_to_ten():
+    assert catch.CatchPlan.from_config({}).post_throw_taps == 10
 
 
 def test_the_b_burst_can_be_switched_off():

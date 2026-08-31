@@ -328,8 +328,20 @@ random_encounters:
   # shakes, "Gotcha!", the Pokédex entry, the nickname prompt, "sent
   # to Box". Hammering B is much faster than waiting each one out, and
   # B answers "no" to the nickname prompt on the way past.
-  catch_post_throw_taps: 25
+  catch_post_throw_taps: 10
   catch_post_throw_gap: 0.12
+  # Watch the party afterwards to prove the catch worked?
+  #
+  # OFF by default, because that check only earns its keep when a ball
+  # can break out — and with a Master Ball selected it cannot. Reading
+  # the party mid-battle is the least reliable thing this mode does, so
+  # verifying could only cost time and invent failures. With it off the
+  # bot throws, clears the text and goes straight back to walking; if
+  # something really did go wrong, stuck_timeout notices within a
+  # minute and fires the flee sequence.
+  #
+  # Turn this ON if you hunt with anything that can break out.
+  catch_confirm: false
 
 # Target / filter is configured in the launcher (Hunt → Target filter).
 # Default is "Shiny only". To override from the CLI: pass --target shiny
