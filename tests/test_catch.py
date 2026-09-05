@@ -665,6 +665,27 @@ def test_the_b_burst_defaults_to_ten():
     assert catch.CatchPlan.from_config({}).post_throw_taps == 10
 
 
+def test_the_intro_gap_is_configurable():
+    """It had no config key at all, so it could not be slowed."""
+    assert catch.CatchPlan.from_config(
+        {"catch_intro_gap": 0.85}).intro_gap == 0.85
+
+
+def test_every_catch_gap_can_be_set_from_config():
+    """Guards the gap that was missing: one unreachable key is enough
+    to make 'slow the whole sequence down' quietly not work."""
+    cfg = {
+        "catch_intro_gap": 1.0, "catch_menu_settle": 2.0,
+        "catch_bag_settle": 3.0, "catch_pocket_settle": 4.0,
+        "catch_select_settle": 5.0, "catch_throw_tap_gap": 6.0,
+        "catch_throw_settle": 7.0, "catch_post_throw_gap": 8.0,
+    }
+    p = catch.CatchPlan.from_config(cfg)
+    assert (p.intro_gap, p.menu_settle, p.bag_settle, p.pocket_settle,
+            p.select_settle, p.throw_tap_gap, p.throw_settle,
+            p.post_throw_gap) == (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
+
+
 def test_the_b_burst_can_be_switched_off():
     """Zero means no burst.
 

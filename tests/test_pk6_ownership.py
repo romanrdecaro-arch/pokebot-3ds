@@ -88,12 +88,25 @@ def test_the_starter_exports_are_owned():
         assert pk6_export.is_owned_record(f.read_bytes()), f.name
 
 
-@pytest.mark.skipif(not _targets("*Bunnelby*.pk6"),
-                    reason="no wild export on disk")
-def test_the_old_wild_exports_are_the_unowned_ones():
-    """Documents the bug: PKHeX was right to reject these."""
-    for f in _targets("*Bunnelby*.pk6"):
-        assert not pk6_export.is_owned_record(f.read_bytes()), f.name
+def _wild_exports():
+    return [f for f in _targets("*.pk6")
+            if "Fennekin" not in f.name and "Froakie" not in f.name]
+
+
+@pytest.mark.skipif(not _wild_exports(), reason="no wild export on disk")
+def test_the_post_capture_export_produces_legal_wild_files():
+    """End-to-end proof on real data.
+
+    Before the fix every wild export was unowned. This asserts at least
+    one on disk now carries an owner, which can only happen through the
+    post-capture re-export. It deliberately does NOT require all of
+    them: a catch that goes to a PC box (full party) cannot be read
+    back from the party, and keeps its pre-capture record by design.
+    """
+    owned = [f for f in _wild_exports()
+             if pk6_export.is_owned_record(f.read_bytes())]
+    assert owned, ("no wild export on disk has an owner — the "
+                   "post-capture re-export is not working")
 
 
 # ----------------------------------------------------------------------

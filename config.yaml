@@ -312,16 +312,17 @@ random_encounters:
   # your party, or these attempts run out. The bot STOPS rather than
   # walking away from an unconfirmed shiny.
   catch_attempts: 5
-  catch_menu_settle: 1.5     # command menu draw, before touching BAG
-  catch_bag_settle: 1.2      # pocket list draw
-  catch_pocket_settle: 1.2   # item list draw
+  catch_intro_gap: 0.85      # between the B presses clearing the intro
+  catch_menu_settle: 2.0     # command menu draw, before touching BAG
+  catch_bag_settle: 1.7      # pocket list draw
+  catch_pocket_settle: 1.7   # item list draw
   # Touching the ball only SELECTS it — the game still wants a confirm
   # before it leaves your hand. Without this press the sequence sits on
   # the item screen and no ball is ever thrown.
-  catch_select_settle: 0.5   # let the selection register
+  catch_select_settle: 1.0   # let the selection register
   catch_throw_button: A
   catch_throw_taps: 1
-  catch_throw_tap_gap: 0.3
+  catch_throw_tap_gap: 0.8
   catch_throw_settle: 6.0    # throw + shakes + "Gotcha!"
   catch_confirm_window: 12.0 # per attempt, watching the party for it
   # After the ball is thrown the game runs a long chain of text boxes:
@@ -329,7 +330,7 @@ random_encounters:
   # to Box". Hammering B is much faster than waiting each one out, and
   # B answers "no" to the nickname prompt on the way past.
   catch_post_throw_taps: 10
-  catch_post_throw_gap: 0.12
+  catch_post_throw_gap: 0.62
   # Watch the party afterwards to prove the catch worked?
   #
   # OFF by default, because that check only earns its keep when a ball

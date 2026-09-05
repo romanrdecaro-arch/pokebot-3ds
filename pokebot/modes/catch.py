@@ -120,6 +120,7 @@ class CatchPlan:
             layout=str(rcfg.get("screen_layout", "side_by_side")).lower(),
             overrides=overrides,
             intro_taps=int(num("catch_intro_taps", 4)),
+            intro_gap=num("catch_intro_gap", 0.35),
             menu_settle=num("catch_menu_settle", 1.5),
             bag_settle=num("catch_bag_settle", 1.2),
             pocket_settle=num("catch_pocket_settle", 1.2),
