@@ -86,10 +86,28 @@ def _export_caught(ctx, pkm, party_base, party_stride, player_ot,
     filter used for the party STRIP would hide it here.
     """
     from ..pk6_export import save_caught_pk6
+    from .box_lookup import find_in_boxes
     try:
         party = get_party(ctx, party_base, party_stride, player_ot,
                           contiguous=False)
-        save_caught_pk6(ctx, pkm, party, "shiny" if pkm.shiny else "wild",
+        records = list(party or ())
+
+        # A catch made with a full party never reaches the party at
+        # all -- it goes straight to a PC box. Look there before
+        # settling for the pre-capture record.
+        if not any(p.pid == pkm.pid and p.species == pkm.species
+                   for p in records):
+            anchor = min((getattr(p, "source_address", 0) or 0
+                          for p in records), default=0)
+            if not anchor:
+                win = getattr(ctx, "_party_win", None)
+                anchor = win[0] if win else 0
+            boxed = find_in_boxes(ctx, pkm.pid, pkm.species, player_ot,
+                                  anchor)
+            if boxed is not None:
+                records.append(boxed)
+
+        save_caught_pk6(ctx, pkm, records, "shiny" if pkm.shiny else "wild",
                         supersedes=precapture)
     except Exception as exc:
         # Never let an export problem end a hunt -- the pre-capture

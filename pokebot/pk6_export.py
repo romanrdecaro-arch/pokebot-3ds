@@ -164,10 +164,11 @@ def save_caught_pk6(ctx, pkm, party, label: str = "shiny",
             break
     if match is None:
         log.warning(
-            "  .pk6 save: the catch is not in the party, so the saved "
-            "file is the PRE-CAPTURE record — PKHeX will call it "
-            "invalid (no OT, no met data). It went to a PC box if your "
-            "party is full; re-export it from the box with PKHeX.")
+            "  .pk6 save: the catch was found in neither the party nor "
+            "the PC boxes, so the saved file is the PRE-CAPTURE record "
+            "— PKHeX will call it invalid (no OT, no met data). Its "
+            "stats are all correct; re-export it from your save with "
+            "PKHeX if you need a legal copy.")
         return None
 
     path = save_target_pk6(ctx, match.source_address, pkm, label)
