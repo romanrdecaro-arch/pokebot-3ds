@@ -25,6 +25,10 @@ Open Azahar and verify:
   most common reason the launcher says Azahar is not detected while
   the window is plainly open. If the checkbox is greyed out, close
   the running game first, tick it, then reload the ROM.
+- Screen layout: whatever you like. The bot reads Azahar's own
+  `layout_option` so its touches (RUN, BAG, POKÉ BALLS) land correctly
+  in any layout — you no longer have to match a setting by hand, and a
+  mismatch used to make catching silently do nothing.
 - *Emulation → Configure → Debug* — make sure **GDB stub is OFF**
   (`Use GDB stub` unchecked). With it on, the emulator silently waits
   for a debugger and the bot's RPC requests get ignored.

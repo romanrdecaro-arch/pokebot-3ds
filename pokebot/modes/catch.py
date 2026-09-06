@@ -174,13 +174,17 @@ def window_fraction(layout: str, local: tuple,
         return float(override[0]), float(override[1]), "override"
     try:
         from ..platform_utils import find_azahar_hwnd, get_client_size
-        from ..platform_utils import bottom_screen_fraction
+        from ..platform_utils import bottom_screen_fraction, resolve_layout
+        # Resolved from Azahar's own config unless pinned. A layout
+        # string written on one machine says nothing about another's.
+        name, swap = resolve_layout(layout)
         hwnd = find_azahar_hwnd()
         size = get_client_size(hwnd) if hwnd else None
         if size:
             fx, fy = bottom_screen_fraction(
-                size[0], size[1], layout, local[0], local[1])
-            return fx, fy, f"{layout} {size[0]}x{size[1]}"
+                size[0], size[1], name, local[0], local[1], swap)
+            return fx, fy, (f"{name}{'+swap' if swap else ''} "
+                            f"{size[0]}x{size[1]}")
     except Exception as exc:
         log.warning(f"  touch geometry failed: {exc}")
     return float(local[0]), float(local[1]), "fallback"

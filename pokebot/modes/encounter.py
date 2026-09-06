@@ -229,13 +229,18 @@ def _run_fraction(layout, run_local, override):
         return float(override[0]), float(override[1]), "override"
     try:
         from ..platform_utils import (find_azahar_hwnd, get_client_size,
-                                       bottom_screen_fraction)
+                                       bottom_screen_fraction,
+                                       resolve_layout)
+        # Same reasoning as the catch touches: read Azahar's real
+        # layout rather than trusting a string typed on another PC.
+        name, swap = resolve_layout(layout)
         hwnd = find_azahar_hwnd()
         wh = get_client_size(hwnd) if hwnd else None
         if wh:
             fx, fy = bottom_screen_fraction(
-                wh[0], wh[1], layout, run_local[0], run_local[1])
-            return fx, fy, f"{layout} {wh[0]}x{wh[1]}"
+                wh[0], wh[1], name, run_local[0], run_local[1], swap)
+            return fx, fy, (f"{name}{'+swap' if swap else ''} "
+                            f"{wh[0]}x{wh[1]}")
     except Exception as e:
         log.warning(f"  run-position geometry failed: {e}")
     return 0.5, 0.92, "fallback"

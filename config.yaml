@@ -259,7 +259,14 @@ random_encounters:
   # live window size, so it stays correct at ANY window size.
   #   side_by_side : top screen left, touch screen RIGHT  (your setup)
   #   vertical     : top screen above, touch screen below (Azahar default)
-  screen_layout: side_by_side
+  # Where the touch screen is inside the window. "auto" reads Azahar's
+  # OWN qt-config.ini, which is the only thing that actually knows.
+  # A layout typed here is a promise about another machine's settings
+  # that nothing keeps true: a fresh Azahar install is layout 0 (top
+  # above bottom), so a config saying side_by_side sends every touch
+  # into empty space and the catch silently does nothing.
+  # Override with vertical / side_by_side / large_screen if needed.
+  screen_layout: auto
   # Where RUN sits ON the 3DS touch screen, as fractions of that
   # screen (0,0=top-left .. 1,1=bottom-right). X/Y wild battle: RUN
   # is the blue button, bottom-centre → ~(0.50, 0.86). Nudge only if
@@ -312,17 +319,17 @@ random_encounters:
   # your party, or these attempts run out. The bot STOPS rather than
   # walking away from an unconfirmed shiny.
   catch_attempts: 5
-  catch_intro_gap: 0.85      # between the B presses clearing the intro
-  catch_menu_settle: 2.0     # command menu draw, before touching BAG
-  catch_bag_settle: 1.7      # pocket list draw
-  catch_pocket_settle: 1.7   # item list draw
+  catch_intro_gap: 1.85      # between the B presses clearing the intro
+  catch_menu_settle: 3.0     # command menu draw, before touching BAG
+  catch_bag_settle: 2.7      # pocket list draw
+  catch_pocket_settle: 2.7   # item list draw
   # Touching the ball only SELECTS it — the game still wants a confirm
   # before it leaves your hand. Without this press the sequence sits on
   # the item screen and no ball is ever thrown.
-  catch_select_settle: 1.0   # let the selection register
+  catch_select_settle: 2.0   # let the selection register
   catch_throw_button: A
   catch_throw_taps: 1
-  catch_throw_tap_gap: 0.8
+  catch_throw_tap_gap: 1.8
   catch_throw_settle: 6.0    # throw + shakes + "Gotcha!"
   catch_confirm_window: 12.0 # per attempt, watching the party for it
   # After the ball is thrown the game runs a long chain of text boxes:
@@ -330,7 +337,7 @@ random_encounters:
   # to Box". Hammering B is much faster than waiting each one out, and
   # B answers "no" to the nickname prompt on the way past.
   catch_post_throw_taps: 10
-  catch_post_throw_gap: 0.62
+  catch_post_throw_gap: 1.62
   # Watch the party afterwards to prove the catch worked?
   #
   # OFF by default, because that check only earns its keep when a ball

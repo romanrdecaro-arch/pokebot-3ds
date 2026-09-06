@@ -610,7 +610,49 @@ _LAYOUTS = {
                      (_TOP_W - _BOT_W) // 2, _TOP_H),
     # side-by-side: top left, bottom right, same height.
     "side_by_side": (_TOP_W + _BOT_W, _TOP_H, _TOP_W, 0),
+    # large screen: the top is drawn at Azahar's default proportion of
+    # 4x, and the bottom sits beside it at native size, bottom-aligned.
+    "large_screen": (_TOP_W * 4 + _BOT_W, _TOP_H * 4,
+                     _TOP_W * 4, _TOP_H * 4 - _BOT_H),
 }
+
+# Azahar's Layout/layout_option int -> the name used above.
+# 1 (single screen) and 4/5 have no separate bottom-screen rect worth
+# modelling; they fall back to vertical, which is also what an
+# unreadable config gives.
+_LAYOUT_BY_OPTION = {
+    0: "vertical",
+    1: "vertical",
+    2: "large_screen",
+    3: "side_by_side",
+    4: "vertical",
+    5: "large_screen",
+}
+
+
+def resolve_layout(configured: str | None = None) -> tuple[str, bool]:
+    """(layout name, swapped) to use for touch geometry.
+
+    Anything other than "auto" is taken as an explicit override. "auto"
+    — the default — reads Azahar's OWN qt-config.ini, because a
+    hand-written layout string is a promise about someone else's
+    settings that nothing keeps up to date. That is exactly how a bot
+    configured on one machine ends up touching empty space on another:
+    the layout is not the default, so a fresh install disagrees and
+    every touch lands somewhere harmless and wrong.
+    """
+    name = (configured or "auto").strip().lower()
+    if name and name != "auto":
+        return name, False
+    try:
+        from .azahar_config import load_screen_layout
+        cfg = load_screen_layout()
+        opt = int(cfg.get("layout_option", 0))
+        return (_LAYOUT_BY_OPTION.get(opt, "vertical"),
+                bool(cfg.get("swap_screen", False)))
+    except Exception as exc:
+        log.warning(f"could not read Azahar's screen layout: {exc}")
+        return "vertical", False
 
 
 def get_client_size(hwnd: int):
@@ -631,7 +673,8 @@ def get_client_size(hwnd: int):
 
 
 def bottom_screen_fraction(client_w: int, client_h: int, layout: str,
-                           local_x: float, local_y: float):
+                           local_x: float, local_y: float,
+                           swap: bool = False):
     """Map a point on the 3DS BOTTOM (touch) screen — given as
     fractions ``local_x``/``local_y`` of that 320x240 screen — to
     fractions of the whole window client area, for the given Azahar
@@ -639,6 +682,13 @@ def bottom_screen_fraction(client_w: int, client_h: int, layout: str,
     correct at any window size. Returns (fx, fy)."""
     canvas_w, canvas_h, bx, by = _LAYOUTS.get(
         layout, _LAYOUTS["vertical"])
+    if swap:
+        # Azahar's "swap screens" puts the bottom where the top was.
+        # Mirror along whichever axis the layout stacks on.
+        if layout == "vertical":
+            by = 0
+        else:
+            bx = 0
     scale = min(client_w / canvas_w, client_h / canvas_h)
     render_w, render_h = canvas_w * scale, canvas_h * scale
     ox = (client_w - render_w) / 2.0
