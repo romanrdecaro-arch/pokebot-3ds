@@ -166,3 +166,29 @@ def test_the_shipped_config_detects_rather_than_assumes():
 
     cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
     assert cfg["random_encounters"]["screen_layout"] == "auto"
+
+
+# ----------------------------------------------------------------------
+# DPI awareness
+# ----------------------------------------------------------------------
+def test_dpi_awareness_is_declared():
+    """Unaware processes get virtualised rects but physical cursor
+    coordinates, so every touch lands short on a scaled display."""
+    state = pu.ensure_dpi_aware()
+    assert state
+    if sys.platform.startswith("win"):
+        assert state.startswith(("per-monitor", "system")), state
+
+
+def test_ensure_dpi_aware_is_idempotent():
+    assert pu.ensure_dpi_aware() == pu.ensure_dpi_aware()
+
+
+def test_display_scaling_is_a_sane_number():
+    scale = pu.display_scaling()
+    assert 0.5 <= scale <= 4.0
+
+
+def test_display_scaling_never_raises(monkeypatch):
+    monkeypatch.setattr(pu, "sys", pu.sys)
+    assert isinstance(pu.display_scaling(), float)

@@ -173,6 +173,79 @@ def click_window(hwnd: int) -> bool:
     return click_window_at(hwnd, 0.5, 0.5)
 
 
+_DPI_STATE: str | None = None
+
+
+def ensure_dpi_aware() -> str:
+    """Make this process DPI-aware, and say what it managed.
+
+    Windows lies to a DPI-unaware process to keep old software usable:
+    ``GetClientRect`` and ``ClientToScreen`` come back in *virtualised
+    logical* pixels, while ``SetCursorPos`` has always taken *physical*
+    ones. At 100% display scaling those are the same number, so nothing
+    is wrong. At 150% a click aimed at (1200, 700) is delivered to
+    (800, 467) -- off the button, off the screen area, and with no
+    error anywhere, because every individual call succeeded.
+
+    That is why touch can work perfectly on one PC and do nothing on
+    another with identical settings: the difference is the monitor, not
+    the config. Declaring awareness makes all three agree.
+
+    Must run before any window or DC is created. Idempotent; returns a
+    short description for the log.
+    """
+    global _DPI_STATE
+    if _DPI_STATE is not None:
+        return _DPI_STATE
+    if not sys.platform.startswith("win"):
+        _DPI_STATE = "n/a (not Windows)"
+        return _DPI_STATE
+    try:
+        import ctypes
+    except Exception:
+        _DPI_STATE = "unavailable"
+        return _DPI_STATE
+
+    # Newest first: per-monitor v2 keeps up when the window is dragged
+    # to a differently-scaled display mid-hunt.
+    try:
+        ctx = ctypes.c_void_p(-4)          # PER_MONITOR_AWARE_V2
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctx):
+            _DPI_STATE = "per-monitor-v2"
+            return _DPI_STATE
+    except Exception:
+        pass
+    try:
+        if ctypes.windll.shcore.SetProcessDpiAwareness(2) == 0:
+            _DPI_STATE = "per-monitor"
+            return _DPI_STATE
+    except Exception:
+        pass
+    try:
+        if ctypes.windll.user32.SetProcessDPIAware():
+            _DPI_STATE = "system"
+            return _DPI_STATE
+    except Exception:
+        pass
+    _DPI_STATE = "FAILED (touches may miss on a scaled display)"
+    return _DPI_STATE
+
+
+def display_scaling() -> float:
+    """Primary display scale factor (1.0 == 100%), or 1.0 if unknown."""
+    if not sys.platform.startswith("win"):
+        return 1.0
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hdc = user32.GetDC(0)
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)   # LOGPIXELSX
+        user32.ReleaseDC(0, hdc)
+        return (dpi / 96.0) if dpi else 1.0
+    except Exception:
+        return 1.0
+
+
 def click_window_at(hwnd: int, x_frac: float, y_frac: float,
                     hold_s: float = 0.05) -> bool:
     """Synthetic left-click at fractional coords (0..1) of the window.

@@ -149,6 +149,16 @@ def main(argv=None):
                          "left untouched.")
     args = ap.parse_args(argv)
 
+    # Before anything creates a window or measures one. A DPI-unaware
+    # process is handed virtualised window rectangles while SetCursorPos
+    # keeps taking physical pixels, so on a scaled display every touch
+    # lands somewhere other than where it was aimed -- silently.
+    try:
+        from pokebot.platform_utils import ensure_dpi_aware
+        _dpi = ensure_dpi_aware()
+    except Exception:
+        _dpi = "unavailable"
+
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -157,6 +167,21 @@ def main(argv=None):
 
     if args.check_update or args.update:
         return _run_update(do_apply=args.update)
+
+    try:
+        from pokebot.platform_utils import display_scaling
+        scale = display_scaling()
+        logging.info(f"display scaling {scale * 100:.0f}%, "
+                     f"DPI awareness: {_dpi}")
+        if scale != 1.0 and not _dpi.startswith(("per-monitor", "system")):
+            logging.warning(
+                f"This display is scaled to {scale * 100:.0f}% and DPI "
+                f"awareness could not be set, so touches (RUN, BAG, "
+                f"POKE BALLS) will land in the wrong place. Set "
+                f"Azahar's display to 100% scaling, or run the bot "
+                f"from a terminal that is DPI-aware.")
+    except Exception:
+        pass
 
     cfg_path = Path(args.config)
     if cfg_path.exists():
