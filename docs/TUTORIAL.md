@@ -449,7 +449,7 @@ live under `random_encounters` in `config.yaml` as `smash_*`.
 4. The encounter is reported and target-checked. A shiny is caught
    with the same sequence every other mode uses.
 5. **Anything else -> soft reset.** No shiny, or no encounter at all
-   within 30 seconds, and the game is relaunched.
+   within 15 seconds, and the game is relaunched.
 
 ### Why it resets instead of running away
 
@@ -489,7 +489,7 @@ press as well as continuously between them.
 
 The mirror of that is **B**, which answers *"No"* to the Rock Smash
 prompt. The bot therefore never presses B while smashing — only in
-the 30-second reset, where any prompt still on screen is stale
+the 15-second reset, where any prompt still on screen is stale
 anyway.
 
 ### Troubleshooting

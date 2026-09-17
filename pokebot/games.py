@@ -351,7 +351,7 @@ def methods_for(game_key: str) -> list[Method]:
                notes="Presses A at the breakable rock in front of you "
                      "and stops the instant a wild appears, so it never "
                      "attacks a shiny. No shiny (or no encounter within "
-                     "30s) soft-resets the game, which is what respawns "
+                     "15s) soft-resets the game, which is what respawns "
                      "the rock. Requires a party member that knows Rock "
                      "Smash and a SAVE made facing a breakable rock — "
                      "every attempt restarts from that save. A catch "

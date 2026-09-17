@@ -21,7 +21,7 @@ prompt still on screen is stale by definition.
 
 Rock Smash does not guarantee an encounter; most rocks give nothing at
 all. A quiet stretch is therefore normal rather than a fault, which is
-why the caller's stall watchdog is set short (30 s) for this mode and
+why the caller's stall watchdog is set short (15 s) for this mode and
 recovers by clearing the screen rather than by fleeing a battle that
 was never there.
 """

@@ -309,7 +309,7 @@ random_encounters:
   #
   # Rock Smash has NO guaranteed encounter -- most rocks give nothing.
   # Quiet stretches are normal rather than a fault, so the mode sets
-  # stuck_timeout to 30s and recovers by clearing the screen instead
+  # stuck_timeout to 15s and recovers by clearing the screen instead
   # of fleeing a battle that was never there.
   #
   # Setup: a party member that knows Rock Smash, standing facing a
@@ -352,7 +352,7 @@ random_encounters:
   reset_boot_timeout: 60   # give up if the save never comes back
   reset_cooldown: 0.0      # shortest gap between resets; raise if Azahar
                            # falls over mid-relaunch
-  smash_stuck_timeout: 30  # reset the loop after this long with nothing
+  smash_stuck_timeout: 15  # reset the loop after this long with nothing
   smash_flee_delay: 2.0    # the battle opens behind the rock-break anim
   smash_taps: 6            # A presses per attempt (prompt + Yes + text)
   smash_settle: 0.4        # watch the foe window this long between presses

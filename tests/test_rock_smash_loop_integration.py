@@ -260,7 +260,7 @@ def test_a_shiny_is_never_attacked_by_the_idle_action(monkeypatch):
 
 
 def test_the_watchdog_resets_with_b_and_keeps_going(monkeypatch):
-    """30 s of nothing is normal for Rock Smash, so the recovery has to
+    """15 s of nothing is normal for Rock Smash, so the recovery has to
     be a screen clear the loop can survive -- not a RUN touch into the
     overworld, where the bottom screen is the PSS."""
     window: list = []

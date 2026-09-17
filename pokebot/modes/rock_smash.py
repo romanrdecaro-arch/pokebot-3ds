@@ -18,7 +18,7 @@ nothing at all -- ends in a soft reset.
    attempt ends in a soft reset.
 
 **Every attempt ends in a soft reset.** No shiny, or no encounter at
-all within 30 s, and the game is relaunched. That is the loop, not an
+all within 15 s, and the game is relaunched. That is the loop, not an
 error path: a smashed rock is *gone*, and nothing brings it back but
 reloading the area — so fleeing a bad encounter would leave the bot
 standing in front of rubble, pressing A at nothing. The reset respawns
@@ -29,9 +29,10 @@ The reset returns to the **save**, so wherever the save is, is where
 every attempt starts.
 
 **Rock Smash does not guarantee an encounter.** Most smashes give
-nothing at all, which is why the stall watchdog is 30 s here against
-the walking hunt's 60: a quiet stretch is the normal case, and the
-sooner it resets the sooner the next rock exists.
+nothing at all, which is why the stall watchdog is 15 s here against
+the walking hunt's 60: a quiet stretch is the normal case, not a
+fault to wait out, and the sooner it resets the sooner the next
+rock exists.
 
 One consequence worth knowing: because the reset reloads the save, a
 **catch is not safe until you save it**. The hunt therefore STOPS the
@@ -76,8 +77,9 @@ _DEFAULTS = {
 #:   stuck_timeout  config.yaml ships 60, tuned for a walking hunt
 #:                  where a long silence means the RUN touch missed.
 #:                  Rock Smash has no guaranteed encounter, so silence
-#:                  is the normal case and 30 gets the loop restarted
-#:                  twice as often.
+#:                  is the normal case rather than something to wait
+#:                  out, and 15 gets the loop restarted four times as
+#:                  often.
 #:   flee_delay     config.yaml ships 1.5. Kept as headroom for the
 #:                  rare case where a flee still runs (no_target_action
 #:                  turned back to "flee" by hand).
@@ -88,7 +90,7 @@ _DEFAULTS = {
 #:
 #: mapped key -> (the key a user sets to change it, default)
 _OVERRIDES = {
-    "stuck_timeout": ("smash_stuck_timeout", 30.0),
+    "stuck_timeout": ("smash_stuck_timeout", 15.0),
     "flee_delay": ("smash_flee_delay", 2.0),
 }
 
@@ -97,8 +99,10 @@ def merged_config(rcfg: dict | None) -> dict:
     """The ``random_encounters`` block this mode actually runs with.
 
     Separate from ``run`` so the effective values can be asserted
-    against the SHIPPED config, which is where the difference between
-    "the default says 30" and "the hunt waits 30" showed up.
+    against the SHIPPED config. That distinction is not academic: the
+    stall timeout below once read correctly off this mode's defaults
+    while the hunt actually waited the walking hunt's 60, because
+    config.yaml sets that key and a default cannot beat a set key.
     """
     rcfg = rcfg or {}
     merged = {**_DEFAULTS, **rcfg}

@@ -322,7 +322,7 @@ def test_the_mode_selects_the_rock_smash_idle_action():
     assert rock_smash._DEFAULTS["idle_action"] == "rock_smash"
 
 
-def test_the_mode_retries_after_thirty_seconds_with_the_shipped_config():
+def test_the_mode_retries_after_fifteen_seconds_with_shipped_config():
     """Rock Smash does not guarantee an encounter, so a quiet stretch
     is normal and the walking hunt's 60 s patience is too much.
 
@@ -339,8 +339,8 @@ def test_the_mode_retries_after_thirty_seconds_with_the_shipped_config():
     cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
     effective = rock_smash.merged_config(cfg["random_encounters"])
 
-    assert effective["stuck_timeout"] == 30.0
-    assert FleePlan.from_config(effective).stuck_timeout == 30.0
+    assert effective["stuck_timeout"] == 15.0
+    assert FleePlan.from_config(effective).stuck_timeout == 15.0
 
 
 def test_the_shipped_generic_timeout_really_would_have_shadowed_it():
@@ -350,7 +350,7 @@ def test_the_shipped_generic_timeout_really_would_have_shadowed_it():
     import yaml
 
     cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
-    assert cfg["random_encounters"]["stuck_timeout"] != 30
+    assert cfg["random_encounters"]["stuck_timeout"] != 15
 
 
 def test_the_flee_delay_override_also_survives_the_shipped_config():
@@ -375,7 +375,7 @@ def test_a_junk_override_falls_back_rather_than_raising():
     from pokebot.modes import rock_smash
 
     assert rock_smash.merged_config(
-        {"smash_stuck_timeout": "soon"})["stuck_timeout"] == 30.0
+        {"smash_stuck_timeout": "soon"})["stuck_timeout"] == 15.0
 
 
 def test_the_idle_action_survives_the_merge():
