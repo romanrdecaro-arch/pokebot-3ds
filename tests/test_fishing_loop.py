@@ -259,3 +259,81 @@ def test_the_fishing_mode_shortened_its_flee():
 @pytest.mark.parametrize("name", ["cast_once", "restart", "clear_text"])
 def test_the_public_surface_exists(name):
     assert callable(getattr(fl, name))
+
+
+# ----------------------------------------------------------------------
+# The player must not wander off the water
+# ----------------------------------------------------------------------
+def test_fishing_does_not_walk_between_casts():
+    """A fishing hunt stands facing one tile.
+
+    The walking hunt spends its flee waits stepping left and right so
+    no time is dead. Doing that here walks the player off the water and
+    every later cast has nothing to fish in.
+    """
+    text = (REPO / "pokebot" / "modes" / "encounter.py").read_text(
+        encoding="utf-8")
+    assert 'flee_walker = walker if idle_action == "walk" else None' in text
+    assert "flee_plan, walker)" not in text, \
+        "a flee still gets the walker ungated"
+
+
+def test_the_fishing_flee_is_only_a_screen_press():
+    """No B presses either side of the touch -- just the touch."""
+    from pokebot.modes import fishing
+    from pokebot.modes.encounter import FleePlan
+
+    plan = FleePlan.from_config({**fishing._DEFAULTS})
+    assert plan.intro_taps == 0
+    assert plan.clear_taps == 0
+
+
+def test_the_fishing_flee_still_waits_for_the_menu():
+    """Zero taps only works if something lets the menu draw first."""
+    from pokebot.modes import fishing
+    from pokebot.modes.encounter import FleePlan
+
+    plan = FleePlan.from_config({**fishing._DEFAULTS})
+    assert plan.delay > 0
+    assert plan.run_settle > 0
+
+
+def test_a_flee_with_no_taps_still_touches_run():
+    """The one thing the fishing flee must not lose."""
+    import threading
+    from pokebot.modes import encounter
+
+    class Inp:
+        def __init__(self):
+            self.taps = []
+            self.touches = []
+
+        def tap(self, b, hold_s=0.05):
+            self.taps.append(b)
+
+        def tap_touch(self, x, y, hold_s=0.08):
+            self.touches.append((x, y))
+            return True
+
+        def move_running(self, d, hold_s=0.35):
+            raise AssertionError("fishing must not move the player")
+
+    class Ctx:
+        def __init__(self):
+            self.input = Inp()
+            self._stop_evt = threading.Event()
+            real = self._stop_evt.wait
+            self._stop_evt.wait = lambda timeout=None: real(0)
+
+        def should_stop(self):
+            return self._stop_evt.is_set()
+
+    ctx = Ctx()
+    plan = encounter.FleePlan(delay=0.0, intro_taps=0, clear_taps=0,
+                              run_settle=0.0, got_away=0.0, tail=0.0)
+
+    encounter._flee(ctx, "side_by_side", [0.5, 0.86], [0.7, 0.7],
+                    plan, walker=None)
+
+    assert len(ctx.input.touches) == 1
+    assert ctx.input.taps == []

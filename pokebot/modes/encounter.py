@@ -400,6 +400,12 @@ def run(ctx) -> None:
     # the run. Keeping the state inside the object makes that
     # impossible to repeat.
     walker = Walker(ctx, _BTN[movement], walk_hold, walk_gap)
+    # Walking is how the WALKING hunt finds encounters, and it is spent
+    # during the flee so no time is dead. It is actively harmful
+    # anywhere else: a fishing hunt stands facing one water tile, so
+    # stepping left and right between casts walks the player off the
+    # spot and the next cast has nothing to fish in.
+    flee_walker = walker if idle_action == "walk" else None
     encounters = 0
     stalls = 0
     last_progress = time.monotonic()
@@ -514,7 +520,7 @@ def run(ctx) -> None:
                 # gets us out of the battle instead of walking into a
                 # menu until the stall watchdog notices.
                 _flee(ctx, screen_layout, run_local, run_override,
-                      flee_plan, walker)
+                      flee_plan, flee_walker)
                 party_keys = _refresh_party(
                     ctx, party_base, party_stride,
                     player_ot) or party_keys
@@ -525,9 +531,12 @@ def run(ctx) -> None:
                 # menu (and the RUN button) is actually on screen —
                 # walking through it, so the player is already moving
                 # when the battle lets go.
-                walker.wait(flee_plan.delay)
+                if flee_walker is not None:
+                    flee_walker.wait(flee_plan.delay)
+                else:
+                    ctx._stop_evt.wait(flee_plan.delay)
                 _flee(ctx, screen_layout, run_local, run_override,
-                      flee_plan, walker)
+                      flee_plan, flee_walker)
             last_progress = time.monotonic()
             continue                          # don't walk this iter
 
@@ -561,7 +570,7 @@ def run(ctx) -> None:
                     fishing_loop.restart(ctx, fish_plan)
                 else:
                     _flee(ctx, screen_layout, run_local, run_override,
-                          flee_plan, walker)
+                          flee_plan, flee_walker)
             last_progress = time.monotonic()
             continue
 

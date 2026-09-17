@@ -4,9 +4,9 @@ Fishing mode — shiny / target hunting on water tiles.
 Mechanically a shiny-hunt with a different idle action: instead of
 walking grass or Sweet-Scenting, the bot presses **Y** to use the
 player's registered key item (assumed to be a fishing rod) and then
-spams **A** through the bite window. The hook either lands a wild
-battle (→ standard scan_nonparty detection + target check + flee) or
-nothing happens and the next iteration recasts.
+hooks with **A** the moment a wild record lands in the foe window.
+The hook either starts a wild battle (→ standard detection + target
+check + catch/flee) or nothing happens and the loop recasts.
 
 **Player setup (one-time, manual):**
 
@@ -17,9 +17,13 @@ nothing happens and the next iteration recasts.
    Town, Route 8/16/22, Cyllage / Ambrette beach, etc.).
 
 Detection / flee are the same engine as `encounter.run`; only the
-idle action differs. Hit rate is slightly below a perfect-timing
-human (some bites get fumbled when the A-spam aligns with the wrong
-phase) but the loop is patient — misses just recast.
+idle action differs. The hook follows DETECTION rather than a
+timer, so it does not depend on guessing a bite window the bot cannot
+see; a cast that catches nothing clears its text and recasts.
+
+The player does not move. A fishing hunt stands facing one water tile,
+so the left/right stepping the walking hunt does between encounters
+would walk it off the spot.
 """
 from __future__ import annotations
 
@@ -32,16 +36,23 @@ log = logging.getLogger(__name__)
 
 #: Fishing-specific defaults.
 #:
-#: The fishing intro does have its own cutscene (rod reel, fish leap,
-#: "Oh! A bite!"), so it needs more headroom than a grass encounter
-#: before the RUN touch can land -- but nothing like the 9 s this used
-#: to take. That number was tuned against a 100% emulator; the hunt
-#: runs Azahar around 600%, where the same cutscene is over in well
-#: under a second. If a flee ever fires too early the stall watchdog
-#: catches it within a minute.
+#: flee_delay: the fishing intro has its own cutscene (rod reel, fish
+#: leap, "Oh! A bite!"), so it needs more headroom than a grass
+#: encounter before the RUN touch can land -- but nothing like the 9 s
+#: this used to take. That was tuned against a 100% emulator; the hunt
+#: runs Azahar around 600%, where the cutscene is over in well under a
+#: second. If a flee ever fires early the stall watchdog catches it.
+#:
+#: flee_intro_taps / flee_clear_taps: ZERO. The walking hunt presses B
+#: either side of the RUN touch to clear battle text, but here the
+#: flee is nothing but the screen press. The delay above is what lets
+#: the command menu finish drawing, and nothing is walking around
+#: afterwards that needs text cleared out of its way.
 _DEFAULTS = {
     "idle_action": "fish",
     "flee_delay": 2.0,
+    "flee_intro_taps": 0,
+    "flee_clear_taps": 0,
 }
 
 
