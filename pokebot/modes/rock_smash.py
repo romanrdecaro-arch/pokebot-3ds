@@ -5,30 +5,38 @@ Mechanically a shiny-hunt with a different idle action: instead of
 walking grass or casting a rod, the bot presses **A** at the rock in
 front of the player to use Rock Smash, and stops pressing the instant
 a wild record lands in the foe window. From there everything is the
-shared engine: the encounter is reported and target-checked, a shiny
-runs the normal catch sequence, and anything else is fled.
+shared engine: the encounter is reported and target-checked, and a
+shiny runs the normal catch sequence. Anything else -- including
+nothing at all -- ends in a soft reset.
 
 **Player setup (one-time, manual):**
 
 1. A party Pokémon that knows **Rock Smash** (TM94 in X/Y).
 2. Stand **facing a breakable rock** — Glittering Cave, Connecting
    Cave, Reflection Cave, Terminus Cave, Route 9.
-3. That is all. The bot never moves the player, so the rock stays in
-   front of it.
+3. **SAVE there.** Every attempt starts from that save, because every
+   attempt ends in a soft reset.
+
+**Every attempt ends in a soft reset.** No shiny, or no encounter at
+all within 30 s, and the game is relaunched. That is the loop, not an
+error path: a smashed rock is *gone*, and nothing brings it back but
+reloading the area — so fleeing a bad encounter would leave the bot
+standing in front of rubble, pressing A at nothing. The reset respawns
+every rock and puts the player back in front of one.
+
+Which makes step 3 above a hard requirement rather than a convenience.
+The reset returns to the **save**, so wherever the save is, is where
+every attempt starts.
 
 **Rock Smash does not guarantee an encounter.** Most smashes give
-nothing at all, which is the whole reason this mode exists separately
-from the walking hunt: a quiet stretch is normal here rather than a
-fault. So the stall watchdog is shortened to **30 s** and its recovery
-is a screen clear (B) rather than the walking hunt's RUN touch —
-there is usually no battle to run from, and that touch would land on
-the PSS in the overworld.
+nothing at all, which is why the stall watchdog is 30 s here against
+the walking hunt's 60: a quiet stretch is the normal case, and the
+sooner it resets the sooner the next rock exists.
 
-One thing to watch in-game: a smashed rock is gone until the area
-reloads. If the bot settles into 30-second resets that never produce
-anything, step out of the room and back in to respawn the rocks —
-the bot deliberately does not walk anywhere on its own, because the
-one thing it must not do is wander off the rock it is aimed at.
+One consequence worth knowing: because the reset reloads the save, a
+**catch is not safe until you save it**. The hunt therefore STOPS the
+moment it catches something, rather than resuming into a reset that
+would undo it.
 """
 from __future__ import annotations
 
@@ -42,6 +50,19 @@ log = logging.getLogger(__name__)
 #: Settings that only this mode wants, and that nothing else writes.
 _DEFAULTS = {
     "idle_action": "rock_smash",
+    # No shiny, or no encounter at all -> relaunch the game.
+    #
+    # This is not an error path, it is the loop. A smashed rock is
+    # GONE, and nothing brings it back but reloading the area -- so
+    # fleeing a bad encounter would leave the bot standing in front of
+    # rubble, pressing A at nothing until the watchdog gave up. The
+    # reset respawns every rock on the map and puts the player back in
+    # front of one, which is why this is how Rock Smash is hunted.
+    #
+    # It has a hard requirement attached: the player must have SAVED
+    # facing the rock. The reset returns to the save, so wherever that
+    # is, is where every attempt starts.
+    "no_target_action": "soft_reset",
 }
 
 #: Settings this mode must OVERRIDE rather than default.
@@ -57,9 +78,9 @@ _DEFAULTS = {
 #:                  Rock Smash has no guaranteed encounter, so silence
 #:                  is the normal case and 30 gets the loop restarted
 #:                  twice as often.
-#:   flee_delay     config.yaml ships 1.5. The battle here opens behind
-#:                  the rock-break animation and wants a little more
-#:                  headroom before the RUN touch can land.
+#:   flee_delay     config.yaml ships 1.5. Kept as headroom for the
+#:                  rare case where a flee still runs (no_target_action
+#:                  turned back to "flee" by hand).
 #:
 #: So each gets a rock-smash-specific key instead. Setting one of
 #: those still wins; leaving it alone gets the value this mode needs
@@ -104,8 +125,13 @@ def run(ctx):
     rcfg = merged["random_encounters"]
     log.info("Mode: rock smash (A at the rock, foe-window detection; "
              "stops pressing on any wild, catches shiny / target)")
-    log.info("  Setup: a party member that knows Rock Smash, standing "
+    log.info("  Setup: a party member that knows Rock Smash, SAVED "
              "facing a breakable rock.")
+    if rcfg.get("no_target_action") == "soft_reset":
+        log.info("  Every attempt ends in a soft reset, so every "
+                 "attempt starts from that save.")
+        log.info("  A catch STOPS the hunt — save it in-game before "
+                 "starting again, or the next reset undoes it.")
     log.info(f"  Rock Smash has no guaranteed encounter — quiet "
              f"stretches are normal; the loop resets itself every "
              f"{rcfg['stuck_timeout']:.0f}s.")

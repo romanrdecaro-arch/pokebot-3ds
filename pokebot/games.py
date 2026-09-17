@@ -350,11 +350,12 @@ def methods_for(game_key: str) -> list[Method]:
         Method("Rock Smash", "rock_smash",
                notes="Presses A at the breakable rock in front of you "
                      "and stops the instant a wild appears, so it never "
-                     "attacks a shiny. Rock Smash has no guaranteed "
-                     "encounter, so quiet stretches are normal and the "
-                     "loop resets itself every 30s. Requires a party "
-                     "member that knows Rock Smash and the player "
-                     "facing a breakable rock."),
+                     "attacks a shiny. No shiny (or no encounter within "
+                     "30s) soft-resets the game, which is what respawns "
+                     "the rock. Requires a party member that knows Rock "
+                     "Smash and a SAVE made facing a breakable rock — "
+                     "every attempt restarts from that save. A catch "
+                     "stops the hunt so you can save it."),
         Method("Horde encounters", "horde",
                notes="Same as Random encounters but tuned for hordes "
                      "(5 wild Pokémon per battle, ~5× shiny chance). "

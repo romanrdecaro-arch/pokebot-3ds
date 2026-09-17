@@ -429,8 +429,8 @@ a rock smash that produces nothing means you smashed a rock.
 2. **Stand facing a breakable rock.** The cracked grey boulders in
    Glittering Cave, Connecting Cave, Reflection Cave, Terminus Cave
    and Route 9.
-3. That's all. The bot never moves the player, so the rock stays in
-   front of it.
+3. **SAVE there.** This is not optional. Every attempt ends in a soft
+   reset, so wherever you saved is where every attempt begins.
 
 ### Launcher setup
 
@@ -446,11 +446,37 @@ live under `random_encounters` in `config.yaml` as `smash_*`.
    `smash_taps` (6) presses per attempt.
 3. **Watches the foe window between every press.** The instant a wild
    record the hunt has not seen appears, the A presses **stop**.
-4. The encounter is reported, target-checked, and either caught with
-   the same sequence every other mode uses, or fled.
-5. Nothing appeared? Smash again.
-6. **30 seconds with no encounter** -> clear the screen with B and
-   start the loop over.
+4. The encounter is reported and target-checked. A shiny is caught
+   with the same sequence every other mode uses.
+5. **Anything else -> soft reset.** No shiny, or no encounter at all
+   within 30 seconds, and the game is relaunched.
+
+### Why it resets instead of running away
+
+A smashed rock is *gone*. Nothing brings it back but reloading the
+area — so fleeing a bad encounter would leave the bot standing in
+front of rubble, pressing A at nothing until the watchdog gave up.
+The reset respawns every rock on the map and puts you back in front
+of one. This is how Rock Smash is hunted by hand, too.
+
+Two consequences follow from that, and both matter:
+
+- **Your save is the starting line.** Not where you were standing
+  when you hit Start — where you *saved*.
+- **A catch is not safe until you save it.** Catching does not save
+  the game, so the next reset would undo it. The bot therefore
+  **stops the moment it catches something** and tells you to save.
+  Save in-game, then start it again.
+
+The bot is careful about the reset itself, for a reason that cost
+real crashes to learn: L+R+Start makes the game ask the 3DS to
+relaunch it, and Azahar spends the next moment tearing down the
+running process while its RPC server still points at it. A memory
+read landing in that window reads memory being freed — four recorded
+`0xc0000005` access violations inside `azahar.exe` came from exactly
+that. So the bot goes silent for half a second *before* the combo (a
+read already in flight cannot be recalled) and four seconds after it.
+It keeps pressing A the whole time; only the reading waits.
 
 ### Why A stops the instant a wild appears
 
@@ -471,11 +497,18 @@ anyway.
 - **Long quiet stretches with nothing caught.** Expected. Rock Smash
   encounter rates are low by design. Check the log — if you're seeing
   `rock smash: nothing from 6 press(es)` repeatedly, it is working.
-- **Nothing at all, and the 30-second reset keeps firing.** The rock
-  is already smashed. A broken rock stays broken until the area
-  reloads, so step out of the room and back in to respawn them. The
-  bot deliberately will not walk anywhere on its own — the one thing
-  it must not do is wander off the rock you aimed it at.
+- **It resets over and over without ever finding anything.** Almost
+  always the save is not facing a rock. Load your save by hand and
+  look at what is in front of you — that exact spot is what every
+  attempt gets.
+- **"the save did not come back within 60s".** L+R+Start never
+  landed, usually because Azahar was not focused, or the title is
+  waiting on something A does not answer. Check the log for the
+  reset line.
+- **Azahar falls over during a reset.** Raise
+  `random_encounters.reset_cooldown` (default 0) to put a gap between
+  relaunches, and `reset_grace` (default 4.0) to give it longer
+  before the bot starts reading again.
 - **The prompt appears but never gets answered.** Raise
   `random_encounters.smash_settle` (default 0.4) — the emulator is
   drawing the prompt slower than the bot is pressing through it.

@@ -444,3 +444,54 @@ def test_fishing_still_casts_with_y():
 
     assert fishing_loop.FishPlan().cast_button == "Y"
     assert fishing_loop.FishPlan().hook_button == "A"
+
+
+# ----------------------------------------------------------------------
+# What a reload does to the cheap detection path
+# ----------------------------------------------------------------------
+def test_a_stale_hot_address_blinds_the_cheap_check_for_a_while(
+        monkeypatch):
+    """Why the hunt clears FoeWatch.hot after a soft reset.
+
+    The cheap path re-reads ONE address -- the slot the last wild used
+    -- and only pays for a full scan every `full_every` polls. A
+    relaunch moves everything, so that address now points at nothing
+    in particular, and until the next full scan the check answers "no
+    wild" however plainly one is on screen.
+
+    The window is short, which is exactly why it is worth clearing
+    rather than letting it age out: during it the smash loop is still
+    pressing A.
+    """
+    from pokebot.modes import foe_watch
+
+    class Mon:
+        encryption_key = 0xCAFE
+
+    moved = 0x08809000
+    live = {moved: Mon()}
+    monkeypatch.setattr(foe_watch, "read_pk6_at",
+                        lambda ctx, addr: live.get(addr))
+    monkeypatch.setattr(foe_watch, "scan_nonparty",
+                        lambda ctx, b, n, keys: sorted(live.items()))
+
+    stale = foe_watch.FoeWatch(object(), 0x08800000, 0x20000, set(),
+                               set(), full_every=10)
+    stale.hot = 0x08803ECC              # where the PREVIOUS run's wild was
+    blind = [stale.check() for _ in range(5)]
+
+    assert False in blind, (
+        "a stale hot address cost nothing, so this guard may no longer "
+        "be needed -- check before deleting it")
+
+    cleared = foe_watch.FoeWatch(object(), 0x08800000, 0x20000, set(),
+                                 set(), full_every=10)
+    cleared.hot = 0                     # what the reset does
+    assert cleared.check() is True, (
+        "clearing hot should fall straight through to a full scan")
+
+
+def test_the_reset_clears_the_hot_address():
+    """Wiring check for the above."""
+    src = _encounter_src()
+    assert "foe_watcher.hot = 0" in src

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +25,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from pokebot.bot import BotContext            # noqa: E402
-from pokebot.modes import encounter, foe_watch  # noqa: E402
+from pokebot.modes import encounter, foe_watch, game_reset  # noqa: E402
 
 FOE_BASE = 0x08800000
 SLOT = FOE_BASE + 0x3ECC
@@ -51,8 +52,12 @@ class FakeInput:
         self.taps: list[str] = []
         self.touches: list[tuple] = []
         self.moves: list[str] = []
+        self.resets = 0
         self.stop_after = stop_after
         self.on_stop = on_stop
+
+    def soft_reset(self, hold_s=0.5):
+        self.resets += 1
 
     def diagnose(self):
         return {"dry_run": False, "driver": "fake"}
@@ -94,14 +99,43 @@ class FakeGame:
     display: str = "Fake X/Y"
 
 
-def build_ctx(inp, rcfg):
+def build_ctx(inp, rcfg, seconds=5.0):
+    """A context wired to a fake emulator, with a hard stop.
+
+    The deadline is not a convenience. These tests drive a `while not
+    should_stop()` loop, so a branch that behaves WRONGLY often just
+    never reaches whatever the test was going to stop it with -- and
+    the test hangs instead of failing, which is strictly worse than a
+    red line. Tripping the deadline sets `ran_away`, so "it never
+    finished" becomes an assertion like any other.
+    """
     evt = threading.Event()
     real_wait = evt.wait
     evt.wait = lambda timeout=None: real_wait(0)   # type: ignore
-    return BotContext(
+    ctx = BotContext(
         rpc=object(), game=FakeGame(FakeOffsets()),
         dashboard=FakeDashboard(), input=inp, target=None,
         config={"random_encounters": rcfg}, _stop_evt=evt)
+    deadline = time.monotonic() + seconds
+    ctx.ran_away = False                           # type: ignore
+
+    def should_stop():
+        if evt.is_set():
+            return True
+        if time.monotonic() > deadline:
+            ctx.ran_away = True                    # type: ignore
+            return True
+        return False
+
+    ctx.should_stop = should_stop                  # type: ignore
+    return ctx
+
+
+def finished(ctx):
+    """The run ended because the test said so, not because it hung."""
+    assert not getattr(ctx, "ran_away", False), (
+        "the hunt never stopped on its own -- it looped until the test "
+        "deadline, which means it is not doing what this test expects")
 
 
 FAST_FLEE = {
@@ -111,6 +145,9 @@ FAST_FLEE = {
 }
 FAST_SMASH = {"smash_settle": 0.01, "smash_poll_gap": 0.005,
               "smash_taps": 2}
+FAST_RESET = {"reset_quiet": 0.05, "reset_grace": 0.5,
+              "reset_boot_timeout": 3.0, "reset_press_hold": 0.001,
+              "reset_read_every": 0.25}
 
 
 def wire(monkeypatch, window):
@@ -144,6 +181,7 @@ def test_an_empty_room_gets_a_presses_and_nothing_else(monkeypatch):
     inp.on_stop = lambda: ctx.request_stop("enough")
 
     encounter.run(ctx)
+    finished(ctx)
 
     assert inp.taps, "the rock smash idle action never ran"
     assert set(inp.taps) == {"A"}
@@ -182,6 +220,7 @@ def test_the_a_presses_stop_the_moment_a_wild_appears(monkeypatch):
     inp.tap_touch = touch                       # type: ignore[method-assign]
 
     encounter.run(ctx)
+    finished(ctx)
 
     assert inp.touches, "never fled the encounter it found"
     after = inp.taps[inp.taps.index("A", 0) + state["a"]:]
@@ -212,6 +251,7 @@ def test_a_shiny_is_never_attacked_by_the_idle_action(monkeypatch):
     inp.tap = tap                               # type: ignore[method-assign]
 
     encounter.run(ctx)
+    finished(ctx)
 
     assert ctx.should_stop(), "a shiny did not stop the hunt"
     assert inp.taps.count("A") == 2, \
@@ -240,7 +280,185 @@ def test_the_watchdog_resets_with_b_and_keeps_going(monkeypatch):
     inp.tap = tap                               # type: ignore[method-assign]
 
     encounter.run(ctx)
+    finished(ctx)
 
     assert inp.taps.count("B") >= 8, "the watchdog never cleared the screen"
     assert inp.touches == [], \
         "touched the bottom screen in the overworld (that is the PSS)"
+
+
+# ----------------------------------------------------------------------
+# Soft reset as the loop, not as an error path
+# ----------------------------------------------------------------------
+def fast_reset_plan(monkeypatch):
+    """Shrink the reset's silences so the tests run instantly.
+
+    The silences themselves are tested in test_game_reset; what these
+    care about is that the hunt takes the reset branch at all and
+    picks itself up afterwards.
+    """
+    monkeypatch.setattr(
+        game_reset, "soft_reset_and_wait",
+        lambda ctx, loaded, plan, last=None: (
+            ctx.input.soft_reset() or True))
+
+
+def test_a_non_target_encounter_resets_instead_of_fleeing(monkeypatch):
+    """A smashed rock is gone; running away leaves the bot facing
+    rubble. The reset is what produces the next attempt."""
+    window: list = []
+    wire(monkeypatch, window)
+    fast_reset_plan(monkeypatch)
+
+    inp = FakeInput()
+    ctx = build_ctx(inp, {"idle_action": "rock_smash",
+                          "no_target_action": "soft_reset",
+                          **FAST_FLEE, **FAST_SMASH, **FAST_RESET})
+
+    state = {"a": 0}
+
+    def tap(button, hold_s=0.05):
+        inp.taps.append(button)
+        if button == "A":
+            state["a"] += 1
+            if state["a"] == 2:
+                window.append((SLOT, FakeMon(0xAAAA)))
+
+    def reset():
+        inp.resets += 1
+        window.clear()               # a fresh process: nothing lingers
+        ctx.request_stop("reset once")
+
+    inp.tap = tap                               # type: ignore
+    inp.soft_reset = reset                      # type: ignore
+
+    encounter.run(ctx)
+    finished(ctx)
+
+    assert inp.resets == 1, "never soft reset on a non-target encounter"
+    assert inp.touches == [], "fled instead of resetting"
+
+
+def test_the_watchdog_resets_too(monkeypatch):
+    """No encounter at all is the same situation as an encounter with
+    nothing in it, for a hunt whose attempts come from the reload."""
+    window: list = []
+    wire(monkeypatch, window)
+
+    inp = FakeInput()
+    ctx = build_ctx(inp, {"idle_action": "rock_smash",
+                          "no_target_action": "soft_reset",
+                          **FAST_FLEE, **FAST_SMASH, **FAST_RESET,
+                          "stuck_timeout": 0.001})
+
+    def reset(hold_s=0.5):
+        inp.resets += 1
+        ctx.request_stop("reset once")
+
+    inp.soft_reset = reset                      # type: ignore
+
+    encounter.run(ctx)
+    finished(ctx)
+
+    assert inp.resets == 1, "the watchdog did not soft reset"
+    assert inp.touches == [], "touched the bottom screen (the PSS)"
+
+
+def test_the_baseline_is_rebuilt_so_it_does_not_reset_forever(monkeypatch):
+    """The trap this branch sets for itself.
+
+    A reload brings up a FRESH process, and the records in its foe
+    window are ones `seen` has never heard of. Leave the baseline
+    alone and the very next scan reports one as a brand-new encounter
+    -- which resets, which brings up another fresh window, which
+    reports again. Forever, without ever smashing a rock.
+
+    Getting this test to actually exercise that took two goes. The
+    baseline is built from the foe window at the top of `run`, so a
+    wild seeded before the call is already in it and no encounter ever
+    happens -- the test passed with the rebuild deleted because it
+    never reached the code it was about. The wild has to appear while
+    the hunt is running, exactly as a real one does.
+    """
+    window: list = []
+    wire(monkeypatch, window)
+    fast_reset_plan(monkeypatch)
+
+    inp = FakeInput()
+    ctx = build_ctx(inp, {"idle_action": "rock_smash",
+                          "no_target_action": "soft_reset",
+                          **FAST_FLEE, **FAST_SMASH, **FAST_RESET},
+                    seconds=3.0)
+
+    fresh = {"n": 0}
+
+    def reset(hold_s=0.5):
+        inp.resets += 1
+        # A fresh process: records nobody has seen before. THIS is
+        # what a hunt that does not re-baseline reads as an encounter.
+        fresh["n"] += 1
+        window[:] = [(SLOT, FakeMon(0xF000 + fresh["n"]))]
+        if inp.resets > 3:
+            ctx.request_stop("runaway")
+
+    def tap(button, hold_s=0.05):
+        inp.taps.append(button)
+        # The first press produces the one real encounter, which is
+        # what gets the hunt into its first reset.
+        if button == "A" and not window and fresh["n"] == 0:
+            window.append((SLOT + 0x100, FakeMon(0xAAAA)))
+        if inp.taps.count("A") >= 10:
+            ctx.request_stop("smashed enough")
+
+    inp.soft_reset = reset                      # type: ignore
+    inp.tap = tap                               # type: ignore
+
+    encounter.run(ctx)
+    finished(ctx)
+
+    assert inp.resets >= 1, "the test never got the hunt to reset at all"
+    assert inp.resets <= 3, (
+        f"reset {inp.resets} times -- each reload's fresh records were "
+        f"read as new encounters because the baseline was not rebuilt")
+    assert inp.taps.count("A") > 1, "never got back to smashing"
+
+
+def test_a_catch_stops_the_hunt_rather_than_resetting_over_it(monkeypatch):
+    """Catching does not save the game. Carrying on would undo it at
+    the next non-target encounter -- the one outcome the hunt exists
+    to avoid."""
+    window: list = []
+    wire(monkeypatch, window)
+    fast_reset_plan(monkeypatch)
+
+    import pokebot.modes.catch as catch_mod
+
+    class Result:
+        caught = True
+        detail = "ball landed"
+        party_full = False
+
+    monkeypatch.setattr(catch_mod, "catch_wild",
+                        lambda *a, **k: Result())
+    monkeypatch.setattr(catch_mod, "settle_after_battle",
+                        lambda ctx: None)
+    monkeypatch.setattr(encounter, "_export_caught", lambda *a, **k: None)
+
+    inp = FakeInput()
+    ctx = build_ctx(inp, {"idle_action": "rock_smash",
+                          "no_target_action": "soft_reset",
+                          **FAST_FLEE, **FAST_SMASH, **FAST_RESET})
+
+    def tap(button, hold_s=0.05):
+        inp.taps.append(button)
+        if button == "A" and not window:
+            window.append((SLOT, FakeMon(0xB00B, shiny=True)))
+
+    inp.tap = tap                               # type: ignore
+
+    encounter.run(ctx)
+    finished(ctx)
+
+    assert ctx.should_stop(), "kept hunting after a catch"
+    assert inp.resets == 0, (
+        "soft reset after catching -- that undoes the catch")

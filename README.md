@@ -182,7 +182,7 @@ Legend: ✅ verified live · 🟡 wired, not yet user-tested · ⬜ planned
 | Shiny detection (PSV vs player TSV) | ✅ | 🟡 | 🟡 | 🟡 |
 | Random-encounter shiny hunt (walk → flee → stop on shiny) | ✅ | 🟡¹ | 🟡² | 🟡² |
 | Horde encounters (5× multi-mon eval per battle) | ✅ | 🟡¹ | — | — |
-| Rock Smash hunt (A at the rock → stops on any wild) | 🟡 | 🟡¹ | — | — |
+| Rock Smash hunt (A at the rock → soft-reset per attempt) | 🟡 | 🟡¹ | — | — |
 | Manual / observe (read-only, no inputs) | ✅ | 🟡 | 🟡 | 🟡 |
 | Live party read (Recently Seen + Party strip) | ✅ | 🟡 | 🟡 | 🟡 |
 | Soft-reset (starters · gifts · legendaries) | ✅ | 🟡 | 🟡 | 🟡 |

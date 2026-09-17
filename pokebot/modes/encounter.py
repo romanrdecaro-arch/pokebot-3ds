@@ -30,7 +30,8 @@ from dataclasses import dataclass
 
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
-from . import catch, fishing_loop, foe_watch, rock_smash_loop
+from . import (catch, fishing_loop, foe_watch, game_reset,
+               rock_smash_loop)
 from .observe import (scan_nonparty, get_party,
                        broadcast_party, _report_encounter,
                        _level_from_exp)
@@ -324,6 +325,7 @@ def run(ctx) -> None:
     flee_plan = FleePlan.from_config(rcfg)
     fish_plan = fishing_loop.FishPlan.from_config(rcfg)
     smash_plan = rock_smash_loop.SmashPlan.from_config(rcfg)
+    reset_plan = game_reset.ResetPlan.from_config(rcfg)
     idle_action = str(rcfg.get("idle_action", "walk")).lower()
     sweet_scent_gap = float(rcfg.get("sweet_scent_gap", 1.0))
     sweet_scent_settle = float(rcfg.get("sweet_scent_settle", 4.0))
@@ -344,6 +346,27 @@ def run(ctx) -> None:
         log.warning(f"  on_catch_fail={on_catch_fail!r} is not 'stop' or "
                     f"'resume'; using 'resume'")
         on_catch_fail = "resume"
+    # What "give up on this attempt" means.
+    #
+    # "flee" runs from the battle and carries on where it stands --
+    # right for a hunt whose encounters come from walking, where the
+    # next one is a few steps away.
+    #
+    # "soft_reset" relaunches the game instead. That is the only way
+    # some hunts get a second attempt at all: a Rock Smash hunt's rock
+    # is GONE once smashed and nothing brings it back but reloading the
+    # area, so the reset is the loop rather than an error path. It
+    # governs the stall watchdog too, because "an encounter with
+    # nothing in it" and "no encounter at all" are the same situation
+    # for such a hunt.
+    #
+    # It also requires the player to have SAVED on the spot, and it
+    # makes a successful catch precious: see the catch branch below.
+    no_target_action = str(rcfg.get("no_target_action", "flee")).lower()
+    if no_target_action not in ("flee", "soft_reset"):
+        log.warning(f"  no_target_action={no_target_action!r} is not "
+                    f"'flee' or 'soft_reset'; using 'flee'")
+        no_target_action = "flee"
     on_target = str(rcfg.get("on_target", "catch")).lower()
     if on_target not in ("catch", "stop"):
         log.warning(f"  on_target={on_target!r} is not 'catch' or 'stop'; "
@@ -425,7 +448,50 @@ def run(ctx) -> None:
     flee_walker = walker if idle_action == "walk" else None
     encounters = 0
     stalls = 0
+    resets = 0
+    last_reset: list = [0.0]
     last_progress = time.monotonic()
+
+    def do_soft_reset(why: str) -> bool:
+        """Relaunch the game and re-baseline detection.
+
+        Everything the hunt knows about the foe window is about a
+        process that no longer exists. Re-baselining is not tidiness:
+        a record left in `seen` from before the reload is a key that
+        will never be seen again, and -- far worse -- any key in the
+        FRESH window that `seen` does not contain reads as a brand-new
+        encounter the instant the loop turns, which would reset again
+        immediately, forever.
+        """
+        nonlocal seen, party_keys, resets
+        resets += 1
+        log.info(f"  soft reset #{resets} ({why})")
+        ok = game_reset.soft_reset_and_wait(
+            ctx,
+            lambda: bool(_refresh_party(ctx, party_base, party_stride,
+                                        player_ot)),
+            reset_plan, last_reset)
+        if ctx.should_stop():
+            return False
+        if not ok:
+            # Don't stop the hunt: the stall watchdog will come round
+            # and try again, which is the right response to a combo
+            # that did not land.
+            log.error("  carrying on, but the hunt is probably not "
+                      "where it thinks it is.")
+        party_keys = _refresh_party(ctx, party_base, party_stride,
+                                    player_ot) or party_keys
+        seen = {p.encryption_key for _, p in
+                scan_nonparty(ctx, foe_base, foe_len, party_keys)}
+        foe_watcher.seen = seen
+        foe_watcher.party_keys = party_keys
+        # Addresses do not survive a relaunch, so the cheap path has
+        # to re-acquire rather than trust where the last wild lived.
+        foe_watcher.hot = 0
+        ctx.dashboard.broadcast("soft_reset_attempt", count=resets)
+        log.info(f"  re-baselined: {len(seen)} record(s) ignored. "
+                 f"Hunting again.")
+        return ok
 
     while not ctx.should_stop():
         # Re-read the party every loop (cheap once the window is
@@ -503,6 +569,28 @@ def run(ctx) -> None:
                     party_keys = _refresh_party(
                         ctx, party_base, party_stride,
                         player_ot) or party_keys
+                    if no_target_action == "soft_reset":
+                        # Catching does not save the game. This hunt
+                        # gets its next attempt by RELOADING the save,
+                        # so carrying on would undo the catch at the
+                        # very next non-target encounter -- the one
+                        # outcome the whole hunt exists to avoid. Stop
+                        # and let the player save.
+                        bar = "*" * 30
+                        for line in (
+                            bar,
+                            "  SAVE THE GAME NOW.",
+                            f"  {result.detail} — but a caught Pokémon "
+                            f"is not a saved one, and this hunt resets "
+                            f"the game between attempts.",
+                            "  Bot STOPPED so the next reset cannot "
+                            "undo the catch. Save in-game, then start "
+                            "the bot again.",
+                            bar,
+                        ):
+                            log.warning(line)
+                        ctx.request_stop("caught — save before resuming")
+                        return
                     last_progress = time.monotonic()
                     continue
                 # Unconfirmed. Two very different situations wear this
@@ -515,6 +603,17 @@ def run(ctx) -> None:
                 # walking away from a shiny is not recoverable.
                 log.error(f"  CATCH UNCONFIRMED: {result.detail}")
                 resume = (on_catch_fail == "resume") or result.party_full
+                if no_target_action == "soft_reset" and resume:
+                    # "Resume" here means "soft reset at the next
+                    # encounter", which would throw away a catch that
+                    # probably worked. Unconfirmed is a reason to look,
+                    # not a reason to destroy the evidence.
+                    log.warning("  ...but this hunt resets the game "
+                                "between attempts, which would undo it "
+                                "if the ball did land. Stopping instead "
+                                "— check your party and PC box, and "
+                                "save if it is there.")
+                    resume = False
                 ctx.dashboard.broadcast(
                     "target_hit", count=encounters,
                     reason=f"catch unconfirmed — {result.detail}",
@@ -544,16 +643,23 @@ def run(ctx) -> None:
                 last_progress = time.monotonic()
                 continue
             if not dry:
-                # Wait out the battle intro/animation so the command
-                # menu (and the RUN button) is actually on screen —
-                # walking through it, so the player is already moving
-                # when the battle lets go.
-                if flee_walker is not None:
-                    flee_walker.wait(flee_plan.delay)
+                if no_target_action == "soft_reset":
+                    # Nothing here is worth keeping and there is no
+                    # point running away: this hunt's next attempt
+                    # comes from the reload, not from the overworld it
+                    # would be running back into.
+                    do_soft_reset("nothing on target in this encounter")
                 else:
-                    ctx._stop_evt.wait(flee_plan.delay)
-                _flee(ctx, screen_layout, run_local, run_override,
-                      flee_plan, flee_walker)
+                    # Wait out the battle intro/animation so the command
+                    # menu (and the RUN button) is actually on screen —
+                    # walking through it, so the player is already moving
+                    # when the battle lets go.
+                    if flee_walker is not None:
+                        flee_walker.wait(flee_plan.delay)
+                    else:
+                        ctx._stop_evt.wait(flee_plan.delay)
+                    _flee(ctx, screen_layout, run_local, run_override,
+                          flee_plan, flee_walker)
             last_progress = time.monotonic()
             continue                          # don't walk this iter
 
@@ -583,7 +689,13 @@ def run(ctx) -> None:
                 f"  no encounter for {flee_plan.stuck_timeout:.0f}s "
                 f"(stall #{stalls}) - recovering")
             if not dry:
-                if idle_action == "fish":
+                if no_target_action == "soft_reset":
+                    # Same situation as an encounter with nothing in
+                    # it: this hunt's attempts come from the reload.
+                    do_soft_reset(
+                        f"no encounter for "
+                        f"{flee_plan.stuck_timeout:.0f}s")
+                elif idle_action == "fish":
                     fishing_loop.restart(ctx, fish_plan)
                 elif idle_action == "rock_smash":
                     # No battle to run from -- a smash that produced

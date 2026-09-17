@@ -321,6 +321,37 @@ random_encounters:
   # for the walking hunt, and "whatever the user configured wins"
   # means a mode default can never beat a key that is set. Rock Smash
   # needs different values for both, so it reads its own.
+  # What "give up on this attempt" means. "flee" (the default
+  # everywhere else) runs from the battle and carries on where it
+  # stands. "soft_reset" relaunches the game instead -- which is the
+  # only way a Rock Smash hunt gets a second attempt at all, because a
+  # smashed rock is GONE and nothing brings it back but reloading the
+  # area. The rock smash mode sets this itself; it is here so you can
+  # turn it off, or turn it on for another mode.
+  #
+  # It governs the stall watchdog too: "an encounter with nothing in
+  # it" and "no encounter at all" are the same situation for a hunt
+  # whose attempts come from the reload.
+  #
+  # Two things it requires. The player must have SAVED on the spot,
+  # because the reset returns to the save. And a catch STOPS the hunt,
+  # because catching does not save the game and the next reset would
+  # undo it.
+  # no_target_action: flee
+  #
+  # Timing around the relaunch. The numbers that matter are the two
+  # silences: Azahar tears down the running process when the game asks
+  # the 3DS to relaunch it, and a ReadMemory landing in that window
+  # dereferences memory being freed -- four recorded access violations
+  # inside azahar.exe came from exactly that. reset_quiet stops reads
+  # BEFORE the combo (a datagram already in flight cannot be called
+  # back), reset_grace stops them after. Pressing A carries on
+  # throughout; it is only the reading that waits.
+  reset_quiet: 0.5         # no memory reads this long before the combo
+  reset_grace: 4.0         # ...or this long after it
+  reset_boot_timeout: 60   # give up if the save never comes back
+  reset_cooldown: 0.0      # shortest gap between resets; raise if Azahar
+                           # falls over mid-relaunch
   smash_stuck_timeout: 30  # reset the loop after this long with nothing
   smash_flee_delay: 2.0    # the battle opens behind the rock-break anim
   smash_taps: 6            # A presses per attempt (prompt + Yes + text)
