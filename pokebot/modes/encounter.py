@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
-from . import catch, fishing_loop
+from . import catch, fishing_loop, foe_watch
 from .observe import (scan_nonparty, get_party,
                        broadcast_party, _report_encounter,
                        _level_from_exp)
@@ -393,6 +393,11 @@ def run(ctx) -> None:
     log.info(f"  baseline: {len(seen)} pre-existing non-party PK6 "
              f"ignored. Walking…")
 
+    # Cheap "is a new wild there yet?" checks, used by the fishing
+    # cast loop. Built once so its hot address survives across casts.
+    foe_watcher = foe_watch.FoeWatch(ctx, foe_base, foe_len,
+                                     party_keys, seen)
+
     # The Walker owns the alternating step and the button pair. It
     # used to be two loose locals plus a counter, which the encounter
     # loop below clobbered by rebinding `a` to a PK6 *address* — the
@@ -587,12 +592,14 @@ def run(ctx) -> None:
             # routes through the standard encounter branch above --
             # which is what evaluates shininess and, for a target,
             # runs the same catch sequence the walking hunt uses.
-            fishing_loop.cast_once(
-                ctx,
-                lambda: any(p.encryption_key not in seen
-                            for _, p in scan_nonparty(
-                                ctx, foe_base, foe_len, party_keys)),
-                fish_plan)
+            # The watcher is rebuilt per cast so it sees the live
+            # `seen` and party sets, but it keeps the hot address
+            # across casts -- that cache is what makes each poll one
+            # read instead of a 128-round-trip window scan, and so
+            # what lets the hook land inside the bite window at all.
+            foe_watcher.seen = seen
+            foe_watcher.party_keys = party_keys
+            fishing_loop.cast_once(ctx, foe_watcher.check, fish_plan)
             continue
 
         # Hold B while moving so the player RUNS (covers grass faster

@@ -275,7 +275,13 @@ random_encounters:
   # Setup: rod registered to Y (Bag > Key Items > rod > Register),
   # standing facing water.
   fish_cast_settle: 4.0    # how long to wait for a bite before recasting
-  fish_poll_gap: 0.25      # how often to check the foe window
+  # How often to look for the bite. The hot check is a single
+  # 232-byte read of the slot the last wild used, not the 128-round-
+  # trip scan of the whole foe window, so this can be tight -- and it
+  # has to be. At ~600% emulation the bite window is about 170 ms of
+  # wall time, so the old quarter-second poll stepped straight over
+  # most bites and the loop looked like it was missing encounters.
+  fish_poll_gap: 0.02
   fish_hook_taps: 1
   fish_hook_gap: 0.15
   fish_clear_taps: 4       # B, to clear "Not even a nibble..."

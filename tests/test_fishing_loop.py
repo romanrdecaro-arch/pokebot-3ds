@@ -230,8 +230,20 @@ def test_a_junk_value_falls_back_rather_than_raising():
 
 
 def test_the_poll_gap_has_a_floor():
-    """Each poll is a foe-window scan; zero would flood the emulator."""
-    assert fl.FishPlan.from_config({"fish_poll_gap": 0}).poll_gap >= 0.05
+    """A floor, but a low one.
+
+    A poll is now ONE 232-byte read, not a window scan, so it can be
+    frequent -- it has to be, because the bite window is about 170 ms
+    of wall time. The floor only stops a zero turning the loop into a
+    busy spin against the emulator.
+    """
+    assert fl.FishPlan.from_config({"fish_poll_gap": 0}).poll_gap > 0
+    assert fl.FishPlan.from_config({"fish_poll_gap": 0}).poll_gap <= 0.01
+
+
+def test_the_default_poll_fits_several_checks_in_a_bite_window():
+    """~170 ms at the speed this hunt runs; 0.25 s stepped over it."""
+    assert fl.FishPlan().poll_gap <= 0.05
 
 
 def test_hook_taps_cannot_be_zero():

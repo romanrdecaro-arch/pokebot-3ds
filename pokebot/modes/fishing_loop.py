@@ -42,10 +42,12 @@ class FishPlan:
     # a cast. A cast that produces nothing costs this much, so it is
     # the main lever on casts per minute.
     bite_timeout: float = 4.0
-    # How often to look. Each poll is a scan of the foe window, which
-    # is a few hundred 1 KB reads, so this trades RPC load against how
-    # quickly the hook follows the bite.
-    poll_gap: float = 0.25
+    # How often to look. The hot path is ONE 232-byte read (see
+    # foe_watch), not the 128-round-trip window scan, so this can be
+    # small. It has to be: the bite window is about 170 ms of wall
+    # time at the speed this hunt runs, and a quarter-second poll
+    # simply steps over most of them.
+    poll_gap: float = 0.02
     hook_taps: int = 1
     hook_gap: float = 0.15
 
@@ -78,7 +80,7 @@ class FishPlan:
             hook_button=str(rcfg.get("fish_hook_button", d.hook_button)),
             clear_button=str(rcfg.get("fish_clear_button", d.clear_button)),
             bite_timeout=num("fish_cast_settle", d.bite_timeout),
-            poll_gap=max(0.05, num("fish_poll_gap", d.poll_gap)),
+            poll_gap=max(0.005, num("fish_poll_gap", d.poll_gap)),
             hook_taps=max(1, int(num("fish_hook_taps", d.hook_taps))),
             hook_gap=num("fish_hook_gap", d.hook_gap),
             clear_taps=max(0, int(num("fish_clear_taps", d.clear_taps))),
@@ -113,10 +115,16 @@ def cast_once(ctx, detect: Callable[[], bool], plan: FishPlan) -> str:
              f"for up to {plan.bite_timeout:.1f}s")
 
     deadline = time.monotonic() + plan.bite_timeout
+    first = True
     while time.monotonic() < deadline:
         if ctx.should_stop():
             return STOPPED
-        ctx._stop_evt.wait(plan.poll_gap)
+        # Check BEFORE sleeping. Sleeping first threw away a whole
+        # poll_gap of reaction time on every cast, and the bite window
+        # is only ~170 ms wide at the speed this hunt runs.
+        if not first:
+            ctx._stop_evt.wait(plan.poll_gap)
+        first = False
         try:
             bite = bool(detect())
         except Exception as exc:

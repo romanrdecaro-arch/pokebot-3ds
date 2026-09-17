@@ -359,6 +359,22 @@ def _all_valid(buf: bytes, base: int):
     return out
 
 
+def read_pk6_at(ctx, addr: int):
+    """Decode the single record at ``addr``, or None.
+
+    232 bytes is one RPC round trip, against the 128 a full foe-window
+    scan costs. That difference is the whole reason a caller can poll
+    fast enough to react inside a bite window.
+    """
+    try:
+        buf = ctx.rpc.read(addr, _OPP_PK6)
+    except Exception:
+        return None
+    if not buf or len(buf) < _OPP_PK6:
+        return None
+    return _decode(bytes(buf), party=False)
+
+
 def scan_nonparty(ctx, foe_base, foe_len, party_keys):
     """All checksum-valid PK6 in the foe window that are NOT party
     members, lowest address first — list of (addr, pkm), deduped by
