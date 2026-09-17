@@ -347,6 +347,14 @@ def methods_for(game_key: str) -> list[Method]:
                      "picks up the wild; misses recast automatically. "
                      "Requires a rod registered to Y and the player "
                      "facing fishable water."),
+        Method("Rock Smash", "rock_smash",
+               notes="Presses A at the breakable rock in front of you "
+                     "and stops the instant a wild appears, so it never "
+                     "attacks a shiny. Rock Smash has no guaranteed "
+                     "encounter, so quiet stretches are normal and the "
+                     "loop resets itself every 30s. Requires a party "
+                     "member that knows Rock Smash and the player "
+                     "facing a breakable rock."),
         Method("Horde encounters", "horde",
                notes="Same as Random encounters but tuned for hordes "
                      "(5 wild Pokémon per battle, ~5× shiny chance). "

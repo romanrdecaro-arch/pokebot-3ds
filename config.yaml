@@ -287,6 +287,48 @@ random_encounters:
   fish_clear_taps: 4       # B, to clear "Not even a nibble..."
   fish_clear_gap: 0.25
   fish_recast_gap: 0.4
+
+  # --- Rock Smash loop (mode: rock_smash) ----------------------------
+  #
+  #   A at the rock -> watch the foe window -> STOP pressing the
+  #   instant something lands there -> the encounter branch evaluates
+  #   it, and catches a shiny with the same sequence the walking hunt
+  #   uses -> smash again.
+  #
+  # Rock Smash is the one idle action where the button that MAKES the
+  # encounter is also the button that FIGHTS it: A opens the "use Rock
+  # Smash?" prompt, A answers Yes, A clears the result text -- and the
+  # moment a wild appears, that same A means "attack with move 1",
+  # aimed at the shiny. So detection here decides when to STOP
+  # pressing, and it is checked before every press as well as between
+  # them.
+  #
+  # B is the mirror of that trap: in the Yes/No prompt B answers "No",
+  # so B is pressed only in recovery, where any prompt still on screen
+  # is stale anyway.
+  #
+  # Rock Smash has NO guaranteed encounter -- most rocks give nothing.
+  # Quiet stretches are normal rather than a fault, so the mode sets
+  # stuck_timeout to 30s and recovers by clearing the screen instead
+  # of fleeing a battle that was never there.
+  #
+  # Setup: a party member that knows Rock Smash, standing facing a
+  # breakable rock. The bot never moves, so the rock stays in front of
+  # it -- but a smashed rock is gone until the area reloads, so if the
+  # bot settles into resets that produce nothing, step out of the room
+  # and back in to respawn them.
+  # These two exist because the generic keys above are already set
+  # for the walking hunt, and "whatever the user configured wins"
+  # means a mode default can never beat a key that is set. Rock Smash
+  # needs different values for both, so it reads its own.
+  smash_stuck_timeout: 30  # reset the loop after this long with nothing
+  smash_flee_delay: 2.0    # the battle opens behind the rock-break anim
+  smash_taps: 6            # A presses per attempt (prompt + Yes + text)
+  smash_settle: 0.4        # watch the foe window this long between presses
+  smash_poll_gap: 0.02     # one 232-byte read per check, so keep it tight
+  smash_clear_taps: 4      # B, recovery only -- never while smashing
+  smash_clear_gap: 0.25
+  smash_restart_gap: 0.4
   # Azahar screen layout — how the two 3DS screens are arranged in
   # the window. The RUN-button position is computed from this + the
   # live window size, so it stays correct at ANY window size.

@@ -409,6 +409,80 @@ the conditions chain fishing needs.
   a touch so the flee fires before the chain timer expires, or
   raise it if you're seeing failed runs.
 
+## Rock Smash mode
+
+Hunts shiny / target Pokemon by smashing breakable rocks in caves.
+Rock Smash is where X/Y hides several encounters you cannot get any
+other way -- Binacle on Route 8/Ambrette, and the cave Geodude and
+Dwebble lines.
+
+**Read this first:** Rock Smash has **no guaranteed encounter**. Most
+smashes give nothing at all. That is normal, it is not the bot being
+broken, and it is the single biggest difference from every other mode
+here -- a fishing cast that produces nothing means something is wrong,
+a rock smash that produces nothing means you smashed a rock.
+
+### What you need in-game
+
+1. **A party Pokemon that knows Rock Smash.** TM94 in X/Y (Shalour
+   City / Cyllage Gym area, and buyable later). Any party slot works.
+2. **Stand facing a breakable rock.** The cracked grey boulders in
+   Glittering Cave, Connecting Cave, Reflection Cave, Terminus Cave
+   and Route 9.
+3. That's all. The bot never moves the player, so the rock stays in
+   front of it.
+
+### Launcher setup
+
+Method -> **Rock Smash**. There are no extra sliders; the timings
+live under `random_encounters` in `config.yaml` as `smash_*`.
+
+### What it does each iteration
+
+1. **Checks the foe window BEFORE pressing anything.** If a battle is
+   somehow already up, it presses nothing at all.
+2. **Presses A** — opens the "use Rock Smash?" prompt, answers Yes,
+   carries through the smash animation and its text. Up to
+   `smash_taps` (6) presses per attempt.
+3. **Watches the foe window between every press.** The instant a wild
+   record the hunt has not seen appears, the A presses **stop**.
+4. The encounter is reported, target-checked, and either caught with
+   the same sequence every other mode uses, or fled.
+5. Nothing appeared? Smash again.
+6. **30 seconds with no encounter** -> clear the screen with B and
+   start the loop over.
+
+### Why A stops the instant a wild appears
+
+This is the one mode where the button that *makes* the encounter is
+also the button that *fights* it. In the overworld A means "use Rock
+Smash"; one frame later, in a battle, the same A means "attack with
+move 1" — aimed at the shiny you were hunting. So detection here
+decides when to **stop** pressing, and it is checked before every
+press as well as continuously between them.
+
+The mirror of that is **B**, which answers *"No"* to the Rock Smash
+prompt. The bot therefore never presses B while smashing — only in
+the 30-second reset, where any prompt still on screen is stale
+anyway.
+
+### Troubleshooting
+
+- **Long quiet stretches with nothing caught.** Expected. Rock Smash
+  encounter rates are low by design. Check the log — if you're seeing
+  `rock smash: nothing from 6 press(es)` repeatedly, it is working.
+- **Nothing at all, and the 30-second reset keeps firing.** The rock
+  is already smashed. A broken rock stays broken until the area
+  reloads, so step out of the room and back in to respawn them. The
+  bot deliberately will not walk anywhere on its own — the one thing
+  it must not do is wander off the rock you aimed it at.
+- **The prompt appears but never gets answered.** Raise
+  `random_encounters.smash_settle` (default 0.4) — the emulator is
+  drawing the prompt slower than the bot is pressing through it.
+- **It attacked instead of catching.** Report this; it is the failure
+  this mode is built to make impossible. Include the log around the
+  encounter.
+
 ## Tips for reliable hunts
 
 - **Set in-game text speed to FAST.** *Options → Text Speed → Fast.*

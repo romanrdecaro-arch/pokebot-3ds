@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
-from . import catch, fishing_loop, foe_watch
+from . import catch, fishing_loop, foe_watch, rock_smash_loop
 from .observe import (scan_nonparty, get_party,
                        broadcast_party, _report_encounter,
                        _level_from_exp)
@@ -323,6 +323,7 @@ def run(ctx) -> None:
     walk_gap = float(rcfg.get("walk_gap", 0.05))
     flee_plan = FleePlan.from_config(rcfg)
     fish_plan = fishing_loop.FishPlan.from_config(rcfg)
+    smash_plan = rock_smash_loop.SmashPlan.from_config(rcfg)
     idle_action = str(rcfg.get("idle_action", "walk")).lower()
     sweet_scent_gap = float(rcfg.get("sweet_scent_gap", 1.0))
     sweet_scent_settle = float(rcfg.get("sweet_scent_settle", 4.0))
@@ -352,12 +353,23 @@ def run(ctx) -> None:
     caught = 0
 
     ensure_targets_dir()                    # targets/ shows up now
+    # Each idle action describes itself. This used to be a two-way
+    # ternary that called anything other than walking "Sweet Scent",
+    # which has been wrong for fishing for as long as fishing existed.
+    idle_detail = {
+        "walk": f", movement={movement}, {walk_hold:.2f}s steps",
+        "sweet_scent": (f", Sweet Scent gap={sweet_scent_gap:.1f}s, "
+                        f"settle={sweet_scent_settle:.1f}s"),
+        "fish": (f", cast {fish_plan.cast_button} → hook "
+                 f"{fish_plan.hook_button}, "
+                 f"{fish_plan.bite_timeout:.1f}s bite window"),
+        "rock_smash": (f", up to {smash_plan.taps}× "
+                       f"{smash_plan.smash_button} per attempt, "
+                       f"{smash_plan.settle:.2f}s settle"),
+    }
     log.info(f"Mode: shiny hunt — random encounters "
              f"(idle={idle_action}"
-             + (f", movement={movement}, {walk_hold:.2f}s steps"
-                if idle_action == "walk"
-                else f", Sweet Scent gap={sweet_scent_gap:.1f}s, "
-                     f"settle={sweet_scent_settle:.1f}s")
+             + idle_detail.get(idle_action, "")
              + f", flee ~{flee_plan.total:.1f}s/encounter"
              + (f", stall watchdog {flee_plan.stuck_timeout:.0f}s)"
                 if flee_plan.stuck_timeout else ", no stall watchdog)"))
@@ -573,6 +585,11 @@ def run(ctx) -> None:
             if not dry:
                 if idle_action == "fish":
                     fishing_loop.restart(ctx, fish_plan)
+                elif idle_action == "rock_smash":
+                    # No battle to run from -- a smash that produced
+                    # nothing is the normal case, not a stall. Clear
+                    # the screen and smash again.
+                    rock_smash_loop.restart(ctx, smash_plan)
                 else:
                     _flee(ctx, screen_layout, run_local, run_override,
                           flee_plan, flee_walker)
@@ -584,6 +601,18 @@ def run(ctx) -> None:
             # Wait out the menu close + horde intro animation so the
             # next scan_nonparty sees the 5 newly-generated wilds.
             ctx._stop_evt.wait(sweet_scent_settle)
+            continue
+        if idle_action == "rock_smash":
+            # Press A at the rock, and STOP pressing the instant a
+            # record the hunt has not seen lands in the foe window --
+            # one more A there is an attack on the shiny. The wild
+            # stays in the window, so the next iteration's scan finds
+            # it and routes through the standard encounter branch
+            # above, which is what evaluates shininess and runs the
+            # same catch sequence every other mode uses.
+            foe_watcher.seen = seen
+            foe_watcher.party_keys = party_keys
+            rock_smash_loop.smash_once(ctx, foe_watcher.check, smash_plan)
             continue
         if idle_action == "fish":
             # Cast, then hook the instant a record the loop has not
