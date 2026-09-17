@@ -254,6 +254,33 @@ random_encounters:
   # menu it cannot see, forever. After this many seconds with no new
   # encounter the flee sequence is thrown again. 0 disables it.
   stuck_timeout: 60
+
+  # --- Fishing cast loop (mode: fishing) -----------------------------
+  #
+  #   Y to cast -> watch the foe window -> A the instant something
+  #   lands there -> the encounter branch evaluates it, and catches a
+  #   shiny with the same sequence the walking hunt uses -> recast.
+  #
+  # The hook is driven by DETECTION, not timing. The bot cannot see
+  # "Oh! A bite!", but it can see the wild record the game generates
+  # the moment one happens, so the A press follows the bite instead of
+  # guessing at a window it has no way to observe.
+  #
+  # B is pressed during RECOVERY -- after a cast that caught nothing,
+  # and when stuck_timeout above restarts the loop -- because that is
+  # where text boxes pile up and block the next cast. It is
+  # deliberately NOT pressed while the rod is out: B there reels the
+  # line back in, which would stop the loop fishing at all.
+  #
+  # Setup: rod registered to Y (Bag > Key Items > rod > Register),
+  # standing facing water.
+  fish_cast_settle: 4.0    # how long to wait for a bite before recasting
+  fish_poll_gap: 0.25      # how often to check the foe window
+  fish_hook_taps: 1
+  fish_hook_gap: 0.15
+  fish_clear_taps: 4       # B, to clear "Not even a nibble..."
+  fish_clear_gap: 0.25
+  fish_recast_gap: 0.4
   # Azahar screen layout — how the two 3DS screens are arranged in
   # the window. The RUN-button position is computed from this + the
   # live window size, so it stays correct at ANY window size.

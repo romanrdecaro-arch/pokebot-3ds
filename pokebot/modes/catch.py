@@ -117,7 +117,7 @@ class CatchPlan:
             bag=point("bag_local", DEFAULT_BAG),
             balls=point("balls_local", DEFAULT_BALLS),
             ball=point("ball_local", DEFAULT_BALL),
-            layout=str(rcfg.get("screen_layout", "side_by_side")).lower(),
+            layout=str(rcfg.get("screen_layout", "auto")).lower(),
             overrides=overrides,
             intro_taps=int(num("catch_intro_taps", 4)),
             intro_gap=num("catch_intro_gap", 0.35),

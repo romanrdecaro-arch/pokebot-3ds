@@ -30,12 +30,18 @@ from .encounter import run as _encounter_run
 
 log = logging.getLogger(__name__)
 
-#: Fishing-specific defaults. flee_delay matches horde's — the
-#: fishing intro has its own cutscene (rod reel + fish leap + "Oh! A
-#: bite!" text) needing the same headroom before the RUN touch lands.
+#: Fishing-specific defaults.
+#:
+#: The fishing intro does have its own cutscene (rod reel, fish leap,
+#: "Oh! A bite!"), so it needs more headroom than a grass encounter
+#: before the RUN touch can land -- but nothing like the 9 s this used
+#: to take. That number was tuned against a 100% emulator; the hunt
+#: runs Azahar around 600%, where the same cutscene is over in well
+#: under a second. If a flee ever fires too early the stall watchdog
+#: catches it within a minute.
 _DEFAULTS = {
     "idle_action": "fish",
-    "flee_delay": 9.0,
+    "flee_delay": 2.0,
 }
 
 

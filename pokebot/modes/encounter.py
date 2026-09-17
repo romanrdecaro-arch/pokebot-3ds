@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
-from . import catch
+from . import catch, fishing_loop
 from .observe import (scan_nonparty, get_party,
                        broadcast_party, _report_encounter,
                        _level_from_exp)
@@ -246,51 +246,6 @@ def _run_fraction(layout, run_local, override):
     return 0.5, 0.92, "fallback"
 
 
-def _use_fishing_rod(ctx, foe_base: int, foe_len: int,
-                     party_keys: set, baseline: set,
-                     poll_timeout: float) -> None:
-    """One fishing iteration: Y (cast) → poll until "!" → A (hook).
-
-    The "!" bite cue coincides with a freshly-generated PK6 landing
-    in the foe window — so polling ``scan_nonparty`` after the cast
-    is functionally equivalent to detecting the visual cue. The
-    moment a never-baseline key appears we tap A: the press is
-    guaranteed to land inside the bite window because we just
-    detected its start.
-
-    Returns silently after ``poll_timeout`` if no bite appears — the
-    main loop's next iteration will fall back here and recast.
-
-    **Setup:** rod registered to Y (Bag → Key Items → rod → Register),
-    player facing fishable water.
-    """
-    poll_gap = 0.2
-    log.info(f"  Fishing cast: Y → poll for bite (≤{poll_timeout:.1f}s)")
-    if ctx.should_stop():
-        return
-    ctx.input.tap("Y", hold_s=0.05)
-    iterations = max(1, int(poll_timeout / poll_gap))
-    for _ in range(iterations):
-        if ctx.should_stop():
-            return
-        ctx._stop_evt.wait(poll_gap)
-        cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
-        if any(p.encryption_key not in baseline for _, p in cands):
-            log.info("  Fishing: bite detected → A (hook)")
-            ctx.input.tap("A", hold_s=0.05)
-            return
-    # No bite — the game shows "Not even a nibble..." (or similar).
-    # Tap A once to dismiss it, then wait 1.5s for the dialog box to
-    # actually close and the player to return to walkable overworld
-    # state before the next iteration's Y press lands.
-    log.info(f"  Fishing: no bite within {poll_timeout:.1f}s — "
-             f"A to clear, recast")
-    if ctx.should_stop():
-        return
-    ctx.input.tap("A", hold_s=0.05)
-    ctx._stop_evt.wait(1.5)
-
-
 def _use_sweet_scent(ctx, gap: float) -> None:
     """Open menu → Pokémon → slot 1 → Sweet Scent.
 
@@ -367,12 +322,11 @@ def run(ctx) -> None:
     walk_hold = float(rcfg.get("walk_hold", 0.10))
     walk_gap = float(rcfg.get("walk_gap", 0.05))
     flee_plan = FleePlan.from_config(rcfg)
+    fish_plan = fishing_loop.FishPlan.from_config(rcfg)
     idle_action = str(rcfg.get("idle_action", "walk")).lower()
     sweet_scent_gap = float(rcfg.get("sweet_scent_gap", 1.0))
     sweet_scent_settle = float(rcfg.get("sweet_scent_settle", 4.0))
-    fish_cast_settle = float(rcfg.get("fish_cast_settle", 5.0))
-    screen_layout = str(rcfg.get("screen_layout",
-                                 "side_by_side")).lower()
+    screen_layout = str(rcfg.get("screen_layout", "auto")).lower()
     run_local = rcfg.get("run_local") or [0.5, 0.86]
     run_override = rcfg.get("run_touch")     # None ⇒ auto-geometry
     # What to do when the hunt finds what it was hunting for.
@@ -584,6 +538,33 @@ def run(ctx) -> None:
         if dry:
             ctx._stop_evt.wait(0.4)
             continue
+        # Watchdog, BEFORE the idle actions so it covers all of them.
+        # It used to sit after the fishing branch's `continue`, which
+        # meant fishing could never reach it: a cast loop that wedged
+        # itself stayed wedged forever.
+        #
+        # What "recover" means depends on what the bot is doing. A
+        # walking hunt is almost always stuck in a battle whose RUN
+        # touch missed, so it re-sends the flee. A fishing hunt is
+        # stuck on a text box or a cast that never registered, and
+        # B presses fix both -- without touching the bottom screen,
+        # which in the overworld is the PSS.
+        if (flee_plan.stuck_timeout
+                and time.monotonic() - last_progress
+                > flee_plan.stuck_timeout):
+            stalls += 1
+            log.warning(
+                f"  no encounter for {flee_plan.stuck_timeout:.0f}s "
+                f"(stall #{stalls}) - recovering")
+            if not dry:
+                if idle_action == "fish":
+                    fishing_loop.restart(ctx, fish_plan)
+                else:
+                    _flee(ctx, screen_layout, run_local, run_override,
+                          flee_plan, walker)
+            last_progress = time.monotonic()
+            continue
+
         if idle_action == "sweet_scent":
             _use_sweet_scent(ctx, sweet_scent_gap)
             # Wait out the menu close + horde intro animation so the
@@ -591,42 +572,18 @@ def run(ctx) -> None:
             ctx._stop_evt.wait(sweet_scent_settle)
             continue
         if idle_action == "fish":
-            # Pass the live `seen` set as the baseline — the
-            # fishing routine watches the foe window for any key
-            # NOT in that set (i.e. the "!" just landed); when one
-            # appears it taps A. The fresh PK6 stays in the foe
-            # window so the main loop's next scan finds it and
-            # routes to the standard "if new:" branch above.
-            _use_fishing_rod(ctx, foe_base, foe_len, party_keys,
-                             baseline=seen,
-                             poll_timeout=fish_cast_settle)
-            # 1 s breather between attempts. After a hooked bite the
-            # battle intro is still cued up when we return — the wait
-            # lets the rod-retract / "no nibble" animation clear
-            # before the next iteration's scan or recast.
-            ctx._stop_evt.wait(1.0)
-            continue
-        # Watchdog. Walking produces an encounter every few seconds, so
-        # a long silence does not mean bad luck — it almost always
-        # means the RUN touch missed and the bot is stepping into a
-        # battle menu it cannot see, forever. Throw the flee sequence
-        # again rather than hunting nothing.
-        #
-        # Safe to fire in the overworld too: it is B presses either
-        # side of one touch, and the trailing B presses close anything
-        # the touch happened to open.
-        if (flee_plan.stuck_timeout
-                and time.monotonic() - last_progress
-                > flee_plan.stuck_timeout):
-            stalls += 1
-            log.warning(
-                f"  no encounter for {flee_plan.stuck_timeout:.0f}s "
-                f"(stall #{stalls}) — re-sending the RUN sequence in "
-                f"case a battle is still open")
-            if not dry:
-                _flee(ctx, screen_layout, run_local, run_override,
-                      flee_plan, walker)
-            last_progress = time.monotonic()
+            # Cast, then hook the instant a record the loop has not
+            # seen before lands in the foe window. The hooked wild
+            # stays there, so the next iteration's scan finds it and
+            # routes through the standard encounter branch above --
+            # which is what evaluates shininess and, for a target,
+            # runs the same catch sequence the walking hunt uses.
+            fishing_loop.cast_once(
+                ctx,
+                lambda: any(p.encryption_key not in seen
+                            for _, p in scan_nonparty(
+                                ctx, foe_base, foe_len, party_keys)),
+                fish_plan)
             continue
 
         # Hold B while moving so the player RUNS (covers grass faster
