@@ -190,19 +190,50 @@ def run(ctx) -> None:
                                   else "SHINY"))
     _focus_if_needed(ctx)
 
-    def read_party():
-        """Read the party, always dropping the cached window first.
+    # Two reads, because two different questions are being asked and
+    # one read cannot answer both.
+    #
+    # get_party(contiguous=True) keeps only the save-block party
+    # cluster -- the actual six slots. get_party(contiguous=False)
+    # keeps every owned PK6 in the window, which is the party AND the
+    # PC boxes, and exists so a gift written to a live buffer off the
+    # save-block grid is not hidden.
+    #
+    # Using the broad one to COUNT party slots is what shipped, and it
+    # told a player with 80 boxed Pokemon that their party was full
+    # (82/6) before pressing a single button. Boxes are not party
+    # slots.
+    def relocate():
+        """Drop the cached window so the next read re-finds the party.
 
-        There is deliberately no cheap variant. A gift can land in a
-        live buffer that does not overlap the save-block cluster the
-        cache was anchored on, so a cached read can miss the one
-        record this whole mode exists to notice -- and it would miss
-        it silently, looking exactly like "the gift has not arrived
-        yet". At roughly one read per attempt the saving was never
-        worth the failure mode.
+        Deliberately NOT done per read. get_party caches a tight window
+        around the owned cluster and re-scans only that; clearing it
+        sends the next read through the full 15 MB relocation scan
+        instead, and at 1 KB per RPC round trip that is thousands of
+        them. Once per attempt is fine. Every 150 ms, while mashing A,
+        is not -- it would make the poll slower than the thing it is
+        polling for.
+
+        A relaunch moves everything, but get_party already notices
+        that on its own (the cached window comes back empty and it
+        re-locates). This is belt and braces at a price worth paying
+        once.
         """
         if hasattr(ctx, "_party_win"):
             ctx._party_win = None
+
+    def read_team():
+        """The six slots. For counting them, and for the strip."""
+        return get_party(ctx, party_base, party_stride, player_ot,
+                         contiguous=True) or []
+
+    def read_all():
+        """Everything owned in the window -- party and boxes.
+
+        Only ever used to ask "is this key one I had already seen?",
+        which is a question boxed Pokemon should be included in: they
+        are in the baseline, so they are never mistaken for the gift.
+        """
         return get_party(ctx, party_base, party_stride, player_ot,
                          contiguous=False) or []
 
@@ -230,7 +261,8 @@ def run(ctx) -> None:
             return False
         return True
 
-    if not check_party(read_party()):
+    relocate()
+    if not check_party(read_team()):
         return
 
     # Reset once before taking the baseline.
@@ -252,7 +284,7 @@ def run(ctx) -> None:
                                press_hold=plan.press_hold,
                                press_gap=plan.press_gap,
                                read_every=plan.detect_every)
-        if not soft_reset_and_wait(ctx, lambda: bool(read_party()),
+        if not soft_reset_and_wait(ctx, lambda: bool(read_team()),
                                    reset_plan, last_reset=None):
             if ctx.should_stop():
                 return
@@ -264,18 +296,23 @@ def run(ctx) -> None:
             ctx.request_stop("opening reset did not return")
             return
 
-    baseline = read_party()
-    if not check_party(baseline):
+    relocate()
+    baseline_team = read_team()
+    if not check_party(baseline_team):
         return
 
-    broadcast_party(ctx, baseline)
-    baseline_keys = {p.encryption_key for p in baseline}
-    log.info(f"  party as saved: {len(baseline)}/6 — "
-             + ", ".join(f"#{p.species}" for p in baseline)
-             + f". Anything else that appears is the gift.")
+    broadcast_party(ctx, baseline_team)
+    # Keys come from the BROAD read so every boxed Pokemon is in the
+    # baseline too. Leave them out and all of them read as arrivals
+    # the first time the gift check runs.
+    baseline_keys = {p.encryption_key for p in read_all()}
+    log.info(f"  party as saved: {len(baseline_team)}/6 — "
+             + ", ".join(f"#{p.species}" for p in baseline_team)
+             + f" ({len(baseline_keys)} owned PK6 including boxes). "
+             + "Anything else that appears is the gift.")
 
     def gift_present() -> bool:
-        return bool(new_arrivals(read_party(), baseline_keys))
+        return bool(new_arrivals(read_all(), baseline_keys))
 
     last_reset: list = [0.0]
 
@@ -310,6 +347,9 @@ def run(ctx) -> None:
         log.info(f"Gift attempt #{attempt}")
         ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
         _focus_if_needed(ctx)
+        # Re-find the party after the relaunch, once, before the poll
+        # loop starts leaning on the cached window.
+        relocate()
 
         # 1. Mash A until something new is in the party. Detection is
         #    what ends the pressing -- see the module docstring: the
@@ -333,7 +373,8 @@ def run(ctx) -> None:
 
         # 2. Read it properly. The detect above is a yes/no; this is
         #    the record we report and decide on.
-        arrivals = new_arrivals(read_party(), baseline_keys)
+        relocate()
+        arrivals = new_arrivals(read_all(), baseline_keys)
         if not arrivals:
             # Detection said yes and the re-read says no: the gift was
             # mid-write. Treat as a miss and reset rather than guess.
@@ -349,7 +390,8 @@ def run(ctx) -> None:
         pkm = arrivals[0]
         # Strip = the saved team plus whatever just arrived, wherever
         # in RAM it landed.
-        broadcast_party(ctx, (list(baseline) + arrivals)[:6])
+        broadcast_party(ctx, (list(baseline_team)
+                              + arrivals)[:6])
         ctx.dashboard.broadcast(
             "candidate", attempt=attempt,
             species=pkm.species, nickname=pkm.nickname,

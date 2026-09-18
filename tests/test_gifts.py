@@ -280,3 +280,26 @@ def test_the_launcher_offers_it():
                                   "GiftPlan"])
 def test_the_public_surface_exists(name):
     assert hasattr(gifts, name)
+
+
+# ----------------------------------------------------------------------
+# Launcher wiring
+# ----------------------------------------------------------------------
+def test_the_launcher_passes_the_trainer_name_for_gifts():
+    """Without it the hunt cannot tell which PK6 are YOURS, and reports
+    "No party found" on a perfectly good save. It used to be sent only
+    for soft_reset, and gifts reads the same config section."""
+    src = (REPO / "launcher.py").read_text(encoding="utf-8")
+    assert 'if method.mode in ("soft_reset", "gifts"):' in src
+    assert '"--trainer-name", tn' in src
+
+
+def test_the_launcher_hides_the_target_picker_for_gifts():
+    """Gifts evaluates whatever it is handed; there is nothing to
+    pick. The trainer-name and press-speed controls in the same panel
+    still apply, which is why the panel is shown at all."""
+    src = (REPO / "launcher.py").read_text(encoding="utf-8")
+    assert 'elif m and m.mode == "gifts":' in src
+    assert "self._sr_target_cb.pack_forget()" in src
+    # ...and it must come BACK when a soft-reset target is picked again.
+    assert "before=self._starter_hint)" in src

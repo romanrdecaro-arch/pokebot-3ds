@@ -1584,10 +1584,14 @@ class _App(tk.Tk):
 
         # Target — what we're soft-resetting for (Starters / Snorlax /
         # Lapras for X/Y; just Starters for other games).
-        tk.Label(self._starter_frame, text="Soft-reset target",
-                 bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(fill="x", pady=(0, 4))
+        # Named, so Gifts mode can hide just these two: it shares the
+        # trainer-name and press-speed controls below but has no
+        # target to pick -- it evaluates whatever the dialog hands over.
+        self._sr_target_lbl = tk.Label(
+            self._starter_frame, text="Soft-reset target",
+            bg=_PANEL2, fg=_MUTED, font=("Segoe UI", 9, "bold"),
+            anchor="w")
+        self._sr_target_lbl.pack(fill="x", pady=(0, 4))
         self._sr_target_var = tk.StringVar(value="Starters")
         self._sr_target_cb = ttk.Combobox(
             self._starter_frame, textvariable=self._sr_target_var,
@@ -2080,11 +2084,27 @@ class _App(tk.Tk):
         if m and m.mode == "soft_reset":
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
+            self._sr_target_lbl.pack(fill="x", pady=(0, 4),
+                                     before=self._starter_hint)
+            self._sr_target_cb.pack(fill="x", pady=(0, 8),
+                                    before=self._starter_hint)
             self._starter_hint.config(
                 text="Save in front of the starter table with an EMPTY "
                      "party. Whichever starter is at the held end of the "
                      "row is the one taken — change the species in PKHeX "
                      "afterwards if you want a different one.")
+        elif m and m.mode == "gifts":
+            # Same trainer-name and press-speed controls, no target
+            # picker: this mode evaluates whatever it is handed.
+            self._starter_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
+            self._sr_target_lbl.pack_forget()
+            self._sr_target_cb.pack_forget()
+            self._starter_hint.config(
+                text="Leave at least one PARTY SLOT OPEN, stand facing "
+                     "whoever gives the Pokémon, and SAVE there. Every "
+                     "attempt returns to that save. A shiny stops the "
+                     "bot — decline the nickname with B, then save.")
         elif m and m.mode == "encounter":
             # Sweet Scent mode picks no direction — it pulls the
             # horde from a menu — so the Movement panel stays hidden.
@@ -2327,7 +2347,11 @@ class _App(tk.Tk):
                          f"{float(self._fish_flee_var.get()):.1f}"]
             except Exception:
                 pass
-        if method.mode == "soft_reset":
+        # Gifts reads the same soft_reset config section as the
+        # targeted soft-resets, so it needs the same two flags. Without
+        # the trainer name it cannot tell which PK6 are YOURS, and
+        # reports "No party found" on a perfectly good save.
+        if method.mode in ("soft_reset", "gifts"):
             tn = self._trainer_var.get().strip()
             if tn:
                 args += ["--trainer-name", tn]

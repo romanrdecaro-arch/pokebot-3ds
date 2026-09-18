@@ -56,8 +56,12 @@ class Game:
     """A save with a party, an NPC that hands over a Pokemon after a
     few A presses, and a reset that puts everything back."""
 
-    def __init__(self, gifts_in_order, presses_needed=5):
+    def __init__(self, gifts_in_order, presses_needed=5, boxed=80):
         self.team = [Mon(1, 25), Mon(2, 4)]
+        # The PC boxes. A broad scan sees these too -- they are owned
+        # PK6 in the same window -- which is the whole reason a broad
+        # read cannot be used to count party slots.
+        self.boxes = [Mon(1000 + i, 16) for i in range(boxed)]
         self.queue = list(gifts_in_order)
         self.presses_needed = presses_needed
         self.presses = 0
@@ -103,7 +107,8 @@ class Game:
         """
         if contiguous:
             return list(self.team)
-        return list(self.team) + ([self.held] if self.held else [])
+        return (list(self.team) + list(self.boxes)
+                + ([self.held] if self.held else []))
 
 
 class Ctx:
@@ -403,3 +408,114 @@ def test_the_existing_team_never_reads_as_an_arrival(wired):
     assert hit["species"] == 131, \
         f"stopped on a party member, not the gift: {hit}"
     assert game.presses >= 5, "stopped before pressing anything"
+
+
+# ----------------------------------------------------------------------
+# Boxes are not party slots
+# ----------------------------------------------------------------------
+def test_a_full_pc_box_is_not_a_full_party(wired):
+    """Reported from a real run: 82 Pokemon "in the party".
+
+    The broad read that finds an off-grid gift returns every owned PK6
+    in the window -- the team AND the boxes. Counting party slots with
+    it means anyone who has played the game for an hour is told their
+    party is full, and the hunt stops before pressing anything.
+    """
+    game = wired(Game([Mon(99, shiny=True)], presses_needed=3, boxed=80))
+    ctx = Ctx(game)
+
+    run(ctx)
+
+    assert "party full" not in (ctx.reasons() or []), (
+        "counted boxed Pokemon as party members")
+    assert "target_hit" in ctx.kinds()
+
+
+def test_a_genuinely_full_party_is_still_refused(wired):
+    """The other half: the check has to keep working."""
+    game = Game([Mon(99, shiny=True)], boxed=80)
+    game.team = [Mon(i, 25) for i in range(1, 7)]
+    wired(game)
+    ctx = Ctx(game)
+
+    run(ctx)
+
+    assert "party full" in (ctx.reasons() or [])
+    assert game.taps == []
+
+
+def test_the_gift_is_still_found_past_a_boxful(wired):
+    """And the arrival check must still see a gift that lands off the
+    save-block grid, which is why the broad read exists at all."""
+    game = wired(Game([Mon(99, shiny=True)], presses_needed=3, boxed=80))
+    ctx = Ctx(game)
+
+    run(ctx)
+
+    hit = [kw for k, kw in ctx.events if k == "target_hit"]
+    assert hit and hit[0]["species"] == 131
+
+
+# ----------------------------------------------------------------------
+# What a poll is allowed to cost
+# ----------------------------------------------------------------------
+def test_the_poll_does_not_force_a_full_relocation_scan(monkeypatch):
+    """get_party caches a tight window around the party and re-scans
+    only that. Clearing the cache sends the next read through the full
+    15 MB relocation scan instead -- thousands of 1 KB RPC round trips.
+
+    Once per attempt is fine. Every detect_every while mashing A is
+    not: the poll would take longer than the interval it is polling
+    on, and the A presses stop while it runs.
+    """
+    game = Game([Mon(99, shiny=True)], presses_needed=40, boxed=80)
+    cleared = {"n": 0}
+
+    class Ctx2(Ctx):
+        pass
+
+    ctx = Ctx2(game)
+
+    class Win:
+        def __get__(self, obj, cls=None):
+            return None
+
+    monkeypatch.setattr(gifts, "ensure_targets_dir", lambda: None)
+    monkeypatch.setattr(gifts, "_focus_if_needed", lambda c: None)
+    monkeypatch.setattr(sr, "_focus_if_needed", lambda c: None)
+    monkeypatch.setattr(gifts, "broadcast_party", lambda c, p: set())
+    monkeypatch.setattr(gifts, "save_target_pk6",
+                        lambda c, a, pk, lbl: None)
+
+    reads = {"n": 0}
+
+    def counting_get_party(c, b, st, ot, contiguous=True):
+        reads["n"] += 1
+        return game.party(contiguous)
+
+    monkeypatch.setattr(gifts, "get_party", counting_get_party)
+
+    # Count how often the cached window is dropped.
+    class Tracker(dict):
+        pass
+
+    orig_setattr = Ctx2.__setattr__
+
+    def tracking_setattr(self, name, value):
+        if name == "_party_win" and value is None:
+            cleared["n"] += 1
+        orig_setattr(self, name, value)
+
+    Ctx2.__setattr__ = tracking_setattr
+    try:
+        ctx._party_win = (0, 1)          # pretend a window is cached
+        cleared["n"] = 0
+        run(ctx)
+    finally:
+        Ctx2.__setattr__ = orig_setattr
+
+    polls = reads["n"]
+    assert polls > 10, "the hunt barely read anything; test is vacuous"
+    assert cleared["n"] <= 6, (
+        f"cleared the party-window cache {cleared['n']} times across "
+        f"{polls} reads -- the poll is forcing a relocation scan")
