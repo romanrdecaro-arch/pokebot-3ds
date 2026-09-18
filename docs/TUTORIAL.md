@@ -231,6 +231,90 @@ new keys during the sequence) and gets target-evaluated. On a hit
 the bot stops at the nickname prompt; press **B** to decline the
 nickname and save.
 
+## Gifts mode (any gift Pokémon, soft reset)
+
+The **Soft reset** method above hunts specific targets that each needed
+their own hand-verified button sequence. **Gifts** is the general
+version: it does not care which gift, or what the dialog says. Reset,
+mash A, and the moment a Pokémon that was not in your saved party
+appears, stop and look at it.
+
+That covers Lapras from the Route 12 Hiker, the bike-shop Eevee, fossil
+revivals, in-game trades, the Lumiose Station Kanto starter — anything
+where talking to something hands you a Pokémon.
+
+### What you need in-game
+
+1. **Leave at least one party slot open.** A gift given to a full party
+   goes straight to a PC box, where no party read can see it. The bot
+   checks this before pressing anything and refuses to start.
+2. Stand in front of whoever gives the Pokémon, facing them, with the
+   dialog **not yet started**.
+3. **SAVE there.** Every attempt returns to that save.
+
+### Launcher setup
+
+1. **METHOD** — set to **Gift Pokémon (soft reset)**.
+2. **TARGET FILTER** — usually *Shiny only*. Any filter you set also
+   works, and a shiny always stops it regardless of the filter.
+3. Press **▶ Start Bot**.
+
+### What it does
+
+1. **Resets once before starting.** The baseline has to be your party
+   *as saved*; the party on screen right now is only that if the bot
+   happened to be started in a clean state. One reset makes the
+   question go away.
+2. Reads your party and remembers it. Anything else that turns up is
+   the gift.
+3. **Mashes A** at about 33 presses a second — as fast as Azahar
+   reliably registers. (Below ~10 ms a press can go down and up inside
+   one polled frame and not count at all, so faster is not faster.)
+4. **Stops the instant something new is in the party**, checks it, and
+   either stops on a shiny / target or resets and goes again.
+
+### How it tells the gift from your team
+
+By encryption key. Every Pokémon the game generates gets a unique one,
+and your saved team's keys come back unchanged on every reload — so
+anything with a key that was not in the baseline is, by construction,
+the gift. This is why the mode does not need to know which Pokémon it
+is looking for.
+
+### The nickname prompt
+
+In X/Y the "give it a nickname?" prompt comes **after** the Pokémon is
+added to your party, and A at that prompt opens the naming keyboard —
+which the bot has no way out of. That is why the presses are stopped by
+*detection* rather than by a count: they end within one poll of the
+gift landing, before the prompt is reachable.
+
+`detect_every` (default 0.15 s) is what bounds the overshoot, to about
+five presses. It is a **correctness** setting here, not a performance
+one — raise it and you are widening the window in which the bot can
+press A into a keyboard.
+
+When it stops on a shiny, the game is sitting at or just before that
+prompt. **Decline with B, then SAVE.** Until you save, a reset takes it
+back.
+
+### Troubleshooting
+
+- **"Your party is FULL".** Exactly what it says — box something, save
+  again, restart.
+- **"No party found".** `soft_reset.trainer_name` does not match your
+  in-game OT, or `party_base` is not configured. Run Debug once.
+- **"nothing reached the party in 180s of A presses".** Either the save
+  is not in front of the giver, or Azahar is not receiving input. Run
+  `scripts/test_input.py` to tell those two apart.
+- **"the gift never left the party".** The soft reset is not landing,
+  so the bot stopped rather than evaluating the same Pokémon forever.
+  Check Azahar has focus.
+- **It timed out having declined the gift.** If you set
+  `gift_hold_button`, unset it. A held direction moves the cursor onto
+  "No" in the Yes/No prompt. (The starter hunt's `hold_button` is
+  deliberately NOT read by this mode for that reason.)
+
 ## Sweet Scent mode (horde shiny hunting)
 
 Horde battles put **5 wild Pokémon** on the field at once, each rolled

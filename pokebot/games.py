@@ -334,6 +334,14 @@ def methods_for(game_key: str) -> list[Method]:
                      "Pick what to reset for from the Target sub-dropdown "
                      "(Starters always available; X/Y also support "
                      "Snorlax / Lucario / Lapras stubs)."),
+        Method("Gift Pokémon (soft reset)", "gifts",
+               notes="Soft-resets for ANY gift Pokémon — Lapras from "
+                     "the Route 12 Hiker, the bike-shop Eevee, fossil "
+                     "revivals, in-game trades. Mashes A as fast as "
+                     "Azahar registers, stops the instant something new "
+                     "lands in your party, and resets unless it is a "
+                     "shiny / target. Needs an OPEN PARTY SLOT and a "
+                     "save made in front of the giver."),
         Method("Random encounters", "encounter",
                notes="Walks back-and-forth in tall grass on the chosen "
                      "axis. Every wild Pokémon is recorded to the "
