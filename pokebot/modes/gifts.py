@@ -66,20 +66,41 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class GiftPlan:
     """How hard to press, and how long to wait before giving up."""
-    #: A presses. 30 ms hold with no gap is ~33/s, which is as fast as
-    #: Azahar reliably registers: below about 10 ms it can see the key
-    #: go down and up inside one polled frame and score no press at
-    #: all, so "as fast as possible" has a floor rather than a zero.
-    press_hold: float = _PRESS_HOLD_S
-    press_gap: float = _PRESS_GAP_S
-    #: How often the foe/party state is checked while mashing.
+    #: A presses. Each one is post-down, sleep(hold), post-up, so the
+    #: hold IS the rate: 15 ms with no gap is a ~67/s ceiling.
     #:
-    #: This bounds the overshoot past the moment the gift lands ONCE
-    #: the gift's address is known -- about five presses at 0.15 s and
-    #: 33 presses/s. On the first attempt of a run nothing is known
-    #: yet and the bound is sweep_every polls instead, which is why
-    #: attempt one presses further than the rest.
-    detect_every: float = _DETECT_EVERY_S
+    #: The shared soft_reset default is 30 ms, and that number assumes
+    #: 60 fps -- one 3DS frame is 16.7 ms, so 30 ms guarantees the
+    #: press spans a frame boundary and cannot be missed. But this
+    #: hunt runs Azahar around 600%, where a frame is 2.78 ms of wall
+    #: time and 30 ms spans nearly ELEVEN of them. Ten times the
+    #: margin it needs, paid on every press.
+    #:
+    #: 15 ms still spans 5.4 frames at that speed. Raise it if you run
+    #: Azahar near 100% (where 15 ms is 0.9 frames and can genuinely
+    #: be missed) or if attempts start timing out.
+    #:
+    #: Its own key, not the shared press_hold: config.yaml sets that
+    #: one for the starter hunt, and a default can never beat a key
+    #: that is set.
+    press_hold: float = 0.015
+    press_gap: float = _PRESS_GAP_S
+    #: How often the party state is checked while mashing.
+    #:
+    #: This bounds the overshoot past the moment the gift lands, once
+    #: its address is known: overshoot = detect_every x press rate. So
+    #: it has to come DOWN as the press rate goes up, or doubling the
+    #: rate doubles how far into the nickname keyboard the mash gets.
+    #: 0.05 s at ~67/s is about three presses.
+    #:
+    #: Affordable because a poll is now one 232-byte read at a known
+    #: address -- one RPC round trip. The shared 0.15 s default was
+    #: sized for a poll that cost a dozen.
+    #:
+    #: On the first attempt of a run no address is known yet and the
+    #: bound is sweep_every polls instead, which is why attempt one
+    #: presses further than the rest.
+    detect_every: float = 0.05
     #: Nothing is held -- and this deliberately does NOT read the
     #: shared ``hold_button``.
     #:
@@ -133,10 +154,11 @@ class GiftPlan:
                 return default
 
         return cls(
-            press_hold=max(_PRESS_HOLD_FLOOR, num("press_hold",
-                                                  d.press_hold)),
+            press_hold=max(_PRESS_HOLD_FLOOR,
+                           num("gift_press_hold", d.press_hold)),
             press_gap=max(0.0, num("press_interval", d.press_gap)),
-            detect_every=max(0.02, num("detect_every", d.detect_every)),
+            detect_every=max(0.005, num("gift_detect_every",
+                                        d.detect_every)),
             hold_button=str(cfg.get("gift_hold_button",
                                     d.hold_button) or ""),
             initial_reset=bool(cfg.get("initial_reset", d.initial_reset)),
@@ -199,9 +221,14 @@ def run(ctx) -> None:
     log.info(f"  A presses: {plan.press_hold * 1000:.0f}ms hold"
              + (f" + {plan.press_gap * 1000:.0f}ms gap"
                 if plan.press_gap else "")
-             + f"  (~{1 / max(plan.press_hold + plan.press_gap, 1e-9):.0f}"
+             + f"  (ceiling ~"
+               f"{1 / max(plan.press_hold + plan.press_gap, 1e-9):.0f}"
                f"/s), stopped by detection every "
-               f"{plan.detect_every:.2f}s")
+               f"{plan.detect_every:.3f}s")
+    log.info(f"  overshoot bound once the gift's address is known: ~"
+             f"{plan.detect_every / max(plan.press_hold, 1e-9):.0f} "
+             f"presses. The achieved rate is logged per attempt; if it "
+             f"is well under the ceiling, detection is the cost.")
     log.info("  Stopping on: " + ("the configured target filter"
                                   if (ctx.target and ctx.target.rules)
                                   else "SHINY"))

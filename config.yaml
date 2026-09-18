@@ -89,6 +89,31 @@ soft_reset:
   # default detect_every is a sweep about every two seconds. Lower it
   # if a gift is being missed; raise it if the mash feels stuttery.
   sweep_every: 12
+  # A press rate for THIS mode. Each press is post-down, sleep(hold),
+  # post-up, so the hold IS the rate: 0.015 -> a ~67/s ceiling.
+  #
+  # The starter hunt's press_hold below is 0.030, and that number
+  # assumes 60 fps: one 3DS frame is 16.7 ms, so 30 ms guarantees the
+  # press spans a frame boundary and cannot be missed. This hunt runs
+  # Azahar around 600%, where a frame is 2.78 ms of wall time and 30 ms
+  # spans nearly ELEVEN of them -- ten times the margin it needs, paid
+  # on every press.
+  #
+  #   0.030 -> ~33/s   (10.8 frames at 600%, 1.8 at 100%)
+  #   0.015 -> ~67/s   ( 5.4 frames at 600%, 0.9 at 100%)  <- default
+  #   0.010 -> ~100/s  ( 3.6 frames at 600%, 0.6 at 100%)
+  #
+  # Raise it if you run Azahar near 100%, or if attempts start timing
+  # out. The achieved rate is logged per attempt ("received after N A
+  # presses (X/s, Ys)") -- if X is well under the ceiling, detection
+  # is what is costing the time, not the presses.
+  gift_press_hold: 0.015
+  # How often to look while mashing. Overshoot past the moment the gift
+  # lands is detect_every x press rate, so this has to come DOWN as the
+  # rate goes up or the mash gets further into the nickname keyboard.
+  # 0.05 at ~67/s is about three presses. Affordable because a poll is
+  # one 232-byte read at a remembered address -- one RPC round trip.
+  gift_detect_every: 0.05
   # Held for the whole sequence, like the starter hunt's hold_button --
   # but empty, and separate ON PURPOSE. A direction held through a
   # gift's Yes/No prompt moves the cursor onto "No": the gift is

@@ -273,9 +273,25 @@ something hands you a Pokémon.
    question go away.
 2. Reads your party and remembers it. Anything else that turns up is
    the gift.
-3. **Mashes A** at about 33 presses a second — as fast as Azahar
-   reliably registers. (Below ~10 ms a press can go down and up inside
-   one polled frame and not count at all, so faster is not faster.)
+3. **Mashes A** at up to ~67 presses a second.
+
+   Each press is *post key down → wait → post key up*, so the hold
+   time **is** the rate. The shared soft-reset default is 30 ms
+   (~33/s), and that number assumes 60 fps — one 3DS frame is 16.7 ms,
+   so 30 ms guarantees the press cannot fall between two polls. But
+   this hunt runs Azahar near 600%, where a frame is **2.78 ms** and
+   30 ms spans nearly *eleven* of them: ten times the margin it needs,
+   on every press. So this mode uses 15 ms (5.4 frames) and its own
+   config key, `gift_press_hold`.
+
+   | hold | rate | frames at 600% | frames at 100% |
+   |------|------|----------------|----------------|
+   | 30 ms | ~33/s | 10.8 | 1.8 |
+   | **15 ms** | **~67/s** | **5.4** | 0.9 |
+   | 10 ms | ~100/s | 3.6 | 0.6 |
+
+   **Raise it if you run Azahar near 100%**, where 15 ms is less than
+   one frame and presses can genuinely be missed.
 4. **Stops the instant something new is in the party**, checks it, and
    either stops on a shiny / target or resets and goes again.
 
@@ -295,8 +311,11 @@ which the bot has no way out of. That is why the presses are stopped by
 *detection* rather than by a count: they end within one poll of the
 gift landing, before the prompt is reachable.
 
-`detect_every` (default 0.15 s) is what bounds the overshoot — to
-about five presses, *once the bot knows where the gift lands*. It is a
+`gift_detect_every` (default 0.05 s) is what bounds the overshoot — to
+about three presses, *once the bot knows where the gift lands*. It had
+to come down when the press rate went up: overshoot is
+`detect_every x press rate`, so doubling the rate without it would
+double how far into the keyboard the mash gets. It is a
 **correctness** setting here, not a performance one: raise it and you
 widen the window in which the bot can press A into a keyboard.
 
@@ -311,6 +330,24 @@ that does.
 When it stops on a shiny, the game is sitting at or just before that
 prompt. **Decline with B, then SAVE.** Until you save, a reset takes it
 back.
+
+### If it feels slow
+
+The log says the achieved rate every attempt:
+
+```
+received after 147 A presses (25/s, 5.8s)
+```
+
+If that number is well under the ceiling (~67/s), the presses are not
+the cost — **detection is**, because each poll blocks the press loop
+while it runs. The first attempt of a run is always the slowest: no
+gift address is known yet, so every poll is a memory scan rather than
+a single record read.
+
+If the rate is at the ceiling and it still feels slow, the limit is
+the game, not the bot: the receive cutscene has animations that no
+number of A presses will skip.
 
 ### Troubleshooting
 

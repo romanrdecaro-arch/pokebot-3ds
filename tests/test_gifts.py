@@ -205,6 +205,50 @@ def test_the_press_rate_is_as_fast_as_the_emulator_will_take():
     assert plan.press_hold >= 0.01
 
 
+def test_the_shipped_config_presses_faster_than_the_starter_hunt():
+    """The starter hunt's 30 ms assumes 60 fps -- one frame is 16.7 ms.
+    This hunt runs Azahar near 600%, where 30 ms spans eleven frames:
+    ten times the margin it needs, on every press.
+
+    Asserted against the SHIPPED config, because press_hold is set
+    there for the starter hunt and a mode default cannot beat a key
+    that is set -- which is exactly why this mode reads its own.
+    """
+    import yaml
+
+    cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    shipped = cfg["soft_reset"]
+    plan = gifts.GiftPlan.from_config(shipped)
+
+    assert plan.press_hold < float(shipped["press_hold"]), (
+        "the shared starter-hunt press_hold shadowed this mode's")
+    assert 1 / plan.press_hold >= 50, "not actually faster"
+
+
+def test_the_starter_hunt_press_rate_is_left_alone():
+    """Its 30 ms was chosen for a reason; this mode opting out must
+    not change it."""
+    import yaml
+
+    cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["soft_reset"]["press_hold"] == 0.03
+
+
+def test_the_overshoot_bound_holds_at_the_faster_rate():
+    """Overshoot is detect_every x press rate. Doubling the rate
+    without lowering the poll doubles how far into the nickname
+    keyboard the mash gets -- the two have to move together."""
+    import yaml
+
+    cfg = yaml.safe_load((REPO / "config.yaml").read_text(encoding="utf-8"))
+    plan = gifts.GiftPlan.from_config(cfg["soft_reset"])
+
+    overshoot = plan.detect_every / plan.press_hold
+    assert overshoot <= 5, (
+        f"~{overshoot:.0f} presses past the gift landing; the nickname "
+        f"prompt is one press past it")
+
+
 def test_a_too_fast_press_is_floored_rather_than_sent():
     assert gifts.GiftPlan.from_config(
         {"press_hold": 0.0}).press_hold >= 0.01
