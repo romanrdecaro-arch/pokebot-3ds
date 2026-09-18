@@ -53,7 +53,7 @@ from dataclasses import dataclass
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir, save_target_pk6
 from .game_reset import ResetPlan, soft_reset_and_wait
-from .observe import broadcast_party, get_party
+from .observe import broadcast_party, get_party, read_pk6_at
 from .soft_reset import (_DETECT_EVERY_S, _PRESS_GAP_S, _PRESS_HOLD_FLOOR,
                          _PRESS_HOLD_S, _PRE_RESET_QUIET_S,
                          _RELOAD_READ_GRACE_S, _RESET_COOLDOWN_S,
@@ -72,10 +72,13 @@ class GiftPlan:
     #: all, so "as fast as possible" has a floor rather than a zero.
     press_hold: float = _PRESS_HOLD_S
     press_gap: float = _PRESS_GAP_S
-    #: How often the party is checked while mashing. This BOUNDS the
-    #: overshoot past the moment the gift lands -- at 0.15 s and 33
-    #: presses/s, about five presses -- which is what keeps the mash
-    #: out of the nickname keyboard.
+    #: How often the foe/party state is checked while mashing.
+    #:
+    #: This bounds the overshoot past the moment the gift lands ONCE
+    #: the gift's address is known -- about five presses at 0.15 s and
+    #: 33 presses/s. On the first attempt of a run nothing is known
+    #: yet and the bound is sweep_every polls instead, which is why
+    #: attempt one presses further than the rest.
     detect_every: float = _DETECT_EVERY_S
     #: Nothing is held -- and this deliberately does NOT read the
     #: shared ``hold_button``.
@@ -344,16 +347,49 @@ def run(ctx) -> None:
     # than lasting the attempt.
     sweep_every = max(1, int(plan.sweep_every))
     since_sweep = {"n": 0}
+    # Where the gift landed last time.
+    #
+    # The game reuses the buffer, so this is the same address every
+    # attempt -- and it is nowhere near the party: on a real run the
+    # gift appeared 336 KB above the top of the polling window, which
+    # is why only the sweep ever found it. Re-reading that ONE record
+    # is a single 232-byte round trip, against ~82 for the windowed
+    # read and thousands for a sweep, and it takes the overshoot past
+    # the moment the gift lands from ~75 A presses back to ~5.
+    #
+    # That matters more than the speed: 75 presses is well past the
+    # nickname prompt, which means the bot was pressing A into the
+    # naming keyboard on every single attempt.
+    hot = {"addr": 0}
 
     def gift_present() -> bool:
-        if new_arrivals(read_all(), baseline_keys):
-            return True
+        # 1. One read where the last gift appeared.
+        if hot["addr"]:
+            try:
+                pkm = read_pk6_at(ctx, hot["addr"])
+                if (pkm is not None
+                        and pkm.encryption_key not in baseline_keys):
+                    return True
+            except Exception as exc:
+                log.debug(f"  gift hot-slot read failed: {exc}")
+        else:
+            # 2. Nothing learned yet -- the cached window is the next
+            #    cheapest thing that could see one.
+            if new_arrivals(read_all(), baseline_keys):
+                return True
+        # 3. Periodically, the whole thing. This is what finds a gift
+        #    the first time, and what re-acquires it if it moves.
         since_sweep["n"] += 1
         if since_sweep["n"] < sweep_every:
             return False
         since_sweep["n"] = 0
         relocate()
-        return bool(new_arrivals(read_all(), baseline_keys))
+        found = new_arrivals(read_all(), baseline_keys)
+        if found:
+            addr = getattr(found[0], "source_address", 0) or 0
+            if addr:
+                hot["addr"] = addr
+        return bool(found)
 
     last_reset: list = [0.0]
 
@@ -446,6 +482,9 @@ def run(ctx) -> None:
             continue
 
         pkm = arrivals[0]
+        # Remember where it landed, so the next attempt's polls are one
+        # read rather than a sweep.
+        hot["addr"] = getattr(pkm, "source_address", 0) or hot["addr"]
         # Strip = the saved team plus whatever just arrived, wherever
         # in RAM it landed.
         broadcast_party(ctx, (list(baseline_team)

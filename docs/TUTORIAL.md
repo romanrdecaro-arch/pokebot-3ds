@@ -295,10 +295,18 @@ which the bot has no way out of. That is why the presses are stopped by
 *detection* rather than by a count: they end within one poll of the
 gift landing, before the prompt is reachable.
 
-`detect_every` (default 0.15 s) is what bounds the overshoot, to about
-five presses. It is a **correctness** setting here, not a performance
-one — raise it and you are widening the window in which the bot can
-press A into a keyboard.
+`detect_every` (default 0.15 s) is what bounds the overshoot — to
+about five presses, *once the bot knows where the gift lands*. It is a
+**correctness** setting here, not a performance one: raise it and you
+widen the window in which the bot can press A into a keyboard.
+
+On a real run the gift appeared **336 KB above** the memory window the
+bot polls around your party, so nothing cheap could see it. The bot
+therefore remembers the address the first time it finds one and
+re-reads those 232 bytes on every later poll — one round trip. The
+first attempt of a run has nothing remembered yet and will press
+further than the rest; that is expected, and it is the only attempt
+that does.
 
 When it stops on a shiny, the game is sitting at or just before that
 prompt. **Decline with B, then SAVE.** Until you save, a reset takes it

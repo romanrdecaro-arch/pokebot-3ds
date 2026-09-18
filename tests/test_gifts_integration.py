@@ -33,8 +33,11 @@ from pokebot.modes import gifts  # noqa: E402
 from pokebot.modes import soft_reset as sr  # noqa: E402
 
 
+GIFT_ADDR = 0x08CE1ECC          # where a real run's gift landed
+
+
 class Mon:
-    def __init__(self, key, species=131, shiny=False):
+    def __init__(self, key, species=131, shiny=False, addr=None):
         self.encryption_key = key
         self.species = species
         self.shiny = shiny
@@ -49,7 +52,7 @@ class Mon:
         self.ability_id, self.ability_num = 11, 1
         self.moves = []
         self.party = {"level": 30}
-        self.source_address = 0x08C79DA8 + key
+        self.source_address = addr if addr else 0x08C79DA8 + key
 
 
 class Game:
@@ -74,6 +77,15 @@ class Game:
         self.held = None
         self.resets = 0
         self.taps: list[str] = []
+        self.gift_landed_at = None
+        self.record_reads = 0
+
+    def read_at(self, addr):
+        """One 232-byte record, as read_pk6_at does."""
+        self.record_reads += 1
+        if self.held is not None and addr == self.held.source_address:
+            return self.held
+        return None
 
     # --- the controller ---
     def tap(self, button, hold_s=0.05):
@@ -88,6 +100,8 @@ class Game:
                     and self.presses >= self.presses_needed
                     and self.queue):
                 self.held = self.queue.pop(0)
+                self.held.source_address = GIFT_ADDR
+                self.gift_landed_at = self.presses
         return "postmessage"
 
     def soft_reset(self, hold_s=0.5):
@@ -195,6 +209,8 @@ def wired(monkeypatch):
             return game.party(contiguous, broad=broad)
 
         monkeypatch.setattr(gifts, "get_party", fake_get_party)
+        monkeypatch.setattr(gifts, "read_pk6_at",
+                            lambda ctx, addr: game.read_at(addr))
         monkeypatch.setattr(gifts, "save_target_pk6",
                             lambda ctx, addr, pkm, label: None)
         return game
@@ -605,3 +621,62 @@ def test_a_timeout_reports_what_it_actually_saw(wired):
     blob = " ".join(records)
     assert "owned PK6" in blob, "did not report what the scan saw"
     assert "OT" in blob, "did not mention the OT trap"
+
+
+# ----------------------------------------------------------------------
+# Overshoot, once the gift's address is known
+# ----------------------------------------------------------------------
+def test_the_second_attempt_stops_within_a_few_presses(wired):
+    """The nickname keyboard is the thing being avoided here.
+
+    Measured on a real run: the gift landed 336 KB above the polling
+    window, so only the periodic sweep ever saw it -- and the mash
+    carried on for ~75 more A presses in the meantime, far past the
+    "give it a nickname?" prompt. The documented bound was five.
+
+    Attempt one still pays the sweep, because nothing is known yet.
+    From attempt two the address is remembered and the poll is a
+    single record read, which is what puts the bound back.
+    """
+    game = wired(Game([Mon(10), Mon(11, shiny=True)],
+                      presses_needed=20, boxed=80,
+                      gift_outside_window=True))
+    ctx = Ctx(game, seconds=30.0)
+
+    run(ctx)
+
+    # The shiny arrived on attempt two; overshoot is everything after.
+    overshoot = game.presses - game.gift_landed_at
+    # sweep_every is 12, so "<= 12" would pass on sweep-only detection
+    # too -- the threshold has to be below what a sweep costs or the
+    # test cannot tell the two apart. A remembered address is seen on
+    # the very next poll.
+    assert overshoot <= 4, (
+        f"pressed A {overshoot} more times after the gift landed -- "
+        f"that is past the nickname prompt and into the keyboard")
+
+
+def test_the_remembered_address_is_read_rather_than_swept(wired):
+    """One 232-byte round trip, not a relocation scan."""
+    game = wired(Game([Mon(10), Mon(11, shiny=True)],
+                      presses_needed=20, boxed=80,
+                      gift_outside_window=True))
+    ctx = Ctx(game, seconds=30.0)
+
+    run(ctx)
+
+    assert game.record_reads > 0, "never used the single-record read"
+    assert game.record_reads > game.broad_reads, (
+        f"{game.record_reads} record reads vs {game.broad_reads} "
+        f"sweeps -- the cheap path is not being used")
+
+
+def test_the_first_attempt_still_works_with_nothing_remembered(wired):
+    """No address known yet, so the sweep has to carry it."""
+    game = wired(Game([Mon(99, shiny=True)], presses_needed=20,
+                      boxed=80, gift_outside_window=True))
+    ctx = Ctx(game, seconds=30.0)
+
+    run(ctx)
+
+    assert "target_hit" in ctx.kinds()
