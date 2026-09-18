@@ -76,6 +76,19 @@ soft_reset:
   # AS SAVED rather than whatever happened to be on screen when you hit
   # Start. Costs one relaunch per run.
   initial_reset: true
+  # Cheap polls between broad sweeps while mashing A.
+  #
+  # get_party caches a tight window around your party and re-scans
+  # only that -- fast, but the window was anchored BEFORE the gift
+  # existed, so a gift written outside it is invisible to those polls.
+  # Clearing the cache every poll instead means every poll pays for
+  # the full 15 MB relocation scan, thousands of 1 KB round trips, and
+  # the A presses stop while it runs.
+  #
+  # So: cheap poll, with a re-locating sweep every N of them. 12 at the
+  # default detect_every is a sweep about every two seconds. Lower it
+  # if a gift is being missed; raise it if the mash feels stuttery.
+  sweep_every: 12
   # Held for the whole sequence, like the starter hunt's hold_button --
   # but empty, and separate ON PURPOSE. A direction held through a
   # gift's Yes/No prompt moves the cursor onto "No": the gift is

@@ -14,9 +14,15 @@ unique one, and the saved team's keys come back unchanged on every
 reload, so anything else is the gift by construction.
 
 That also means this mode does not care WHICH gift. Lapras from the
-Route 12 Hiker, the Lumiose bike-shop Eevee, an in-game trade, a fossil
-revival, the Kanto starter at Lumiose Station — whatever the dialog
-hands over is what gets evaluated. Nothing here is species-specific.
+Route 12 Hiker, the Lumiose bike-shop Eevee, a fossil revival, the
+Kanto starter at Lumiose Station — whatever the dialog hands over is
+what gets evaluated. Nothing here is species-specific.
+
+**In-game trades are the exception, and they will NOT work.** The party
+is located by scanning for records whose OT is the player, and a traded
+Pokémon keeps the other trainer's OT — so it is invisible to every read
+this mode makes. It is not that the hunt evaluates it wrongly; it never
+sees it, and times out saying nothing arrived.
 
 **Player setup (one-time, manual):**
 
@@ -90,6 +96,13 @@ class GiftPlan:
     #: cannot silently contain the gift.
     initial_reset: bool = True
 
+    #: How many cheap polls between broad sweeps. The cheap poll only
+    #: sees the cached window around the party as it was before the
+    #: gift existed; the sweep re-locates and sees everything. 12
+    #: polls at the default detect_every is a sweep roughly every two
+    #: seconds.
+    sweep_every: int = 12
+
     #: The dialog has unskippable animations, so this bounds a STUCK
     #: attempt rather than pacing a working one.
     receive_timeout: float = 180.0
@@ -124,6 +137,7 @@ class GiftPlan:
             hold_button=str(cfg.get("gift_hold_button",
                                     d.hold_button) or ""),
             initial_reset=bool(cfg.get("initial_reset", d.initial_reset)),
+            sweep_every=max(1, int(num("sweep_every", d.sweep_every))),
             receive_timeout=num("receive_timeout", d.receive_timeout),
             reset_timeout=num("reset_timeout", d.reset_timeout),
             pre_reset_quiet=num("pre_reset_quiet", d.pre_reset_quiet),
@@ -311,7 +325,34 @@ def run(ctx) -> None:
              + f" ({len(baseline_keys)} owned PK6 including boxes). "
              + "Anything else that appears is the gift.")
 
+    # Polling costs, and the two ways of paying are both wrong on
+    # their own.
+    #
+    # Clearing the cached window every poll is correct -- it finds a
+    # gift wherever it landed -- but sends each read through the full
+    # 15 MB relocation scan, thousands of 1 KB round trips, on a path
+    # that runs every detect_every while A is being mashed.
+    #
+    # Never clearing it is cheap but blind: the window is anchored on
+    # the owned cluster as it was BEFORE the gift existed, so a gift
+    # written outside it is missed for the whole attempt, which looks
+    # exactly like "nothing ever arrived".
+    #
+    # So: cheap poll against the cached window, and a broad sweep
+    # every full_every polls to catch what the window cannot see. The
+    # blind spot is then bounded by how often the sweep runs rather
+    # than lasting the attempt.
+    sweep_every = max(1, int(plan.sweep_every))
+    since_sweep = {"n": 0}
+
     def gift_present() -> bool:
+        if new_arrivals(read_all(), baseline_keys):
+            return True
+        since_sweep["n"] += 1
+        if since_sweep["n"] < sweep_every:
+            return False
+        since_sweep["n"] = 0
+        relocate()
         return bool(new_arrivals(read_all(), baseline_keys))
 
     last_reset: list = [0.0]
@@ -359,12 +400,29 @@ def run(ctx) -> None:
                                       plan.detect_every, plan.hold_button):
             if ctx.should_stop():
                 return
+            # Say what was actually seen. "Nothing arrived" has
+            # several very different causes and they are trivial to
+            # tell apart from the numbers, but impossible from the
+            # sentence alone.
+            relocate()
+            everything = read_all()
+            team = read_team()
             log.error(f"  nothing reached the party in "
-                      f"{plan.receive_timeout:.0f}s of A presses. Either "
-                      f"the save is not in front of the giver, the party "
-                      f"has no open slot, or Azahar is not receiving "
-                      f"input — run scripts/test_input.py to tell those "
-                      f"apart.")
+                      f"{plan.receive_timeout:.0f}s of A presses.")
+            log.error(f"  broad scan now sees {len(everything)} owned "
+                      f"PK6 ({len(baseline_keys)} at baseline), party "
+                      f"{len(team)}/6, "
+                      f"{len(new_arrivals(everything, baseline_keys))} "
+                      f"with a key not in the baseline.")
+            log.error("  If that count has not moved, nothing was added: "
+                      "the save is not in front of the giver, or Azahar "
+                      "is not receiving input (run "
+                      "scripts/test_input.py).")
+            log.error(f"  If a Pokémon DID appear in game, it is not "
+                      f"OT {player_ot!r} — an in-game TRADE keeps the "
+                      f"other trainer's OT and this mode cannot see it "
+                      f"at all. Check soft_reset.trainer_name matches "
+                      f"your in-game OT exactly.")
             ctx.dashboard.broadcast(
                 "read_failure", attempt=attempt,
                 reason="no gift received from A presses")

@@ -240,8 +240,14 @@ mash A, and the moment a Pokémon that was not in your saved party
 appears, stop and look at it.
 
 That covers Lapras from the Route 12 Hiker, the bike-shop Eevee, fossil
-revivals, in-game trades, the Lumiose Station Kanto starter — anything
-where talking to something hands you a Pokémon.
+revivals, the Lumiose Station Kanto starter — anything where talking to
+something hands you a Pokémon.
+
+> **In-game trades will not work.** The bot finds your party by
+> scanning for Pokémon whose OT is *you*, and a traded Pokémon keeps
+> the other trainer's OT — so it is invisible to every read this mode
+> makes. It does not evaluate it wrongly; it never sees it, and times
+> out saying nothing arrived.
 
 ### What you need in-game
 
@@ -304,9 +310,18 @@ back.
   again, restart.
 - **"No party found".** `soft_reset.trainer_name` does not match your
   in-game OT, or `party_base` is not configured. Run Debug once.
-- **"nothing reached the party in 180s of A presses".** Either the save
-  is not in front of the giver, or Azahar is not receiving input. Run
-  `scripts/test_input.py` to tell those two apart.
+- **"nothing reached the party in 180s of A presses".** The log line
+  under it now says what the scan actually saw — how many owned
+  Pokémon, your party size, and how many had a key that was not in the
+  baseline. If that number has not moved, nothing was added: the save
+  is not in front of the giver, or Azahar is not receiving input (run
+  `scripts/test_input.py`). If a Pokémon *did* appear on screen, it is
+  not your OT — an in-game trade, or `soft_reset.trainer_name` does
+  not match your in-game OT exactly.
+- **A gift appears but is never evaluated.** Lower `sweep_every`. The
+  cheap poll only sees a cached window around where your party was
+  before the gift existed; the sweep is what finds one written outside
+  it.
 - **"the gift never left the party".** The soft reset is not landing,
   so the bot stopped rather than evaluating the same Pokémon forever.
   Check Azahar has focus.

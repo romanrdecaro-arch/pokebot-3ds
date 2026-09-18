@@ -56,8 +56,14 @@ class Game:
     """A save with a party, an NPC that hands over a Pokemon after a
     few A presses, and a reset that puts everything back."""
 
-    def __init__(self, gifts_in_order, presses_needed=5, boxed=80):
+    def __init__(self, gifts_in_order, presses_needed=5, boxed=80,
+                 gift_outside_window=False):
         self.team = [Mon(1, 25), Mon(2, 4)]
+        # True models a gift written somewhere the cached window does
+        # not cover -- only a broad re-locating sweep finds it.
+        self.gift_outside_window = gift_outside_window
+        self.windowed_reads = 0
+        self.broad_reads = 0
         # The PC boxes. A broad scan sees these too -- they are owned
         # PK6 in the same window -- which is the whole reason a broad
         # read cannot be used to count party slots.
@@ -96,8 +102,13 @@ class Game:
         return True
 
     # --- what a party read sees ---
-    def party(self, contiguous=True):
+    def party(self, contiguous=True, broad=False):
         """A cached/tight read sees only the save-block team.
+
+        ``broad`` is a read that re-located first -- get_party with no
+        cached window. It sees everything; a windowed one sees only
+        what was near the party when the window was anchored, which
+        was before the gift existed.
 
         A gift can land in a live buffer outside the window the cache
         was anchored on, so a contiguous read misses it -- and misses
@@ -107,8 +118,10 @@ class Game:
         """
         if contiguous:
             return list(self.team)
-        return (list(self.team) + list(self.boxes)
-                + ([self.held] if self.held else []))
+        out = list(self.team) + list(self.boxes)
+        if self.held and (broad or not self.gift_outside_window):
+            out.append(self.held)
+        return out
 
 
 class Ctx:
@@ -170,9 +183,18 @@ def wired(monkeypatch):
         monkeypatch.setattr(sr, "_focus_if_needed", lambda ctx: None)
         monkeypatch.setattr(gifts, "broadcast_party",
                             lambda ctx, p: set())
-        monkeypatch.setattr(gifts, "get_party",
-                            lambda ctx, b, s, ot, contiguous=True:
-                            game.party(contiguous))
+        def fake_get_party(ctx, b, st, ot, contiguous=True):
+            # Mirror get_party's caching: no window cached means it
+            # relocates (and sees everything), then caches one.
+            broad = getattr(ctx, "_party_win", None) is None
+            if broad:
+                game.broad_reads += 1
+                ctx._party_win = (0x08C00000, 0x08C90000)
+            else:
+                game.windowed_reads += 1
+            return game.party(contiguous, broad=broad)
+
+        monkeypatch.setattr(gifts, "get_party", fake_get_party)
         monkeypatch.setattr(gifts, "save_target_pk6",
                             lambda ctx, addr, pkm, label: None)
         return game
@@ -519,3 +541,67 @@ def test_the_poll_does_not_force_a_full_relocation_scan(monkeypatch):
     assert cleared["n"] <= 6, (
         f"cleared the party-window cache {cleared['n']} times across "
         f"{polls} reads -- the poll is forcing a relocation scan")
+
+
+# ----------------------------------------------------------------------
+# A gift the cached window cannot see
+# ----------------------------------------------------------------------
+def test_a_gift_outside_the_cached_window_is_still_found(wired):
+    """Reported from a real run: it pressed A and evaluated nothing.
+
+    get_party caches a tight window around the owned cluster -- which
+    was anchored BEFORE the gift existed. Polling only that window is
+    cheap and blind: a gift written outside it is missed for the whole
+    attempt, and the mode then reports that nothing ever arrived,
+    which is indistinguishable from a save in the wrong place.
+
+    So the poll stays cheap but a broad sweep runs every sweep_every
+    polls, which bounds the blind spot instead of letting it last.
+    """
+    game = wired(Game([Mon(99, shiny=True)], presses_needed=3,
+                      boxed=80, gift_outside_window=True))
+    ctx = Ctx(game, seconds=20.0)
+
+    run(ctx)
+
+    assert "target_hit" in ctx.kinds(), (
+        "never saw a gift that only a relocating scan can find")
+    assert game.broad_reads > 1, "never swept"
+
+
+def test_the_sweep_is_not_run_on_every_poll(wired):
+    """The other half. Every poll relocating means every poll pays for
+    a 15 MB scan, and the A presses stop while it runs."""
+    game = wired(Game([Mon(99, shiny=True)], presses_needed=60,
+                      boxed=80))
+    ctx = Ctx(game, seconds=20.0)
+
+    run(ctx)
+
+    assert game.windowed_reads > game.broad_reads, (
+        f"{game.broad_reads} relocating reads vs "
+        f"{game.windowed_reads} cheap ones -- the poll is paying for a "
+        f"full scan almost every time")
+
+
+def test_a_timeout_reports_what_it_actually_saw(wired):
+    """"Nothing arrived" has several very different causes, and the
+    numbers tell them apart instantly where the sentence cannot."""
+    import logging
+
+    game = wired(Game([], presses_needed=5, boxed=80))
+    ctx = Ctx(game)
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = lambda r: records.append(r.getMessage())
+    log = logging.getLogger("pokebot.modes.gifts")
+    log.addHandler(handler)
+    try:
+        run(ctx)
+    finally:
+        log.removeHandler(handler)
+
+    blob = " ".join(records)
+    assert "owned PK6" in blob, "did not report what the scan saw"
+    assert "OT" in blob, "did not mention the OT trap"
