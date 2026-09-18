@@ -145,8 +145,9 @@ overwritten; commit or discard them and update again.
 
 ## Features
 
-- **Five bot modes** — `observe`, `encounter`, `horde`, `soft_reset`,
-  `livehex` (see [Modes](#modes))
+- **Seven bot modes** — `observe`, `encounter`, `sweet_scent`,
+  `fishing`, `rock_smash`, `soft_reset`, `livehex`
+  (see [Modes](#modes))
 - **Target system** — filter by shininess, IVs, nature, gender,
   species, or ability; combine rules with AND/OR
 - **PKHeX-compatible export** — every shiny / target hit is saved as
@@ -181,7 +182,7 @@ Legend: ✅ verified live · 🟡 wired, not yet user-tested · ⬜ planned
 | Live wild detection (species · PID · IVs · nature · ability) | ✅ | 🟡¹ | 🟡² | 🟡² |
 | Shiny detection (PSV vs player TSV) | ✅ | 🟡 | 🟡 | 🟡 |
 | Random-encounter shiny hunt (walk → flee → stop on shiny) | ✅ | 🟡¹ | 🟡² | 🟡² |
-| Horde encounters (5× multi-mon eval per battle) | ✅ | 🟡¹ | — | — |
+| Sweet Scent hordes (5× multi-mon eval per battle) | ✅ | 🟡¹ | — | — |
 | Rock Smash hunt (A at the rock → soft-reset per attempt) | 🟡 | 🟡¹ | — | — |
 | Manual / observe (read-only, no inputs) | ✅ | 🟡 | 🟡 | 🟡 |
 | Live party read (Recently Seen + Party strip) | ✅ | 🟡 | 🟡 | 🟡 |
@@ -195,7 +196,7 @@ not yet user-tested. ² S/M & US/UM offsets are taken from PKMN-NTR's
 `LookupTable.cs` and wired in but unverified on Azahar. ³ The
 NTR↔Azahar LiveHeX bridge is implemented for Gen 6; Gen 7 untested.
 
-**Good to run today:** Pokémon X/Y random-encounter and horde shiny
+**Good to run today:** Pokémon X/Y random-encounter and Sweet Scent horde shiny
 hunting, plus soft-resetting any of the three X/Y starters (Chespin /
 Fennekin / Froakie).
 
@@ -205,13 +206,16 @@ Fennekin / Froakie).
 |--------------|--------------------------------------------------------------------|
 | `observe`    | Passive read-only; reports party + foe changes as you play         |
 | `encounter`  | Walks in grass, evaluates each foe vs. target, flees on miss       |
-| `horde`      | Same as encounter, but reports all 5 wilds per battle              |
+| `sweet_scent`| Sweet Scent → guaranteed 5-mon horde; all 5 evaluated per battle   |
+| `fishing`    | Casts a registered rod, hooks on detection, evaluates, recasts     |
+| `rock_smash` | A at a breakable rock; soft-resets between attempts                |
 | `soft_reset` | Starters / legendaries / gifts — sequence, evaluate, L+R+Start     |
 | `livehex`    | Bridges Azahar to PKHeX for live box / trainer editing             |
 
 ## Auto-catching
 
-In `encounter` / `horde` mode the bot no longer just stops when it
+In `encounter`, `sweet_scent`, `fishing` and `rock_smash` modes the
+bot no longer just stops when it
 finds a shiny — it catches it and keeps hunting. The sequence is the
 same three touches you would make yourself:
 
@@ -302,7 +306,7 @@ flowchart LR
     subgraph BOT["pokebot.bot"]
         RPC["citra_rpc<br/>UDP :45987"]
         PAR["parser<br/>PK6/PK7 decrypt + shiny"]
-        MOD["modes/<br/>observe · encounter · horde · soft_reset · livehex"]
+        MOD["modes/<br/>observe · encounter · sweet_scent · fishing · rock_smash · soft_reset · livehex"]
         INP["input_driver<br/>keystrokes + touch"]
         DASH["dashboard_server<br/>terminal event sink"]
         EXP["pk6_export<br/>targets/*.pk6"]

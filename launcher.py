@@ -2086,8 +2086,8 @@ class _App(tk.Tk):
                      "row is the one taken — change the species in PKHeX "
                      "afterwards if you want a different one.")
         elif m and m.mode == "encounter":
-            # Horde mode uses Sweet Scent, not walking — no movement
-            # direction to pick, so the Movement panel stays hidden.
+            # Sweet Scent mode picks no direction — it pulls the
+            # horde from a menu — so the Movement panel stays hidden.
             self._movement_frame.pack(fill="x", pady=(4, 0),
                                       before=self._target_divider)
         elif m and m.mode == "fishing":
@@ -2300,7 +2300,7 @@ class _App(tk.Tk):
             # branch below only fires for the Gen 6 mode names, so a
             # Crystal "vertical" method silently walked horizontally.
             chosen_movement = method.movement
-        elif method.mode in ("encounter", "horde"):
+        elif method.mode in ("encounter", "horde", "sweet_scent"):
             chosen_movement = (
                 "vertical"
                 if "Vertical" in self._movement_var.get()
@@ -2316,7 +2316,7 @@ class _App(tk.Tk):
             args += ["--soft-reset-target", chosen_sr_target]
         if chosen_movement:
             args += ["--movement", chosen_movement]
-        if method.mode in ("encounter", "horde"):
+        if method.mode in ("encounter", "horde", "sweet_scent"):
             try:
                 args += ["--flee-delay", f"{float(self._flee_var.get()):.1f}"]
             except Exception:

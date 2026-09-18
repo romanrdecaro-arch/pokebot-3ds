@@ -247,23 +247,50 @@ def _run_fraction(layout, run_local, override):
     return 0.5, 0.92, "fallback"
 
 
-def _use_sweet_scent(ctx, gap: float) -> None:
-    """Open menu → Pokémon → slot 1 → Sweet Scent.
+#: Menu walk to Sweet Scent, user-verified in X/Y.
+#:
+#:   X     — open the main menu
+#:   A     — select "Pokémon"
+#:   Right — move the party cursor across
+#:   A     — select that slot (the Sweet Scent user)
+#:   Down  — cursor onto the Sweet Scent field-move entry
+#:   A     — open the field-move list
+#:   A     — confirm Sweet Scent
+#:
+#: Which slot the cursor lands on is the one thing here that depends
+#: on the player's party rather than on the game, so the sequence is
+#: overridable from config (``sweet_scent_sequence``) rather than
+#: being a constant someone has to edit the source to change.
+#:
+#: On a horde-enabled route this triggers a 5-mon horde 100% of the
+#: time.
+SWEET_SCENT_SEQ = ["X", "A", "DpadRight", "A", "DpadDown", "A", "A"]
 
-    Sequence (user-verified in X/Y, ``gap``-second intervals):
 
-      X     — open the main menu
-      A     — select "Pokémon"
-      A     — select slot 1 (the Sweet Scent user)
-      Down  — cursor onto the Sweet Scent field-move entry
-      A     — open the field-move list
-      A     — confirm Sweet Scent
+def _sweet_scent_seq(rcfg: dict) -> list:
+    """The configured menu walk, or the verified default."""
+    raw = (rcfg or {}).get("sweet_scent_sequence")
+    if not raw:
+        return list(SWEET_SCENT_SEQ)
+    if isinstance(raw, str):
+        raw = [b.strip() for b in raw.replace("→", ",").split(",")]
+    seq = [str(b).strip() for b in raw if str(b).strip()]
+    if not seq:
+        log.warning("  sweet_scent_sequence is empty; using the default")
+        return list(SWEET_SCENT_SEQ)
+    return seq
 
-    Slot 1 must hold a Sweet Scent user (Bulbasaur from Sycamore is
-    the easiest in X/Y). On a horde-enabled route this triggers a
-    5-mon horde 100% of the time.
+
+def _use_sweet_scent(ctx, gap: float, seq: list | None = None) -> None:
+    """Walk the menu to Sweet Scent and use it.
+
+    Open-loop: these presses are fired on a timer and nothing reads
+    back where the cursor actually got to. Every other idle action in
+    this file is driven by the foe window instead. If a press is eaten
+    by a transition the rest land on whatever happens to be on screen,
+    and the stall watchdog is the only thing that notices.
     """
-    seq = ["X", "A", "A", "DpadDown", "A", "A"]
+    seq = list(seq or SWEET_SCENT_SEQ)
     log.info(f"  Sweet Scent: {len(seq)} presses × {gap:.1f}s "
              f"({' → '.join(seq)})")
     for btn in seq:
@@ -329,6 +356,7 @@ def run(ctx) -> None:
     idle_action = str(rcfg.get("idle_action", "walk")).lower()
     sweet_scent_gap = float(rcfg.get("sweet_scent_gap", 1.0))
     sweet_scent_settle = float(rcfg.get("sweet_scent_settle", 4.0))
+    sweet_scent_seq = _sweet_scent_seq(rcfg)
     screen_layout = str(rcfg.get("screen_layout", "auto")).lower()
     run_local = rcfg.get("run_local") or [0.5, 0.86]
     run_override = rcfg.get("run_touch")     # None ⇒ auto-geometry
@@ -381,7 +409,8 @@ def run(ctx) -> None:
     # which has been wrong for fishing for as long as fishing existed.
     idle_detail = {
         "walk": f", movement={movement}, {walk_hold:.2f}s steps",
-        "sweet_scent": (f", Sweet Scent gap={sweet_scent_gap:.1f}s, "
+        "sweet_scent": (f", {' '.join(sweet_scent_seq)} @ "
+                        f"{sweet_scent_gap:.1f}s, "
                         f"settle={sweet_scent_settle:.1f}s"),
         "fish": (f", cast {fish_plan.cast_button} → hook "
                  f"{fish_plan.hook_button}, "
@@ -709,7 +738,7 @@ def run(ctx) -> None:
             continue
 
         if idle_action == "sweet_scent":
-            _use_sweet_scent(ctx, sweet_scent_gap)
+            _use_sweet_scent(ctx, sweet_scent_gap, sweet_scent_seq)
             # Wait out the menu close + horde intro animation so the
             # next scan_nonparty sees the 5 newly-generated wilds.
             ctx._stop_evt.wait(sweet_scent_settle)

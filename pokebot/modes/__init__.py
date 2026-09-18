@@ -2,7 +2,7 @@
 
 from .observe import run as run_observe
 from .encounter import run as run_encounter
-from .horde import run as run_horde
+from .sweet_scent import run as run_sweet_scent
 from .fishing import run as run_fishing
 from .rock_smash import run as run_rock_smash
 from .soft_reset import run as run_soft_reset
@@ -15,7 +15,10 @@ from .crystal_celebi import run as run_crystal_celebi
 MODES = {
     "observe":     run_observe,
     "encounter":   run_encounter,
-    "horde":       run_horde,
+    "sweet_scent": run_sweet_scent,
+    # Kept so configs and command lines written before the
+    # rename keep working. Same mode, older name.
+    "horde":       run_sweet_scent,
     "fishing":     run_fishing,
     "rock_smash":  run_rock_smash,
     "soft_reset":  run_soft_reset,

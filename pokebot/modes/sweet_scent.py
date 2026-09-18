@@ -1,5 +1,5 @@
 """
-Horde encounters — shiny hunting in groups of 5, Sweet Scent triggered.
+Sweet Scent — shiny hunting in hordes of 5.
 
 A **horde** is a battle where **5 wild Pokémon** appear on screen at
 once, each rolled independently (own PID / IVs / shiny check). Effective
@@ -40,11 +40,20 @@ from .encounter import run as _encounter_run
 
 log = logging.getLogger(__name__)
 
-#: Horde-specific defaults. The intro is longer than a single
-#: encounter, so flee_delay gets headroom for the command menu to
-#: draw before RUN, and the idle action becomes Sweet Scent.
+#: Sweet-Scent-specific defaults.
+#:
+#: The idle action is the only thing this mode changes. Detection, the
+#: flee and the catch are the random-encounter hunt's, unmodified --
+#: a horde is five wild Pokemon in one battle, not a different kind of
+#: battle, and one RUN press ends it exactly as it ends a single.
+#:
+#: This used to carry flee_delay: 9.0 as well, on the theory that the
+#: 5-mon intro needs longer before the RUN touch can land. It never
+#: had any effect: the merge below is {**defaults, **user_config}, and
+#: config.yaml sets flee_delay, so a default could never win. The hunt
+#: has always used the shared 1.5 -- so the override is gone rather
+#: than left lying around claiming otherwise.
 _DEFAULTS = {
-    "flee_delay": 9.0,
     "idle_action": "sweet_scent",
     "sweet_scent_gap": 1.5,
     "sweet_scent_settle": 4.0,
@@ -60,8 +69,8 @@ def run(ctx):
     rcfg = ctx.config.get("random_encounters") or {}
     merged = {**ctx.config, "random_encounters": {**_DEFAULTS, **rcfg}}
     ctx = replace(ctx, config=merged)
-    log.info("Mode: horde encounters (Sweet Scent → guaranteed 5-mon "
-             "horde; stops on ANY shiny / target in the horde)")
+    log.info("Mode: Sweet Scent (→ guaranteed 5-mon horde; evaluates "
+             "all 5 and acts on ANY shiny / target among them)")
     log.info("  Slot 1 MUST hold a Sweet Scent user; Smoke Ball "
              "recommended for guaranteed flee.")
     _encounter_run(ctx)

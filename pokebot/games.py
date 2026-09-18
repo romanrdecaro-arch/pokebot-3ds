@@ -356,13 +356,15 @@ def methods_for(game_key: str) -> list[Method]:
                      "Smash and a SAVE made facing a breakable rock — "
                      "every attempt restarts from that save. A catch "
                      "stops the hunt so you can save it."),
-        Method("Horde encounters", "horde",
-               notes="Same as Random encounters but tuned for hordes "
-                     "(5 wild Pokémon per battle, ~5× shiny chance). "
-                     "Every mon in the horde is reported and the bot "
-                     "stops on ANY shiny among the 5. Hordes happen "
-                     "~5%% of the time in tall grass, or use Sweet "
-                     "Scent / Honey for guaranteed."),
+        Method("Sweet Scent (hordes)", "sweet_scent",
+               notes="Uses Sweet Scent from the party menu to pull a "
+                     "guaranteed 5-mon horde, so every battle is ~5× "
+                     "the shiny chance of a single encounter. All five "
+                     "are reported and the bot acts on ANY shiny among "
+                     "them; detection, the flee and the catch are the "
+                     "Random-encounter ones unchanged. Needs a party "
+                     "member that knows Sweet Scent and a horde-enabled "
+                     "route (Route 5+; routes 1-3 have no horde table)."),
         Method("Debug — find offsets", "debug",
                notes="One-shot offset bootstrap. Sends NO inputs. "
                      "Brute-force scans memory for party_base, then "

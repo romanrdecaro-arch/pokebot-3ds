@@ -255,6 +255,40 @@ random_encounters:
   # encounter the flee sequence is thrown again. 0 disables it.
   stuck_timeout: 60
 
+  # --- Sweet Scent (mode: sweet_scent, was "horde") ------------------
+  #
+  # Uses Sweet Scent from the party menu to pull a guaranteed 5-mon
+  # horde: five independent shiny rolls per battle, and one RUN press
+  # ends the whole thing. Detection, the flee and the catch are the
+  # random-encounter ones, unchanged -- a horde is five wild Pokemon in
+  # one battle, not a different kind of battle.
+  #
+  # Needs a party member that knows Sweet Scent and a horde-enabled
+  # route (Route 5+; routes 1-3 have no horde table). A Smoke Ball on
+  # the lead guarantees the flee succeeds.
+  #
+  # The menu walk. This is the ONE idle action in the bot that is open
+  # loop: the presses go out on a timer and nothing reads back where
+  # the cursor actually got to, so if one is eaten by a transition the
+  # rest land on whatever is on screen. It is here in config because
+  # which slot the cursor lands on depends on YOUR party, not on the
+  # game:
+  #
+  #   X         open the main menu
+  #   A         select "Pokemon"
+  #   DpadRight move the party cursor across
+  #   A         select that slot (the Sweet Scent user)
+  #   DpadDown  cursor onto the Sweet Scent field-move entry
+  #   A         open the field-move list
+  #   A         confirm Sweet Scent
+  #
+  # Commented out = use the default above. Set it as a list, or as one
+  # string separated by commas or arrows, if your Sweet Scent user
+  # sits somewhere else in the party.
+  # sweet_scent_sequence: [X, A, DpadRight, A, DpadDown, A, A]
+  sweet_scent_gap: 1.5     # between presses; raise if any get eaten
+  sweet_scent_settle: 4.0  # menu close + horde intro, before scanning
+
   # --- Fishing cast loop (mode: fishing) -----------------------------
   #
   #   Y to cast -> watch the foe window -> A the instant something

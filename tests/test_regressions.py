@@ -136,33 +136,57 @@ def test_ordinary_text_survives_stripping() -> None:
 
 
 # --------------------------------------------------------------------
-# horde/fishing wrote different defaults into one shared config dict
+# Modes wrote different defaults into one shared config dict
 # --------------------------------------------------------------------
 
-def test_horde_and_fishing_do_not_mutate_the_shared_config() -> None:
+def test_modes_do_not_mutate_the_shared_config() -> None:
+    """ctx.config is the process-wide dict.
+
+    Every mode that layers defaults writes DIFFERENT values to the
+    SAME keys, so a mode that setdefault-ed into that dict instead of
+    building a new one let whichever ran first silently win for the
+    next. Covers every mode that layers defaults, not just the two it
+    was first found in -- a new one making the same mistake is exactly
+    what this should catch.
+    """
     from dataclasses import dataclass, field
 
     import pokebot.modes.fishing as fishing
-    import pokebot.modes.horde as horde
+    import pokebot.modes.rock_smash as rock_smash
+    import pokebot.modes.sweet_scent as sweet_scent
 
     @dataclass
     class FakeCtx:
         config: dict = field(default_factory=dict)
 
+    modes = ((sweet_scent, "sweet_scent"), (fishing, "fishing"),
+             (rock_smash, "rock_smash"))
     captured = {}
-    for mod, name in ((horde, "horde"), (fishing, "fishing")):
+    for mod, name in modes:
         original = {"random_encounters": {"movement": "horizontal"}}
         ctx = FakeCtx(config=original)
         snapshot = {"random_encounters": dict(original["random_encounters"])}
-        mod._encounter_run = lambda c, _n=name: captured.__setitem__(_n, c.config)
+        mod._encounter_run = lambda c, _n=name: captured.__setitem__(
+            _n, c.config)
         mod.run(ctx)
         assert original == snapshot, f"{name} mutated the caller's config"
 
-    # Each mode still got ITS own defaults, not the other's.
-    assert captured["horde"]["random_encounters"]["idle_action"] == "sweet_scent"
-    assert captured["fishing"]["random_encounters"]["idle_action"] == "fish"
+    # Each mode still got ITS own defaults, not another's.
+    idle = {n: captured[n]["random_encounters"]["idle_action"]
+            for _, n in modes}
+    assert idle == {"sweet_scent": "sweet_scent", "fishing": "fish",
+                    "rock_smash": "rock_smash"}
     # ...and a user-set value still wins over the mode default.
-    assert captured["horde"]["random_encounters"]["movement"] == "horizontal"
+    for _, name in modes:
+        assert (captured[name]["random_encounters"]["movement"]
+                == "horizontal"), f"{name} clobbered a user value"
+
+
+def test_the_old_horde_mode_name_still_resolves() -> None:
+    """Renamed to sweet_scent; configs and command lines predate that."""
+    from pokebot.modes import MODES
+
+    assert MODES["horde"] is MODES["sweet_scent"]
 
 
 # --------------------------------------------------------------------

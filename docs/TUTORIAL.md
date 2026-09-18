@@ -231,26 +231,33 @@ new keys during the sequence) and gets target-evaluated. On a hit
 the bot stops at the nickname prompt; press **B** to decline the
 nickname and save.
 
-## Horde mode (Sweet Scent shiny hunting)
+## Sweet Scent mode (horde shiny hunting)
 
 Horde battles put **5 wild Pokémon** on the field at once, each rolled
 independently — so the effective shiny rate is **~5× a single
-encounter**. The bot's `horde` method uses **Sweet Scent** to guarantee
-a horde every time, then checks all 5 for a target and flees if none
-match.
+encounter**. This mode uses **Sweet Scent** to guarantee a horde every
+time, checks all 5, and catches or flees using the exact same sequences
+as Random encounters. A horde is five wild Pokémon in one battle, not a
+different kind of battle: one *Run* press ends the whole thing.
+
+> Previously called **Horde encounters**. The old `horde` mode name
+> still works in `config.yaml` and on the command line.
 
 ### What you need in-game
 
-1. **Slot 1 must be a Sweet Scent user.** The easiest pick in X/Y is
-   **Bulbasaur**, which Professor Sycamore gives you for free in
-   Lumiose City after the first gym. The whole Bulbasaur line learns
-   Sweet Scent natively, so no evolution / TM hunting required. Other
-   options:
-   - **Gloom** (Route 7, Y only) — already knows Sweet Scent in the
-     wild, no leveling.
-   - **Roselia** (Route 7) — common, learns Sweet Scent by level-up.
-2. **Give slot 1 a Smoke Ball.** This held item guarantees escape from
-   wild battles regardless of Speed. Without it, fast hordes can
+1. **A party member that knows Sweet Scent.** The easiest pick in X/Y
+   is **Bulbasaur**, which Professor Sycamore gives you for free in
+   Lumiose City after the first gym — the whole line learns Sweet
+   Scent natively, no evolution or TM hunting. Other options:
+   - **Gloom** (Route 7, Y only) — already knows it in the wild.
+   - **Roselia** (Route 7) — common, learns it by level-up.
+
+   **Which slot?** The shipped menu walk moves the party cursor one
+   place across before selecting, so it picks the **second** slot. If
+   your Sweet Scent user is in slot 1, drop the `DpadRight` — see
+   *Changing the menu walk* below.
+2. **Give the lead a Smoke Ball.** This held item guarantees escape
+   from wild battles regardless of Speed. Without it, fast hordes can
    sometimes refuse the run; with it, every flee succeeds.
 3. **Stand on a horde-enabled route.** Routes 1-3 have no horde tables
    — Sweet Scent there just gives a single wild. Route 5 onwards is
@@ -259,35 +266,60 @@ match.
 
 ### Launcher setup
 
-1. **METHOD** — set to **Horde encounters**.
-2. **TARGET FILTER** — usually *Shiny only*; the bot stops on the
+1. **METHOD** — set to **Sweet Scent (hordes)**.
+2. **TARGET FILTER** — usually *Shiny only*; the bot acts on the
    FIRST shiny among the 5 in any horde.
 3. Press **▶ Start Bot**.
 
 ### What it does each iteration
 
-1. Press **X, A, A, Down, A, A** with 1.5-second intervals — opens
-   the menu, picks slot 1, selects Sweet Scent.
-2. Waits for the horde intro animation (`sweet_scent_settle`, default
-   4s).
-3. Scans the foe window — a 5-mon horde drops 5 fresh PK6 records
-   with new encryption keys; the bot reports each as its own
-   *Recently Seen* row.
-4. **Any of the 5 a shiny / target → stop + alert** (battle left on
-   screen for you to catch).
-5. **None shiny → flee** (B-mash to dismiss appearance text, touch the
-   *Run* button; Smoke Ball makes this a guaranteed success).
+1. Presses **X → A → DpadRight → A → DpadDown → A → A** at
+   `sweet_scent_gap` intervals (default 1.5 s) — opens the menu, picks
+   the party slot, selects Sweet Scent.
+2. Waits out the menu close and horde intro (`sweet_scent_settle`,
+   default 4 s).
+3. Scans the foe window. A 5-mon horde drops 5 fresh PK6 records with
+   new encryption keys; each is reported as its own *Recently Seen*
+   row, so one battle gives you five rows of data.
+4. **Any of the 5 a shiny / target → catches it**, using the same
+   Bag → Poké Balls → throw sequence Random encounters uses. (Set
+   `on_target: stop` if you would rather it left the battle on screen
+   for you.)
+5. **None of them a target → flees**, using the same Run touch.
 6. Loop.
+
+### Changing the menu walk
+
+This is the **one** idle action in the bot that is open-loop: the
+presses go out on a timer and nothing reads back where the cursor
+actually landed. Every other one — walking, fishing, Rock Smash —
+watches the foe window and reacts to what it sees. So if a press gets
+eaten by a transition here, the rest land on whatever happens to be on
+screen, and the stall watchdog is the only thing that notices.
+
+Which is why the sequence lives in `config.yaml` rather than in the
+source: the slot it picks depends on your party, not on the game.
+
+```yaml
+random_encounters:
+  # Sweet Scent user in slot 1? Drop the DpadRight:
+  sweet_scent_sequence: [X, A, A, DpadDown, A, A]
+  sweet_scent_gap: 1.5
+```
 
 ### Troubleshooting
 
 - **Sequence opens the wrong menu / picks the wrong slot.** Make sure
   you're standing still in the overworld when you start, not in a
-  dialog or sub-menu. The sequence assumes a clean overworld state.
+  dialog or sub-menu — the sequence assumes a clean overworld state.
+  If it is consistently one slot off, adjust
+  `sweet_scent_sequence` above.
+- **Presses seem to get eaten.** Raise `sweet_scent_gap`. Being
+  open-loop, this sequence has no way to notice and retry.
 - **"0 new wild" forever.** Either you're on a no-horde route (check
   Serebii's [horde encounters list](https://www.serebii.net/xy/hordeencounters.shtml))
-  or slot 1 doesn't know Sweet Scent yet. The bot will spam the menu
-  sequence but no horde will spawn.
+  or the selected slot doesn't know Sweet Scent. The bot will keep
+  walking the menu but no horde will spawn.
 
 ## Fishing mode
 
