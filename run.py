@@ -101,6 +101,10 @@ def main(argv=None):
                     help="seconds between the Y cast and the A hook "
                          "(fishing mode). Higher = waits longer for "
                          "the bite. Overrides config.yaml.")
+    ap.add_argument("--noibat-direction", default=None,
+                    choices=["up", "down", "left", "right"],
+                    help="which way the shaking spot is from your save "
+                         "(noibat mode)")
     ap.add_argument("--trainer-name", default=None,
                     help="in-game OT name; used by the party locator "
                          "to identify your owned Pokémon (soft_reset "
@@ -216,6 +220,8 @@ def main(argv=None):
         section("random_encounters")["flee_delay"] = args.flee_delay
     if args.fish_cast_settle is not None:
         section("random_encounters")["fish_cast_settle"] = args.fish_cast_settle
+    if args.noibat_direction:
+        section("noibat")["direction"] = args.noibat_direction
     if args.trainer_name:
         section("soft_reset")["trainer_name"] = args.trainer_name
     if args.press_speed is not None:

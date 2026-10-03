@@ -597,3 +597,34 @@ logging:
 #     python run.py --update
 updates:
   check_on_start: true
+
+# --- Noibat shaking-spot hunt (mode: noibat) -------------------------
+#
+#   reset -> hold a direction into the shaking spot -> read the wild ->
+#   a shiny Noibat stops and is caught; anything else resets.
+#
+# THIS MODE THROWS AWAY SHINIES ON PURPOSE. Every other hunt here
+# treats a shiny as the win whatever else is configured. This one was
+# asked for the other way round: only a shiny NOIBAT is wanted, and a
+# shiny of any other species in the cave is reset over like any other
+# miss. That is irreversible, so a discarded shiny is exported to
+# targets/ first -- a pre-capture record PKHeX will not accept as
+# legal, but the only evidence it existed.
+#
+# Setup: stand beside the spot facing it, close enough that holding
+# one direction walks into it, and SAVE there. Every attempt returns
+# to that save.
+noibat:
+  # up / down / left / right -- which way the spot is from where you
+  # saved. The launcher's dropdown sets this; --noibat-direction
+  # overrides it. HELD rather than tapped, because the spot can be
+  # more than one tile away and a tap moves exactly one.
+  direction: up
+  # National dex number. 714 is Noibat. It is configurable because
+  # this repo has no Gen 6 species table to check it against: if the
+  # hunt reports finding the wrong thing, fix it here rather than in
+  # the code.
+  species: 714
+  encounter_timeout: 20   # give up on the attempt and reset after this
+  poll_gap: 0.03          # one 232-byte read per check
+  settle: 0.4             # let the battle draw before reading the wild

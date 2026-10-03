@@ -355,6 +355,13 @@ def methods_for(game_key: str) -> list[Method]:
                      "picks up the wild; misses recast automatically. "
                      "Requires a rod registered to Y and the player "
                      "facing fishable water."),
+        Method("Noibat (shaking spot)", "noibat",
+               notes="Soft-reset hunt for the Terminus Cave shaking "
+                     "spot. Holds the direction you pick to walk into "
+                     "it, reads the wild, and resets unless it is a "
+                     "SHINY NOIBAT — a shiny of any other species is "
+                     "reset over too (its .pk6 is saved first). Needs "
+                     "a save made standing beside the spot, facing it."),
         Method("Rock Smash", "rock_smash",
                notes="Presses A at the breakable rock in front of you "
                      "and stops the instant a wild appears, so it never "

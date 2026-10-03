@@ -145,9 +145,9 @@ overwritten; commit or discard them and update again.
 
 ## Features
 
-- **Eight bot modes** — `observe`, `encounter`, `sweet_scent`,
-  `fishing`, `rock_smash`, `soft_reset`, `gifts`, `livehex`
-  (see [Modes](#modes))
+- **Nine bot modes** — `observe`, `encounter`, `sweet_scent`,
+  `fishing`, `rock_smash`, `soft_reset`, `gifts`, `noibat`,
+  `livehex` (see [Modes](#modes))
 - **Target system** — filter by shininess, IVs, nature, gender,
   species, or ability; combine rules with AND/OR
 - **PKHeX-compatible export** — every shiny / target hit is saved as
@@ -211,6 +211,7 @@ Fennekin / Froakie).
 | `rock_smash` | A at a breakable rock; soft-resets between attempts                |
 | `soft_reset` | Starters / specific static targets — sequence, evaluate, reset     |
 | `gifts`      | ANY gift Pokémon — reset, mash A, evaluate whatever joins the party|
+| `noibat`     | Shaking-spot soft reset; stops ONLY on a shiny Noibat             |
 | `livehex`    | Bridges Azahar to PKHeX for live box / trainer editing             |
 
 ## Auto-catching
@@ -307,7 +308,7 @@ flowchart LR
     subgraph BOT["pokebot.bot"]
         RPC["citra_rpc<br/>UDP :45987"]
         PAR["parser<br/>PK6/PK7 decrypt + shiny"]
-        MOD["modes/<br/>observe · encounter · sweet_scent · fishing · rock_smash · soft_reset · gifts · livehex"]
+        MOD["modes/<br/>observe · encounter · sweet_scent · fishing · rock_smash · soft_reset · gifts · noibat · livehex"]
         INP["input_driver<br/>keystrokes + touch"]
         DASH["dashboard_server<br/>terminal event sink"]
         EXP["pk6_export<br/>targets/*.pk6"]

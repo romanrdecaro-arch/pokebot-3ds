@@ -692,6 +692,77 @@ anyway.
   this mode is built to make impossible. Include the log around the
   encounter.
 
+## Noibat mode (shaking spot, soft reset)
+
+Soft-reset hunt for the Terminus Cave shaking spot. Every attempt:
+reset, hold one direction to walk into the spot, read whatever comes
+out, and reset unless it is a **shiny Noibat**.
+
+> **This mode throws shinies away on purpose.** Every other hunt here
+> treats a shiny as the win whatever else is set. This one only wants
+> a shiny **Noibat** — a shiny of any other species in the cave is
+> reset over like any other miss. That is irreversible, so the bot
+> writes its `.pk6` to `targets/` first. The file is a pre-capture
+> record (no OT, ball or met data, so PKHeX will not accept it as
+> legal) but it is the only evidence the encounter happened.
+>
+> If that is not what you want, use **Random encounters** instead —
+> it stops on any shiny.
+
+### What you need in-game
+
+1. Stand **beside the shaking spot, facing it**, close enough that
+   holding one direction walks into it.
+2. **SAVE there.** Every attempt returns to that save.
+
+### Launcher setup
+
+1. **METHOD** — **Noibat (shaking spot)**.
+2. **Shaking spot direction** — which way the spot is from where you
+   saved: Up, Right, Down or Left.
+3. Press **▶ Start Bot**.
+
+The direction is **held**, not tapped, because the spot can be more
+than one tile away and a tap moves exactly one.
+
+### What it does each attempt
+
+1. Holds your direction, polling the foe window while it walks.
+2. The instant a wild appears, stops walking and reads it.
+3. **Shiny Noibat** → catches it with the same sequence every other
+   mode uses, then **stops** and tells you to save. (A catch is not
+   saved; the next reset would take it back.)
+4. **Shiny anything else** → saves the `.pk6`, logs it loudly, resets.
+5. **Anything else** → resets.
+6. No encounter within `encounter_timeout` (20 s) → resets and
+   retries. Usually means the save is not beside the spot, or the
+   direction is wrong.
+
+### A note on the species number
+
+Noibat is **714**. That number is from memory — this repo has no Gen 6
+species table to check it against — so it is a config value, not a
+constant in the code:
+
+```yaml
+noibat:
+  species: 714
+```
+
+If the log reports catching or passing over the wrong thing, fix it
+there. The log prints every encounter's species number, so one attempt
+tells you whether 714 is right.
+
+### Troubleshooting
+
+- **"no encounter in 20s of holding DpadUp".** Wrong direction, or the
+  save is not beside the spot. The log says which direction it held.
+- **It reset over a shiny.** That is the mode working as asked. Check
+  `targets/` for the saved `.pk6`, and use Random encounters if you
+  want any shiny.
+- **It never finds Noibat.** Check the species number above against
+  what the log reports for ordinary encounters in that cave.
+
 ## Tips for reliable hunts
 
 - **Set in-game text speed to FAST.** *Options → Text Speed → Fast.*

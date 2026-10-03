@@ -1695,6 +1695,36 @@ class _App(tk.Tk):
                  anchor="w", wraplength=235, justify="left"
                  ).pack(fill="x", pady=(2, 6))
 
+        # NOIBAT (sub-frame, only visible when method=Noibat).
+        # Which way the shaking spot is from where the player saved.
+        # Four ways, not the encounter mode's two axes: this holds ONE
+        # direction to walk into a specific tile, it does not pace back
+        # and forth along a line.
+        self._noibat_frame = tk.Frame(hunt_card, bg=_PANEL2)
+        tk.Frame(self._noibat_frame, bg=_BORDER, height=1).pack(
+            fill="x", pady=(10, 8))
+        tk.Label(self._noibat_frame, text="Shaking spot direction",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "bold"),
+                 anchor="w").pack(fill="x", pady=(0, 4))
+        self._noibat_dirs = ["Up (↑)", "Right (→)",
+                             "Down (↓)", "Left (←)"]
+        self._noibat_dir_var = tk.StringVar(value=self._noibat_dirs[0])
+        ttk.Combobox(self._noibat_frame,
+                     textvariable=self._noibat_dir_var,
+                     values=self._noibat_dirs, state="readonly",
+                     style="Dark.TCombobox").pack(fill="x")
+        tk.Label(self._noibat_frame,
+                 text="Save standing beside the spot, facing it. The "
+                      "bot HOLDS this direction to walk in, then resets "
+                      "unless it is a shiny Noibat — a shiny of any "
+                      "other species is reset over too (saved to "
+                      "targets/ first).",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "italic"),
+                 anchor="w", wraplength=235, justify="left"
+                 ).pack(fill="x", pady=(2, 6))
+
         # Battle-wait slider — how long to wait after a wild appears
         # before fleeing. Emulator speed varies a lot per user, so
         # this is tunable live (maps to random_encounters.flee_delay).
@@ -2081,6 +2111,7 @@ class _App(tk.Tk):
         self._starter_frame.pack_forget()
         self._movement_frame.pack_forget()
         self._fishing_frame.pack_forget()
+        self._noibat_frame.pack_forget()
         if m and m.mode == "soft_reset":
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
@@ -2113,6 +2144,9 @@ class _App(tk.Tk):
         elif m and m.mode == "fishing":
             self._fishing_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
+        elif m and m.mode == "noibat":
+            self._noibat_frame.pack(fill="x", pady=(4, 0),
+                                    before=self._target_divider)
 
     # ---- Live Azahar status polling ----------------------------------------
 
@@ -2351,6 +2385,10 @@ class _App(tk.Tk):
         # targeted soft-resets, so it needs the same two flags. Without
         # the trainer name it cannot tell which PK6 are YOURS, and
         # reports "No party found" on a perfectly good save.
+        if method.mode == "noibat":
+            # "Up (↑)" -> "up"
+            args += ["--noibat-direction",
+                     self._noibat_dir_var.get().split()[0].lower()]
         if method.mode in ("soft_reset", "gifts"):
             tn = self._trainer_var.get().strip()
             if tn:
