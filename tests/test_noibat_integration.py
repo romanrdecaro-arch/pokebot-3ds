@@ -52,18 +52,35 @@ class Mon:
 
 
 class Cave:
-    """A save beside a shaking spot, and a queue of what it yields."""
+    """A save beside a shaking spot, and a queue of what it yields.
 
-    def __init__(self, encounters, tiles=3):
+    The wild appears on the GAME's clock, not ours. The first version
+    of this spawned it as a side effect of the bot's own foe read,
+    which quietly made one bug untestable: a press issued before the
+    read could never coincide with a battle, because the battle did
+    not exist until the read created it. The real thing starts the
+    battle whether or not anyone is looking, so this spawns on
+    elapsed time and both the controller and the foe window merely
+    observe it.
+    """
+
+    def __init__(self, encounters, spawn_after=0.05):
         self.queue = list(encounters)
-        self.tiles = tiles          # holds needed before the spot fires
+        self.spawn_after = spawn_after   # seconds of walking
         self.held = None
-        self.held_ticks = 0
+        self.held_since = None
         self.wild = None
         self.resets = 0
         self.releases = 0
         self.taps: list[str] = []
         self.touches: list[tuple] = []
+
+    def _maybe_spawn(self):
+        if (self.held and self.wild is None and self.queue
+                and self.held_since is not None
+                and time.monotonic() - self.held_since
+                >= self.spawn_after):
+            self.wild = self.queue.pop(0)
 
     # --- controller ---
     def diagnose(self):
@@ -71,14 +88,19 @@ class Cave:
 
     def hold(self, button):
         self.held = button
+        self.held_since = time.monotonic()
         return True
 
     def release(self, button):
         self.releases += 1
         self.held = None
+        self.held_since = None
         return True
 
     def tap(self, button, hold_s=0.05):
+        # The battle may have started since the last look. Observing
+        # that here is what makes "pressed A into a battle" visible.
+        self._maybe_spawn()
         self.taps.append(button)
         return "postmessage"
 
@@ -89,18 +111,11 @@ class Cave:
     def soft_reset(self, hold_s=0.5):
         self.resets += 1
         self.wild = None
-        self.held_ticks = 0
+        self.held_since = None
 
     # --- what the foe window holds ---
-    def step(self):
-        """Called on every poll: walking eventually hits the spot."""
-        if self.held and self.wild is None:
-            self.held_ticks += 1
-            if self.held_ticks >= self.tiles and self.queue:
-                self.wild = self.queue.pop(0)
-
     def foe(self):
-        self.step()
+        self._maybe_spawn()
         return [(SLOT, self.wild)] if self.wild else []
 
 
@@ -323,7 +338,7 @@ def test_the_direction_is_released_even_when_stopped_mid_walk(wired):
     walk never began -- nothing was held, nothing needed releasing,
     and the test passed without touching the code it names.
     """
-    cave = wired(Cave([], tiles=99))
+    cave = wired(Cave([], spawn_after=99))
     ctx = Ctx(cave, seconds=6.0)
     real_foe = cave.foe
 
@@ -340,39 +355,110 @@ def test_the_direction_is_released_even_when_stopped_mid_walk(wired):
     assert cave.held is None, "left a direction held after stopping"
 
 
-def test_nothing_is_tapped_while_walking(wired):
-    """Only the hold. A stray A would talk to whatever is in front."""
-    cave = wired(Cave([Mon(NOIBAT)], tiles=3))
-    ctx = Ctx(cave, seconds=6.0)
+def test_a_is_pressed_while_walking(wired):
+    """Both at once, which is the point.
 
-    def stop_after_one(ctx=ctx):
-        ctx.request_stop("one attempt")
+    The reset stops as soon as the party is readable, and the party
+    comes back before the overworld does -- so the walk can begin with
+    the welcome dialog still up, where a held direction does nothing
+    and the attempt burns its timeout against a text box.
+    """
+    cave = wired(Cave([Mon(NOIBAT, shiny=True)], spawn_after=0.08))
+    ctx = Ctx(cave, cfg={**FAST, "a_gap": 0.01})
 
-    real_reset = cave.soft_reset
+    run(ctx)
 
-    def reset(hold_s=0.5):
-        real_reset(hold_s)
-        stop_after_one()
+    assert cave.taps.count("A") >= 1, "never cleared the menu"
+    assert set(cave.taps) == {"A"}, f"pressed {set(cave.taps)}"
 
-    cave.soft_reset = reset                     # type: ignore
-    noibat.run(ctx)
 
-    assert cave.taps == [], f"pressed {cave.taps} while walking"
+def test_the_direction_is_held_for_the_whole_walk(wired):
+    """A is pressed WHILE holding, not instead of it."""
+    cave = wired(Cave([Mon(NOIBAT, shiny=True)], spawn_after=0.08))
+    held_during_taps = []
+    ctx = Ctx(cave, cfg={**FAST, "a_gap": 0.01})
+
+    real_tap = cave.tap
+
+    def tap(button, hold_s=0.05):
+        held_during_taps.append(cave.held)
+        return real_tap(button, hold_s)
+
+    cave.tap = tap                              # type: ignore
+    run(ctx)
+
+    assert held_during_taps, "no A presses to check"
+    assert all(h == "DpadUp" for h in held_during_taps), (
+        f"direction was not held during the A presses: "
+        f"{set(held_during_taps)}")
+
+
+def test_no_a_press_lands_after_the_encounter_appears(wired):
+    """Once a battle is up, A is "attack with move 1" -- aimed at the
+    shiny Noibat. The same hazard rock smash has, for the same reason,
+    so the foe window is checked before every press.
+
+    Two things had to be right before this test measured anything.
+
+    The observation point: the wrapper has to ask the CAVE whether a
+    battle exists at the instant of the press. Checking ``cave.wild``
+    before calling through meant reading the state before the lazy
+    spawn ran, so a press issued into a live battle still looked
+    clean.
+
+    And the cadence: time.monotonic() has ~16 ms granularity on
+    Windows, so an a_gap below that does not exist -- an earlier
+    version asked for 2 ms, got 16 presses instead of 125, and failed
+    its own "enough presses to matter" guard.
+    """
+    cave = wired(Cave([Mon(NOIBAT, shiny=True)], spawn_after=0.4))
+    ctx = Ctx(cave, cfg={**FAST, "a_gap": 0.016, "poll_gap": 0.005,
+                         "encounter_timeout": 3.0})
+    after = {"n": 0}
+
+    real_tap = cave.tap
+
+    def tap(button, hold_s=0.05):
+        # What does the GAME look like at this instant? The battle
+        # starts on its own clock, so ask before pressing.
+        cave._maybe_spawn()
+        if cave.wild is not None:
+            after["n"] += 1
+        return real_tap(button, hold_s)
+
+    cave.tap = tap                              # type: ignore
+    run(ctx)
+
+    assert len(cave.taps) >= 10, (
+        f"only {len(cave.taps)} presses across the spawn moment; too "
+        f"few for the ordering to matter")
+    assert after["n"] == 0, (
+        f"pressed A {after['n']} time(s) with a wild already on "
+        f"screen -- that is an attack on the shiny")
+
+
+def test_the_a_presses_can_be_switched_off(wired):
+    cave = wired(Cave([Mon(NOIBAT, shiny=True)], spawn_after=0.05))
+    ctx = Ctx(cave, cfg={**FAST, "a_gap": 0})
+
+    run(ctx)
+
+    assert cave.taps == [], f"pressed {cave.taps} with a_gap 0"
 
 
 # ----------------------------------------------------------------------
 # Not finding anything
 # ----------------------------------------------------------------------
 def test_a_walk_that_finds_nothing_resets_and_tries_again(wired):
-    cave = wired(Cave([Mon(NOIBAT, shiny=True)], tiles=10**9))
+    cave = wired(Cave([Mon(NOIBAT, shiny=True)], spawn_after=10**9))
     ctx = Ctx(cave, seconds=12.0)
 
     # First attempt walks into nothing; the spot works after the reset.
     def reset(hold_s=0.5):
         cave.resets += 1
         cave.wild = None
-        cave.held_ticks = 0
-        cave.tiles = 2
+        cave.held_since = None
+        cave.spawn_after = 0.02
 
     cave.soft_reset = reset                     # type: ignore
     run(ctx)
@@ -386,7 +472,7 @@ def test_a_stale_wild_is_not_read_as_this_attempt(wired):
     """The foe buffer keeps the last wild. Without a baseline, attempt
     one evaluates a Pokemon nobody just met -- and if that stale one
     happens to be a shiny Noibat the hunt stops having done nothing."""
-    cave = Cave([Mon(NOIBAT)], tiles=2)
+    cave = Cave([Mon(NOIBAT)], spawn_after=0.02)
     cave.wild = Mon(NOIBAT, shiny=True, key=4242)   # left over
     wired(cave)
     ctx = Ctx(cave, seconds=8.0)
@@ -394,7 +480,7 @@ def test_a_stale_wild_is_not_read_as_this_attempt(wired):
     def reset(hold_s=0.5):
         cave.resets += 1
         cave.wild = None
-        cave.held_ticks = 0
+        cave.held_since = None
         ctx.request_stop("one attempt is enough")
 
     cave.soft_reset = reset                     # type: ignore

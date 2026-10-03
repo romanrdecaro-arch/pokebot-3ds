@@ -727,7 +727,19 @@ than one tile away and a tap moves exactly one.
 
 ### What it does each attempt
 
-1. Holds your direction, polling the foe window while it walks.
+1. Holds your direction **and presses A** while it walks.
+
+   Both at once, deliberately. The reset mashes A through the boot and
+   stops as soon as your party is readable — but the party comes back
+   *before* the overworld does, so the walk can start with the welcome
+   dialog still on screen. A held direction does nothing against a
+   text box, and the attempt would burn its whole 20 s pressing a
+   d-pad at a menu. A clears what is left; the hold walks once it is
+   gone. (`a_gap`, default 0.2 s; set it to 0 to turn the presses off.)
+
+   The foe window is checked **before every A press**: once a battle
+   is up, that same A means *attack with move 1* — aimed at the shiny
+   Noibat.
 2. The instant a wild appears, stops walking and reads it.
 3. **Shiny Noibat** → catches it with the same sequence every other
    mode uses, then **stops** and tells you to save. (A catch is not

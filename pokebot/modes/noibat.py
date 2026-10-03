@@ -93,6 +93,21 @@ class NoibatPlan:
     #: record is fully written.
     settle: float = 0.4
 
+    #: Seconds between A presses while walking. 0 disables them.
+    #:
+    #: The reset mashes A through the boot and stops as soon as the
+    #: party is readable -- but the party comes back before the
+    #: overworld does, so the walk can begin with the welcome dialog
+    #: still up. A held direction does nothing against a text box, and
+    #: the attempt would burn its whole timeout pressing a d-pad at a
+    #: menu. So A keeps going during the walk.
+    #:
+    #: It is checked against the foe window BEFORE every press, for
+    #: the same reason rock smash is: once a battle is up, that same A
+    #: means "attack with move 1" -- aimed at the shiny this hunt
+    #: exists to catch.
+    a_gap: float = 0.2
+
     @classmethod
     def from_config(cls, cfg: dict | None) -> "NoibatPlan":
         cfg = cfg or {}
@@ -120,6 +135,7 @@ class NoibatPlan:
                                   d.encounter_timeout),
             poll_gap=max(0.005, num("poll_gap", d.poll_gap)),
             settle=num("settle", d.settle),
+            a_gap=max(0.0, num("a_gap", d.a_gap)),
         )
 
 
@@ -184,7 +200,10 @@ def run(ctx) -> None:
 
     log.info("Mode: noibat — shaking-spot soft-reset hunt")
     log.info(f"  holding {plan.button} into the spot, up to "
-             f"{plan.encounter_timeout:.0f}s per attempt")
+             f"{plan.encounter_timeout:.0f}s per attempt"
+             + (f", pressing A every {plan.a_gap:.2f}s to clear the "
+                f"post-reset menus" if plan.a_gap
+                else ", no A presses while walking"))
     log.info(f"  STOPS ONLY on a shiny #{plan.species}. A shiny of any "
              f"other species is reset over (its .pk6 is saved first).")
     if ctx.target and getattr(ctx.target, "rules", None):
@@ -226,28 +245,51 @@ def run(ctx) -> None:
     attempt = 0
     shinies_passed = 0
 
+    def look(seen_now: set):
+        """Is a wild the hunt has not seen in the foe window yet?"""
+        if hot["addr"]:
+            try:
+                p = read_pk6_at(ctx, hot["addr"])
+                if (p is not None
+                        and p.encryption_key not in keys
+                        and p.encryption_key not in seen_now):
+                    return hot["addr"], p
+            except Exception as exc:
+                log.debug(f"  hot read failed: {exc}")
+        found = wilds(seen_now)
+        if found:
+            hot["addr"] = found[0][0]
+            return found[0]
+        return None
+
     def walk_until_encounter():
-        """Hold the direction until a new wild appears. Returns it."""
+        """Hold the direction, pressing A, until a new wild appears.
+
+        Both at once, deliberately. The reset stops as soon as the
+        party is readable, and the party comes back before the
+        overworld does -- so this can begin with the welcome dialog
+        still on screen, where a held direction does nothing at all
+        and the attempt would burn its timeout walking against a text
+        box. A clears what is left; the hold walks once it is gone.
+
+        The foe window is checked BEFORE every A press. Once a battle
+        is up that same A is "attack with move 1", pointed at the
+        shiny Noibat -- the one outcome this hunt exists to avoid.
+        """
         deadline = time.monotonic() + plan.encounter_timeout
+        next_a = 0.0
         if not ctx.input.hold(plan.button):
             log.warning(f"  could not hold {plan.button}; the player may "
                         f"not move.")
         try:
             while not ctx.should_stop() and time.monotonic() < deadline:
-                # Cheap path first: one read where the last wild was.
-                if hot["addr"]:
-                    try:
-                        p = read_pk6_at(ctx, hot["addr"])
-                        if (p is not None
-                                and p.encryption_key not in keys
-                                and p.encryption_key not in seen):
-                            return hot["addr"], p
-                    except Exception as exc:
-                        log.debug(f"  hot read failed: {exc}")
-                found = wilds(seen)
-                if found:
-                    hot["addr"] = found[0][0]
-                    return found[0]
+                hit = look(seen)
+                if hit is not None:
+                    return hit
+                now = time.monotonic()
+                if plan.a_gap and now >= next_a:
+                    next_a = now + plan.a_gap
+                    ctx.input.tap("A", hold_s=0.05)
                 ctx._stop_evt.wait(plan.poll_gap)
         finally:
             # Always. A latched direction outlives this process -- the

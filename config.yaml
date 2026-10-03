@@ -628,3 +628,19 @@ noibat:
   encounter_timeout: 20   # give up on the attempt and reset after this
   poll_gap: 0.03          # one 232-byte read per check
   settle: 0.4             # let the battle draw before reading the wild
+  # Seconds between A presses WHILE walking. 0 turns them off.
+  #
+  # The reset mashes A through the boot and stops as soon as the party
+  # is readable -- but the party comes back before the overworld does,
+  # so the walk can begin with the welcome dialog still up. A held
+  # direction does nothing against a text box, and the attempt would
+  # burn its whole timeout pressing a d-pad at a menu. So A keeps
+  # going during the walk, alongside the hold.
+  #
+  # The foe window is checked BEFORE every one of these presses: once
+  # a battle is up, that same A is "attack with move 1" aimed at the
+  # shiny this hunt exists to catch.
+  #
+  # Note time.monotonic() has ~16 ms granularity on Windows, so values
+  # below that behave as 16 ms.
+  a_gap: 0.2
