@@ -149,6 +149,19 @@ _register(Game(
 # trainer block is a published LiveHeX address. Writing the sum here
 # by hand would let the two drift apart silently.
 #
+# Cross-checked against ProjectPokemon's ORAS save structure
+# (projectpokemon.org/home/docs/gen-6/oras-save-structure-r80/):
+#   * Trainer Card 0x19400 (len 0x170) is immediately followed by
+#     Party 0x19600 -- the same arrangement as X/Y, which is what
+#     makes X/Y's confirmed +0x16C carry over.
+#   * Party len 0x61C = 6 x 260 + 4: 260-byte party slots.
+#   * Box data: 31 x 30 slots of 232 bytes.
+# Those are SAVE-FILE offsets. RAM is not the file with its 0x200
+# padding stripped: packing the listed blocks back to back puts the
+# box 0xB24 short of the published RAM gap (0x1CDF4). So the page
+# supports the relative offset, not the absolute address -- the
+# first live run is what confirms that.
+#
 # Leaving these empty is what caused the bug this block fixes. An
 # empty GameOffsets is not "use sensible defaults", it is "whatever
 # config.yaml says" -- and config.yaml ships X/Y's addresses, so
