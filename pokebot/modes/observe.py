@@ -63,6 +63,15 @@ def _parse_valid(pt: bytes):
         return None
     if pkm.nature_id > 24 or pkm.ability_num not in (0, 1, 2, 4):
         return None
+    # PID 0 is a half-built scratch record, not a Pokemon -- and it is
+    # the one kind of junk that reads as SHINY. The formula is
+    # (PSV ^ TSV) < 16; PID 0 makes PSV 0, and a record with blank OT
+    # fields has a TSV under 16, so it "matches". A Noibat run logged
+    # the same species-65 / Ice Body / all-zero-IV record 13 times
+    # this way. Its near-empty body still sums to a valid checksum, so
+    # nothing above catches it. A real PID of 0 is 1 in 4 billion.
+    if pkm.pid == 0:
+        return None
     lvl = pkm.party["level"] if pkm.party else None
     if lvl is not None and not (1 <= lvl <= 100):
         return None
