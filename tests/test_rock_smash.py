@@ -390,7 +390,7 @@ def test_the_idle_action_survives_the_merge():
 def test_the_mode_is_offered_for_gen_six():
     from pokebot.games import methods_for
 
-    modes = [m.mode for m in methods_for("XY")]
+    modes = [m.mode for m in methods_for("Y-USA")]
     assert "rock_smash" in modes
 
 

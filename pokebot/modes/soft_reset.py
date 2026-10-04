@@ -40,7 +40,8 @@ from __future__ import annotations
 import logging
 import time
 
-from ..games import DEFAULT_OT_NAME, starter_species, starters_for
+from ..games import (DEFAULT_OT_NAME, starter_species, starter_spot,
+                     starters_for)
 from ..pk6_export import ensure_targets_dir, save_target_pk6
 from ..platform_utils import focus_azahar
 from .observe import (get_party, broadcast_party, quick_get_party,
@@ -840,7 +841,7 @@ def _run_starters(ctx, cfg):
 
     if _party_has_mon():
         log.error("Your party already has a Pokemon. This mode expects a "
-                  "save made in front of the starter table with an EMPTY "
+                  f"save made at {starter_spot(ctx.game.key)} with an EMPTY "
                   "party — otherwise it cannot tell a new starter from "
                   "the one already there. Stopping.")
         ctx.dashboard.broadcast("read_failure",
@@ -889,7 +890,7 @@ def _run_starters(ctx, cfg):
                 return
             log.error(f"  nothing reached the party in "
                       f"{receive_timeout:.0f}s of A presses. Either the "
-                      f"save is not in front of the starter table, or "
+                      f"save is not at {starter_spot(ctx.game.key)}, or "
                       f"Azahar is not receiving input — run "
                       f"scripts/test_input.py to tell those apart.")
             ctx.dashboard.broadcast(

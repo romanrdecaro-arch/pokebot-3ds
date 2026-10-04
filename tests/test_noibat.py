@@ -221,7 +221,7 @@ def test_the_mode_is_registered():
 def test_the_launcher_offers_it():
     from pokebot.games import methods_for
 
-    methods = methods_for("XY")
+    methods = methods_for("Y-USA")
     assert "noibat" in [m.mode for m in methods]
 
 

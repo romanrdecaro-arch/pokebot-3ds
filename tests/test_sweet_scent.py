@@ -63,7 +63,7 @@ def test_the_old_horde_name_still_works():
 def test_the_launcher_offers_it_by_the_new_name():
     from pokebot.games import methods_for
 
-    methods = methods_for("XY")
+    methods = methods_for("Y-USA")
     names = [m.label for m in methods]
     modes = [m.mode for m in methods]
 

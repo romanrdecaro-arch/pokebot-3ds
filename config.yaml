@@ -227,6 +227,17 @@ soft_reset:
 # Azahar reads them directly (trainer region is shifted -0x10, the
 # 0x088xxxxx wild region is at its native address).
 offsets:
+  # These flat values are X/Y's. They used to be written onto WHATEVER
+  # game was selected, so picking Omega Ruby ran it on Pokemon Y's
+  # memory map -- which fails as "nothing found", not as an error.
+  #
+  # Now a flat value only fills a gap: a game that ships its own
+  # address in pokebot/games.py (ORAS does) keeps it. To override a
+  # specific game on purpose, give it its own block:
+  #
+  #   OR-USA:
+  #     party_base: 0x08C814AC
+  #
   # PartyOffset (X/Y): 6 live party slots, encrypted ekx, 484 B apart.
   party_base: 0x08CE1CF8
   party_stride: 484

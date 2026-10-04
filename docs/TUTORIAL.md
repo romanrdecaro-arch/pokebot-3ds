@@ -159,6 +159,35 @@ game was on when slot 0 finished writing — usually the "What will
 you nickname [STARTER]?" prompt. From here it's all manual:
 nickname, walk to your house, save.
 
+## Omega Ruby / Alpha Sapphire
+
+The starter soft reset works on ORAS exactly as it does on X/Y — the
+bot holds a direction, mashes A, and waits for your party to stop being
+empty. Only the place you save is different.
+
+1. Start a new game and play up to **Professor Birch's bag on Route
+   101** — the scene where he is being chased and asks you to grab a
+   Poké Ball. Stop *before* opening the bag.
+2. **SAVE there with an empty party.**
+3. Launcher: **METHOD → Soft reset**, **Target → Starters**.
+
+The held direction (`soft_reset.hold_button`, default `DpadLeft`)
+decides which ball is taken. The log prints the species number of
+every starter it receives — **Treecko 252, Torchic 255, Mudkip 258** —
+so the first attempt tells you which one that direction picks.
+
+**What is and is not proven on ORAS:**
+
+- **Starter soft reset** — uses ORAS's own party address, derived from
+  the published LiveHeX trainer block. Not yet run end to end by a
+  user; please report the first result.
+- **Encounter modes** (walking, fishing, Rock Smash, Sweet Scent) are
+  offered, but use X/Y's wild-encounter window, which PKMN-NTR lists
+  for ORAS too and nobody has confirmed here. Treat them as unproven.
+- **Snorlax / Lapras / Noibat** are not offered — they are Kalos
+  encounters, and the Noibat mode is built against a Terminus Cave
+  spot.
+
 ## Soft-reset gift Pokémon (X/Y: Snorlax, Lapras)
 
 The **Soft reset** method has a **Target** sub-dropdown for hunting

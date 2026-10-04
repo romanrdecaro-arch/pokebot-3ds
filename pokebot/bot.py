@@ -116,16 +116,24 @@ class Bot:
                      f"{self.game.generation} and does not use 3DS "
                      f"addresses.")
             offset_cfg = {}
-        if offset_cfg:
-            applied = []
-            for key, val in offset_cfg.items():
-                if hasattr(self.game.offsets, key):
-                    parsed = int(val, 0) if isinstance(val, str) else int(val)
-                    if parsed:
-                        setattr(self.game.offsets, key, parsed)
-                        applied.append(f"{key}={parsed:#010x}")
-            if applied:
-                log.info(f"Config offset overrides: {', '.join(applied)}")
+        # Resolve against THIS game rather than applying the block to
+        # whatever is selected. config.yaml's flat offsets are X/Y's,
+        # and they used to be written onto any Gen 6/7 title -- so
+        # picking Omega Ruby ran it on Pokemon Y's memory map, which
+        # fails as "nothing found" rather than as an error.
+        effective = games_mod.resolve_offsets(self.game.key, offset_cfg)
+        changed = []
+        for key, parsed in effective.items():
+            if not hasattr(self.game.offsets, key):
+                continue
+            if getattr(self.game.offsets, key, 0) != parsed:
+                setattr(self.game.offsets, key, parsed)
+                changed.append(f"{key}={parsed:#010x}")
+        if changed:
+            log.info(f"Config offset overrides: {', '.join(changed)}")
+        if offset_cfg and not changed:
+            log.info(f"Using {self.game.key}'s own offsets; the config "
+                     f"'offsets' block adds nothing for this game.")
 
         if self.game.generation < 6:
             # Gen 2 locates its own memory; the Gen 6 offset advice

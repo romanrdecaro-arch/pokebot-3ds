@@ -1303,6 +1303,17 @@ class _RecentlySeen(tk.Frame):
         return f"{ability_name(ability_id)}{suffix}"
 
 
+def _starter_spot(game_key: str) -> str:
+    """Where this game's starter is chosen. Lazy, like every other
+    pokebot import in this file, so the launcher still opens with a
+    stale or broken package on disk."""
+    try:
+        from pokebot.games import starter_spot
+        return starter_spot(game_key)
+    except Exception:
+        return "where the starter is chosen"
+
+
 class _App(tk.Tk):
 
     #: How often the Tk thread drains queued bot output.
@@ -2120,7 +2131,7 @@ class _App(tk.Tk):
             self._sr_target_cb.pack(fill="x", pady=(0, 8),
                                     before=self._starter_hint)
             self._starter_hint.config(
-                text="Save in front of the starter table with an EMPTY "
+                text=f"Save at {_starter_spot(self._game_var.get())} with an EMPTY "
                      "party. Whichever starter is at the held end of the "
                      "row is the one taken — change the species in PKHeX "
                      "afterwards if you want a different one.")

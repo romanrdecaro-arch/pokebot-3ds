@@ -143,19 +143,51 @@ _register(Game(
 ))
 
 # ---- Gen 6: ORAS ------------------------------------------------------
+#
+# party_base is DERIVED rather than typed in: trainer_block + 0x16C is
+# the relationship confirmed against a running Y-USA, and the ORAS
+# trainer block is a published LiveHeX address. Writing the sum here
+# by hand would let the two drift apart silently.
+#
+# Leaving these empty is what caused the bug this block fixes. An
+# empty GameOffsets is not "use sensible defaults", it is "whatever
+# config.yaml says" -- and config.yaml ships X/Y's addresses, so
+# picking Omega Ruby quietly ran it on Pokemon Y's memory map.
+_ORAS_TB = 0x08C81340                   # see LIVEHEX_REFERENCES below
+
+#: ORAS wild-encounter window.
+#:
+#: PKMN-NTR lists the same WildOffset1 for ORAS as for X/Y, and the
+#: README has carried that claim as "same code path, not user-tested"
+#: for a while. It is UNVERIFIED here. It does not affect the soft
+#: reset hunts, which read the party and never touch this -- but an
+#: encounter hunt on ORAS should be treated as unproven until someone
+#: confirms a wild is actually found in this window.
+_ORAS_FOE_BASE = 0x08800000
+
 _register(Game(
     key="OR-USA",
     title="Pokémon Omega Ruby (US)",
     title_ids=(0x000400000011C400,),
     generation=6,
-    offsets=GameOffsets(),
+    offsets=GameOffsets(
+        party_base=_ORAS_TB + 0x16C,
+        foe_base=_ORAS_FOE_BASE,
+    ),
+    notes="Party address derived from the published LiveHeX trainer "
+          "block. foe_base is X/Y's, per PKMN-NTR — unverified on "
+          "ORAS, so encounter modes are unproven here.",
 ))
 _register(Game(
     key="AS-USA",
     title="Pokémon Alpha Sapphire (US)",
     title_ids=(0x000400000011C500,),
     generation=6,
-    offsets=GameOffsets(),
+    offsets=GameOffsets(
+        party_base=_ORAS_TB + 0x16C,
+        foe_base=_ORAS_FOE_BASE,
+    ),
+    notes="Same engine and same save layout as Omega Ruby.",
 ))
 
 # ---- Gen 7: SM --------------------------------------------------------
@@ -215,6 +247,23 @@ STARTERS: dict[str, dict[str, int]] = {
 }
 
 
+#: Where the starter is chosen, in the words the player needs to find
+#: the spot. The hunt mechanics are identical across these games --
+#: hold a direction, mash A, wait for the party to stop being empty --
+#: but telling a Hoenn player to stand at "the starter table" sends
+#: them looking for a Kalos room.
+STARTER_SPOT = {
+    "X-USA": "the starter table in Aquacorde Town",
+    "Y-USA": "the starter table in Aquacorde Town",
+    "OR-USA": "Professor Birch's bag on Route 101",
+    "AS-USA": "Professor Birch's bag on Route 101",
+}
+
+
+def starter_spot(game_key: str) -> str:
+    return STARTER_SPOT.get(game_key, "where the starter is chosen")
+
+
 def starters_for(game_key: str) -> dict[str, int]:
     return STARTERS.get(game_key, {})
 
@@ -240,6 +289,13 @@ SOFT_RESET_TARGETS = {
     # has no chance of producing one. Omitted from the dropdown.
     "X-USA":  ["Starters", "Snorlax", "Lapras"],
     "Y-USA":  ["Starters", "Snorlax", "Lapras"],
+    # ORAS gets Starters only, and says so rather than falling through
+    # to the default. Snorlax (Route 7) and Lapras (Route 12) are
+    # KALOS encounters -- offering them here would start a hunt with
+    # nothing to find. Hoenn has plenty of its own static legendaries;
+    # none has had its sequence written and verified yet.
+    "OR-USA": ["Starters"],
+    "AS-USA": ["Starters"],
 }
 
 
@@ -261,6 +317,11 @@ class Method:
     movement: Optional[str] = None   # "horizontal" | "vertical" (encounter only)
     shiny_locked: bool = False       # flagged in the UI before starting
     notes: str = ""
+
+
+#: Games the place-specific modes below were built against.
+_KALOS_ONLY_GAMES = ("X-USA", "Y-USA")
+_KALOS_ONLY_MODES = ("noibat",)
 
 
 def methods_for(game_key: str) -> list[Method]:
@@ -318,7 +379,7 @@ def methods_for(game_key: str) -> list[Method]:
     if game is not None and game.generation < 6:
         return []
 
-    return [
+    methods = [
         Method("Manual control", "observe",
                notes="Bot sends NO inputs — you play normally. The "
                      "Recently Seen tab still logs wild encounters and "
@@ -331,9 +392,12 @@ def methods_for(game_key: str) -> list[Method]:
                      "127.0.0.1, port 8000, Connect."),
         Method("Soft reset", "soft_reset",
                notes="Resets the game until a target candidate appears. "
-                     "Pick what to reset for from the Target sub-dropdown "
-                     "(Starters always available; X/Y also support "
-                     "Snorlax / Lucario / Lapras stubs)."),
+                     "Pick what to reset for from the Target "
+                     "sub-dropdown. " + (
+                         "X/Y also support Snorlax and Lapras."
+                         if game_key in ("X-USA", "Y-USA")
+                         else "Starters only for this game — the other "
+                              "targets are Kalos encounters.")),
         Method("Gift Pokémon (soft reset)", "gifts",
                notes="Soft-resets for ANY gift Pokémon — Lapras from "
                      "the Route 12 Hiker, the bike-shop Eevee, fossil "
@@ -387,6 +451,16 @@ def methods_for(game_key: str) -> list[Method]:
                      "config.yaml. Run once with a Pokémon in slot 0; "
                      "after that the bot uses the fast anchor path."),
     ]
+
+    # Noibat is the one mode written against a specific PLACE: its
+    # defaults are a Terminus Cave shaking spot and species 714, and
+    # neither has been built or checked for any game but X/Y. This is
+    # a statement about the code, not about what lives in Hoenn --
+    # offering it elsewhere would start a hunt aimed at a spot the
+    # save is nowhere near.
+    if game_key not in _KALOS_ONLY_GAMES:
+        methods = [m for m in methods if m.mode not in _KALOS_ONLY_MODES]
+    return methods
 
 
 # 3DS virtual address ranges. Where the player's party block lives
@@ -523,6 +597,85 @@ LIVEHEX_REFERENCES: dict[str, dict] = {
         "version":       "UM_v120",
     },
 }
+
+
+def resolve_offsets(game_key: str, offset_cfg: dict | None) -> dict:
+    """The config offset overrides that apply to THIS game.
+
+    ``offsets:`` in config.yaml was a single flat block applied to
+    whatever game was selected, and the shipped values are X/Y's. So
+    choosing Omega Ruby ran it on Pokemon Y's memory map -- silently,
+    because an address that is merely wrong reads as "nothing found"
+    rather than as an error.
+
+    The block now has two parts, and either may be omitted::
+
+        offsets:
+          party_base: 0x08CE1CF8        # flat: the default
+          OR-USA:
+            party_base: 0x08C814AC      # per game: wins for that one
+
+    Flat keys still apply, because a user editing them to fix a bad
+    address expects to be obeyed. What changed is that a flat key is
+    only honoured when it does not contradict a game that ships its
+    own: a registry address the maintainers derived for ORAS beats a
+    flat value written for Kalos, while a flat value still works
+    unchanged for any game whose registry entry is empty.
+
+    Returns the EFFECTIVE offsets for this game -- the registry's own
+    values overlaid with whatever config legitimately overrides. Not
+    "the overrides", because the question a caller actually has is
+    "what addresses will this run use", and answering the narrower
+    one is how a game ended up running on another game's map without
+    anybody noticing.
+
+    0 and unparseable values are dropped rather than applied: 0 is the
+    registry's "unknown" sentinel, so letting it through would blank
+    out a known address.
+    """
+    cfg = dict(offset_cfg or {})
+    game = GAMES.get(game_key)
+    known = game.offsets if game is not None else None
+
+    def parse(val):
+        try:
+            return int(val, 0) if isinstance(val, str) else int(val)
+        except (TypeError, ValueError):
+            return None
+
+    per_game = {}
+    flat = {}
+    for key, val in cfg.items():
+        if isinstance(val, dict):
+            if key == game_key:
+                per_game = val
+            # Any other game's block is simply not ours.
+            continue
+        flat[key] = val
+
+    # Start from what the game itself declares.
+    out: dict = {}
+    if known is not None:
+        for key in vars(known):
+            val = getattr(known, key, 0)
+            if isinstance(val, int) and val:
+                out[key] = val
+
+    for key, val in flat.items():
+        if known is not None and getattr(known, key, 0):
+            # This game ships its own value for this field, so a flat
+            # block written for a different game must not overwrite
+            # it. The per-game block below is how you override on
+            # purpose.
+            continue
+        parsed = parse(val)
+        if parsed:
+            out[key] = parsed
+    for key, val in (per_game or {}).items():
+        parsed = parse(val)
+        if parsed:
+            out[key] = parsed
+    return out
 
 
 def party_base_candidates(game_key: str) -> list[int]:
