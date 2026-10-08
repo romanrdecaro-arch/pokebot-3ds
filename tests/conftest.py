@@ -48,3 +48,34 @@ def _protect_real_stats(monkeypatch):
     recovered. Belt and braces alongside the per-test tmp redirects.
     """
     monkeypatch.setenv("POKEBOT_STATS_RO", "1")
+
+
+@pytest.fixture(autouse=True)
+def _protect_real_event_log(monkeypatch, tmp_path_factory):
+    """No test may append to the real logs/events.jsonl either.
+
+    It is the record a hunt is audited from afterwards -- "did the bot
+    miss a shiny 4,000 encounters ago?" -- and a test broadcasting
+    through a real DashboardServer was writing into it: every full run
+    left a fake shiny Froakie "caught" in the user's log, interleaved
+    with a live hunt's records. Both the path and the default directory
+    are redirected, and so is any EXPLICIT path into the real logs/
+    folder: run.py builds one itself rather than using the default, and
+    test_regressions drives run.main() -- which is how a bare
+    "session_start" kept turning up in the user's log after every run.
+    A test that configures its own tmp path is left alone.
+    """
+    from pokebot import event_log
+
+    sandbox = tmp_path_factory.getbasetemp() / "event-log"
+    real_logs = Path(event_log.__file__).resolve().parent.parent / "logs"
+    real_configure = event_log.configure
+
+    def configure(path=None, enabled=True):
+        if path is not None and real_logs in Path(path).resolve().parents:
+            path = sandbox / Path(path).name
+        return real_configure(path, enabled)
+
+    monkeypatch.setattr(event_log, "_DEFAULT_DIR", sandbox)
+    monkeypatch.setattr(event_log, "_path", sandbox / "events.jsonl")
+    monkeypatch.setattr(event_log, "configure", configure)
