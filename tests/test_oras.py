@@ -56,11 +56,27 @@ def test_omega_ruby_and_alpha_sapphire_are_distinct_titles():
 
 
 # ----------------------------------------------------------------------
-# Soft reset: the thing that was asked for
+# One mode: the static-encounter soft reset, and nothing else
 # ----------------------------------------------------------------------
 @pytest.mark.parametrize("key", ORAS)
-def test_soft_reset_is_offered(key):
-    assert "soft_reset" in [m.mode for m in methods_for(key)]
+def test_the_only_mode_offered_is_the_static_encounter_hunt(key):
+    """The request was explicit: for ORAS this is the only mode."""
+    assert [m.mode for m in methods_for(key)] == ["static_encounter"]
+
+
+@pytest.mark.parametrize("key", ORAS)
+def test_its_note_says_there_is_no_catch(key):
+    note = methods_for(key)[0].notes
+    assert "No catch" in note
+    assert "STOPS ALL INPUT" in note
+
+
+@pytest.mark.parametrize("key", XY)
+def test_xy_keeps_its_full_menu(key):
+    modes = [m.mode for m in methods_for(key)]
+    assert "static_encounter" not in modes
+    for mode in ("soft_reset", "encounter", "gifts", "noibat"):
+        assert mode in modes
 
 
 @pytest.mark.parametrize("key", ORAS)
@@ -196,24 +212,6 @@ def test_the_noibat_mode_is_not_offered(key):
 @pytest.mark.parametrize("key", XY)
 def test_the_noibat_mode_is_still_offered_for_xy(key):
     assert "noibat" in [m.mode for m in methods_for(key)]
-
-
-@pytest.mark.parametrize("key", ORAS)
-def test_the_generic_modes_are_still_offered(key):
-    """Walking, fishing, Rock Smash and Sweet Scent are all generic
-    Gen 6 mechanics; nothing about them is Kalos-specific."""
-    modes = [m.mode for m in methods_for(key)]
-    for mode in ("encounter", "fishing", "rock_smash", "sweet_scent",
-                 "observe", "gifts"):
-        assert mode in modes, f"{mode} missing for {key}"
-
-
-@pytest.mark.parametrize("key", ORAS)
-def test_the_soft_reset_note_does_not_send_the_player_to_kalos(key):
-    """It used to name Snorlax and Lapras, which are X/Y encounters."""
-    note = [m for m in methods_for(key) if m.mode == "soft_reset"][0].notes
-    assert "Snorlax" not in note
-    assert "Lapras" not in note
 
 
 @pytest.mark.parametrize("key", XY)

@@ -2135,6 +2135,15 @@ class _App(tk.Tk):
                      "party. Whichever starter is at the held end of the "
                      "row is the one taken — change the species in PKHeX "
                      "afterwards if you want a different one.")
+        elif m and m.mode == "static_encounter":
+            self._starter_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
+            self._sr_target_lbl.pack_forget()
+            self._sr_target_cb.pack_forget()
+            self._starter_hint.config(
+                text="Stand in front of the Pokémon, facing it, and SAVE "
+                     "there. Not shiny resets; a SHINY stops all input "
+                     "and leaves the battle for you to catch.")
         elif m and m.mode == "gifts":
             # Same trainer-name and press-speed controls, no target
             # picker: this mode evaluates whatever it is handed.
@@ -2400,7 +2409,7 @@ class _App(tk.Tk):
             # "Up (↑)" -> "up"
             args += ["--noibat-direction",
                      self._noibat_dir_var.get().split()[0].lower()]
-        if method.mode in ("soft_reset", "gifts"):
+        if method.mode in ("soft_reset", "gifts", "static_encounter"):
             tn = self._trainer_var.get().strip()
             if tn:
                 args += ["--trainer-name", tn]

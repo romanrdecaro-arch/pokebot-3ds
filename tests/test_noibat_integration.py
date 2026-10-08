@@ -64,6 +64,12 @@ class Cave:
     observe it.
     """
 
+    # perf_counter, not monotonic: monotonic has ~16 ms granularity on
+    # Windows, so every tick that fell between the bot's read and its
+    # press "spawned" the battle inside that gap. That made the
+    # ordering test fail about 1 run in 8 for a race that is really a
+    # few microseconds wide.
+
     def __init__(self, encounters, spawn_after=0.05):
         self.queue = list(encounters)
         self.spawn_after = spawn_after   # seconds of walking
@@ -78,7 +84,7 @@ class Cave:
     def _maybe_spawn(self):
         if (self.held and self.wild is None and self.queue
                 and self.held_since is not None
-                and time.monotonic() - self.held_since
+                and time.perf_counter() - self.held_since
                 >= self.spawn_after):
             self.wild = self.queue.pop(0)
 
@@ -88,7 +94,7 @@ class Cave:
 
     def hold(self, button):
         self.held = button
-        self.held_since = time.monotonic()
+        self.held_since = time.perf_counter()
         return True
 
     def release(self, button):
@@ -414,6 +420,12 @@ def test_no_a_press_lands_after_the_encounter_appears(wired):
     cave = wired(Cave([Mon(NOIBAT, shiny=True)], spawn_after=0.4))
     ctx = Ctx(cave, cfg={**FAST, "a_gap": 0.016, "poll_gap": 0.005,
                          "encounter_timeout": 3.0})
+    # REAL waits for this one. The ordering only matters when the
+    # battle starts DURING the wait between polls -- which is how it
+    # happens in the game. With instant waits no time passes between
+    # polls, both orderings look identical, and this test caught the
+    # bug only by accident of Windows' 16 ms clock.
+    ctx._stop_evt = threading.Event()
     after = {"n": 0}
 
     real_tap = cave.tap

@@ -161,32 +161,34 @@ nickname, walk to your house, save.
 
 ## Omega Ruby / Alpha Sapphire
 
-The starter soft reset works on ORAS exactly as it does on X/Y — the
-bot holds a direction, mashes A, and waits for your party to stop being
-empty. Only the place you save is different.
+ORAS has **one** mode: **Static encounter (soft reset)**. It is for
+the legendaries and other one-off Pokémon you walk up to and press A
+on.
 
-1. Start a new game and play up to **Professor Birch's bag on Route
-   101** — the scene where he is being chased and asks you to grab a
-   Poké Ball. Stop *before* opening the bag.
-2. **SAVE there with an empty party.**
-3. Launcher: **METHOD → Soft reset**, **Target → Starters**.
+1. Stand **in front of the Pokémon, facing it**, with the encounter
+   not yet started.
+2. **SAVE there.**
+3. Launcher: the only method on offer for ORAS.
 
-The held direction (`soft_reset.hold_button`, default `DpadLeft`)
-decides which ball is taken. The log prints the species number of
-every starter it receives — **Treecko 252, Torchic 255, Mudkip 258** —
-so the first attempt tells you which one that direction picks.
+Each attempt uses the **same presses as the X/Y Snorlax hunt**: A
+every 0.4 s (up to 60 presses), checking for the battle between
+presses. Then:
 
-**What is and is not proven on ORAS:**
+- **Not shiny** → L+R+Start and the same post-reset taps as X/Y.
+- **Shiny** → the bot **stops sending input entirely**. There is no
+  catch sequence. The battle is left on screen for you to catch by
+  hand.
 
-- **Starter soft reset** — uses ORAS's own party address, derived from
-  the published LiveHeX trainer block. Not yet run end to end by a
-  user; please report the first result.
-- **Encounter modes** (walking, fishing, Rock Smash, Sweet Scent) are
-  offered, but use X/Y's wild-encounter window, which PKMN-NTR lists
-  for ORAS too and nobody has confirmed here. Treat them as unproven.
-- **Snorlax / Lapras / Noibat** are not offered — they are Kalos
-  encounters, and the Noibat mode is built against a Terminus Cave
-  spot.
+The shiny's `.pk6` is still written to `targets/`. That is a memory
+read, not an input, so it does not touch the battle.
+
+Tuning: `soft_reset.static_a_gap` / `static_a_max`. If you already
+tuned `snorlax_a_gap` / `snorlax_a_max` for X/Y, those carry over.
+
+**Not yet proven on ORAS:** the wild-encounter memory window is X/Y's
+address, which PKMN-NTR lists for ORAS too but nobody has confirmed
+here. If the log says *no encounter after 60 A presses* while the
+battle is clearly on screen, that address is the cause. Paste the log.
 
 ## Soft-reset gift Pokémon (X/Y: Snorlax, Lapras)
 

@@ -332,6 +332,9 @@ class Method:
     notes: str = ""
 
 
+#: ORAS offers only the static-encounter soft reset.
+_ORAS_GAMES = ("OR-USA", "AS-USA")
+
 #: Games the place-specific modes below were built against.
 _KALOS_ONLY_GAMES = ("X-USA", "Y-USA")
 _KALOS_ONLY_MODES = ("noibat",)
@@ -363,6 +366,19 @@ def methods_for(game_key: str) -> list[Method]:
     work; Crystal is read with scripts/crystal_watch.py for now.
     """
     game = GAMES.get(game_key)
+    if game_key in _ORAS_GAMES:
+        # One mode, by request. ORAS is hunted here for its static
+        # legendaries, and every other mode was either built against
+        # Kalos (Noibat, the Snorlax / Lapras targets) or reads ORAS's
+        # wild window at an address nobody has confirmed.
+        return [
+            Method("Static encounter (soft reset)", "static_encounter",
+                   notes="Save standing in front of the Pokémon, facing "
+                         "it. Mashes A (the X/Y static-encounter presses) "
+                         "until the battle starts; not shiny resets, "
+                         "SHINY STOPS ALL INPUT with the battle left on "
+                         "screen for you to catch. No catch sequence."),
+        ]
     if game is not None and game.generation == 2:
         # Gen 2 gets its own manual mode. The Gen 6/7 methods below all
         # read PK6/PK7 records at 3DS addresses; a Virtual Console title

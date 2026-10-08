@@ -334,8 +334,11 @@ def test_the_launcher_passes_the_trainer_name_for_gifts():
     "No party found" on a perfectly good save. It used to be sent only
     for soft_reset, and gifts reads the same config section."""
     src = (REPO / "launcher.py").read_text(encoding="utf-8")
-    assert 'if method.mode in ("soft_reset", "gifts"):' in src
-    assert '"--trainer-name", tn' in src
+    # The line that guards --trainer-name must include gifts. Matched
+    # by meaning, not by exact text: the tuple grows as modes join it.
+    i = src.index('"--trainer-name", tn')
+    guard = src.rfind("if method.mode", 0, i)
+    assert '"gifts"' in src[guard:i], "gifts no longer gets --trainer-name"
 
 
 def test_the_launcher_hides_the_target_picker_for_gifts():
