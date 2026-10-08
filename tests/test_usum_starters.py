@@ -1,22 +1,29 @@
 """
 The USUM starter soft reset, as the loop was laid out:
 
-    spam A and tap Left until a starter is in the party (slot 1)
+    spam A and tap Left until a starter is in hand (read at the
+      nickname screen)
     if shiny, stop; if not shiny, reset
     immediately start spamming A again
     ...repeat
 
-The fake game runs on its own clock and holds real PK7 bytes at the
-Gen 7 addresses, so the mode's real detection path runs against it.
-What it models, because each is a way this hunt goes wrong:
+The fake game follows what Ultra Moon was seen to do when driven live
+(2026-10-08), so each of these is a way this hunt was found to go wrong:
 
-* the save holds an EMPTY party, and loading it clears the slot -- or,
-  with ``clears=False``, leaves last attempt's starter sitting there;
-* the starter can land in the save-block party, the live copy, or both;
-* the nickname prompt comes up a moment after the starter lands, and an
-  A from then on opens the naming keyboard;
+* the save stands in tall grass, and nothing happens until the player
+  steps LEFT -- with the Circle Pad: the D-pad does not walk in USUM,
+  which is why "it never did the left press";
+* after the choice the starter is written to ``received_slot`` and the
+  nickname question comes up; an A there answers it and opens the
+  keyboard, where A types letters -- the "087" a real run named its
+  Rowlet;
+* a reset leaves RAM alone; the reload empties the slot, or with
+  ``clears=False`` leaves last attempt's starter sitting there;
 * every read is timestamped, so a read inside the relaunch window --
   what crashed Azahar -- is caught.
+
+It holds real PK7 bytes at the Gen 7 addresses, so the mode's own
+detection path runs against it unmodified.
 """
 from __future__ import annotations
 
@@ -41,7 +48,8 @@ clock = time.perf_counter
 KEY = "USUM-USA-1.2"
 OFF = games.GAMES[KEY].offsets
 TB = games.LIVEHEX_REFERENCES[KEY]["trainer_block"]
-SLOTS = {"save": OFF.party_base, "live": OFF.party_live}
+SLOTS = {"received": OFF.received_slot, "live": OFF.party_live,
+         "save": OFF.party_base}
 
 
 class Starter:
@@ -58,16 +66,17 @@ class Starter:
 
 
 class Game:
-    """A USUM save made just before the choice, on the game's own clock.
+    """A USUM save in Route 1's grass, on the game's own clock.
 
-    After a reset the title boots for ``boot`` seconds, during which
-    presses do nothing. Then the ``presses``-th A brings the choice up,
-    and the starter is written ``delay`` later. The nickname prompt is
-    up ``prompt`` after that.
+    After a reset the title boots for ``boot`` seconds. Then nothing
+    happens until a CircleLeft step; after it, the ``presses``-th A
+    makes the choice, and the starter is written ``delay`` later. The
+    nickname question is up ``prompt`` after that.
     """
 
     def __init__(self, starters, *, presses=3, delay=0.03, boot=0.3,
-                 prompt=0.25, where=("save",), clears=True, trainer=OT):
+                 prompt=0.25, where=("received",), clears=True,
+                 trainer=OT):
         self.queue = list(starters)
         self.where = [SLOTS[w] for w in where]
         self.presses_needed = presses
@@ -76,22 +85,23 @@ class Game:
         self.mem: dict[int, bytes] = {TB: mystatus(trainer)}
         self.booted_at = 0.0
         self.clear_at = None
+        self.stepped = False
         self.presses = 0
         self.receive_at = None
         self.received = None
         self.prompt_at = None
         self.first_read_t = None
-        self.inputs: list[tuple[float, str]] = []
+        self.inputs: list[tuple[float, str, float]] = []
         self.reads: list[tuple[float, int, int]] = []
         self.resets: list[float] = []
         self.arrivals: list[float] = []
-        self.keyboard = 0
+        self.answered = 0
 
     def _tick(self, now):
         if self.clear_at is not None and now >= self.clear_at:
             self.clear_at = None
             for addr in SLOTS.values():
-                self.mem.pop(addr, None)       # the save's party is empty
+                self.mem.pop(addr, None)       # the save holds no party
         if (self.received is None and self.receive_at is not None
                 and now >= self.receive_at and self.queue):
             self.received = self.queue.pop(0)
@@ -105,12 +115,15 @@ class Game:
     def tap(self, button, hold_s=0.05):
         now = clock()
         self._tick(now)
-        self.inputs.append((now, button))
+        self.inputs.append((now, button, hold_s))
+        booted = now >= self.booted_at
         if self.received is not None:
             if button == "A" and now >= self.prompt_at:
-                self.keyboard += 1
-        elif (button == "A" and self.receive_at is None
-              and now >= self.booted_at):
+                self.answered += 1             # opens the keyboard
+        elif booted and not self.stepped:
+            # Standing in the grass. Only the Circle Pad walks.
+            self.stepped = button == "CircleLeft"
+        elif (booted and button == "A" and self.receive_at is None):
             self.presses += 1
             if self.presses >= self.presses_needed:
                 self.receive_at = now + self.delay
@@ -125,10 +138,11 @@ class Game:
 
     def soft_reset(self, hold_s=0.5):
         now = clock()
-        self.inputs.append((now, "RESET"))
+        self.inputs.append((now, "RESET", hold_s))
         self.resets.append(now)
         self.booted_at = now + self.boot
         self.received = self.receive_at = self.prompt_at = None
+        self.stepped = False
         self.presses = 0
         if self.clears:
             self.clear_at = self.booted_at
@@ -150,10 +164,10 @@ class Game:
         return bytes(out)
 
     def buttons_after(self, t):
-        return [b for at, b in self.inputs if at > t]
+        return [b for at, b, _ in self.inputs if at > t]
 
 
-FAST = {"trainer_name": OT, "press_hold": 0.01,
+FAST = {"trainer_name": OT, "press_hold": 0.01, "usum_left_hold": 0.02,
         "usum_receive_timeout": 3.0, "usum_scan_gap": 0.02,
         "usum_sweep_every": 0.3, "pre_reset_quiet": 0.05,
         "reload_read_grace": 0.15}
@@ -251,6 +265,49 @@ def test_no_input_of_any_kind_once_the_shiny_has_been_read(wired):
     assert after == [], f"sent {after} after the shiny was read"
 
 
+def test_the_nickname_question_is_never_answered(wired):
+    """The read happens at the nickname screen: an A there would open
+    the keyboard, and the next ones would type the shiny's name."""
+    game = Game([Starter() for _ in range(4)] + [Starter(shiny=True)],
+                prompt=0.15)
+    run(Ctx(game, seconds=20.0))
+    assert len(game.resets) == 4
+    assert game.answered == 0, f"{game.answered} A press(es) answered it"
+
+
+# ----------------------------------------------------------------------
+# Left: the Circle Pad, tapped, a little longer than A
+# ----------------------------------------------------------------------
+def test_the_dpad_never_starts_the_event(wired):
+    """What a live run found: D-pad Left held 0.6 s did not move the
+    player, so the starter never came."""
+    game = Game([Starter(shiny=True)])
+    ctx = Ctx(game, cfg={**FAST, "usum_left_button": "DpadLeft",
+                         "usum_receive_timeout": 1.0})
+    run(ctx)
+    assert "target_hit" not in ctx.kinds()
+    assert ctx.kinds().count("read_failure") == 3
+
+
+def test_left_is_the_circle_pad_held_longer_than_a():
+    plan = us.StarterPlan()
+    assert plan.left_button == "CircleLeft"
+    assert plan.left_hold >= 0.1 > plan.press_hold
+
+
+def test_the_stream_alternates_a_and_left_through_the_whole_boot(wired):
+    game = Game([Starter(), Starter(shiny=True)], boot=0.4)
+    run(Ctx(game))
+
+    r, arrival = game.resets[0], game.arrivals[1]
+    stream = [(b, h) for t, b, h in game.inputs if r < t < arrival]
+    assert len(stream) >= 15, f"only {len(stream)} presses through the boot"
+    assert [b for b, _ in stream[:6]] == ["A", "CircleLeft"] * 3
+    holds = {b: h for b, h in stream}
+    assert holds["CircleLeft"] == FAST["usum_left_hold"]
+    assert holds["A"] == FAST["press_hold"]
+
+
 # ----------------------------------------------------------------------
 # If not shiny, reset -- and immediately spam A and Left again
 # ----------------------------------------------------------------------
@@ -277,20 +334,9 @@ def test_presses_resume_straight_after_each_reset_with_the_shipped_config(
 
     assert len(game.resets) == 2
     for r in game.resets:
-        first = min(t for t, b in game.inputs
-                    if b in ("A", "DpadLeft") and t > r)
+        first = min(t for t, b, _ in game.inputs
+                    if b in ("A", "CircleLeft") and t > r)
         assert first - r < 0.1, f"first press {first - r:.2f}s after reset"
-
-
-def test_the_stream_is_a_then_left_through_the_whole_boot(wired):
-    game = Game([Starter(), Starter(shiny=True)], boot=0.4)
-    run(Ctx(game))
-
-    r, arrival = game.resets[0], game.arrivals[1]
-    stream = [b for t, b in game.inputs if r < t < arrival]
-    assert len(stream) >= 20, f"only {len(stream)} presses through the boot"
-    assert stream[:6] == ["A", "DpadLeft"] * 3
-    assert set(stream) == {"A", "DpadLeft"}
 
 
 def test_nothing_is_read_while_azahar_relaunches(wired):
@@ -315,7 +361,7 @@ def test_a_starter_left_in_memory_is_not_judged_again(wired):
 
     grace = FAST["reload_read_grace"]
     looked = [t for t, a, n in game.reads
-              if a == SLOTS["save"] and n == 232
+              if a == SLOTS["received"] and n == 232
               and game.resets[0] + grace < t < game.arrivals[1]]
     assert looked, "precondition: the stale slot was read after the reset"
     assert len(ctx.judged()) == 3
@@ -323,20 +369,11 @@ def test_a_starter_left_in_memory_is_not_judged_again(wired):
 
 
 def test_the_live_party_copy_is_watched_too(wired):
-    """Neither copy is confirmed on Azahar, so either one is enough."""
     game = Game([Starter(), Starter(shiny=True)], where=("live",))
     ctx = Ctx(game)
     run(ctx)
     assert len(game.resets) == 1
     assert "target_hit" in ctx.kinds() and wired == [722]
-
-
-def test_no_press_reaches_the_nickname_keyboard(wired):
-    game = Game([Starter() for _ in range(4)] + [Starter(shiny=True)],
-                prompt=0.15)
-    run(Ctx(game, seconds=20.0))
-    assert len(game.resets) == 4
-    assert game.keyboard == 0, f"{game.keyboard} A press(es) hit the prompt"
 
 
 def test_once_the_slot_is_known_a_check_is_one_read(wired):
@@ -348,12 +385,13 @@ def test_once_the_slot_is_known_a_check_is_one_read(wired):
     assert slot_reads > 2 * scans, f"{slot_reads} slot reads, {scans} scans"
 
 
-def test_reads_stay_inside_the_party_windows(wired):
-    """Gen 7's heap is 256 MB; nothing may wander into it."""
+def test_reads_stay_inside_the_watched_windows(wired):
+    """Gen 7's heap is 256 MB; nothing may wander into it -- and the
+    save-block party, which did not change live, is not read at all."""
     game = Game([Starter(), Starter(shiny=True)])
     run(Ctx(game))
 
-    allowed = us.party_windows(OFF) + [(TB, TB + 0xC0)]
+    allowed = us.watch_windows(OFF) + [(TB, TB + 0xC0)]
     stray = [(hex(a), n) for _, a, n in game.reads
              if not any(lo <= a and a + n <= hi for lo, hi in allowed)]
     assert stray == []
@@ -364,27 +402,38 @@ def test_a_record_without_the_players_ot_is_never_the_starter():
     lands in the slot, are not yours until one is chosen."""
     game = Game([])
     ctx = Ctx(game)
-    watch = us.StarterWatch(ctx, us.party_windows(OFF), OT, set(),
+    watch = us.StarterWatch(ctx, us.watch_windows(OFF), OT, set(),
                             us.StarterPlan.from_config(FAST))
-    watch.hot = SLOTS["save"]
+    watch.hot = SLOTS["received"]
     for ot in ("", "Hala"):
-        game.mem[SLOTS["save"]] = pk7(key=0xCAFE, species=725, ot=ot,
-                                      party=True, level=5)
+        game.mem[SLOTS["received"]] = pk7(key=0xCAFE, species=725, ot=ot,
+                                          party=True, level=5)
         watch._next_scan = 0.0
         assert watch.check(time.monotonic()) is None, f"OT {ot!r} counted"
 
 
 # ----------------------------------------------------------------------
-# Refusals and misses
+# Start-up, misses
 # ----------------------------------------------------------------------
-def test_a_save_with_a_party_already_is_refused(wired):
-    game = Game([Starter(shiny=True)])
-    game.mem[SLOTS["save"]] = Starter().bytes
+def test_a_shiny_already_in_hand_at_start_stops_before_any_press(wired):
+    """It is the game's real state: judge it, and touch nothing."""
+    shiny = Starter(shiny=True)
+    game = Game([])
+    game.mem[SLOTS["received"]] = shiny.bytes
     ctx = Ctx(game)
     run(ctx)
 
-    assert "read_failure" in ctx.kinds()
-    assert game.inputs == [], "pressed buttons at a save it cannot use"
+    assert "target_hit" in ctx.kinds()
+    assert game.inputs == [], "pressed something at a shiny"
+
+
+def test_a_plain_starter_already_in_hand_at_start_is_judged_then_reset(
+        wired):
+    game = Game([Starter(shiny=True)])
+    game.mem[SLOTS["received"]] = Starter().bytes
+    ctx = Ctx(game)
+    run(ctx)
+    assert len(ctx.judged()) == 2 and len(game.resets) == 1
 
 
 def test_no_starter_resets_and_tries_again(wired):
@@ -413,7 +462,7 @@ def test_three_misses_in_a_row_stop_the_hunt(wired):
 
 
 def test_the_games_own_trainer_name_wins_over_config(wired):
-    """The party is matched by OT. A config name that differs from the
+    """The starter is matched by OT. A config name that differs from the
     game's would make every starter invisible."""
     game = Game([Starter(), Starter(shiny=True)])
     run(Ctx(game, cfg={**FAST, "trainer_name": "Ash"}))
@@ -457,9 +506,14 @@ def test_the_relaunch_silences_come_from_the_shared_keys_with_floors():
 
 def test_left_every_sets_the_pattern():
     assert [us.StarterPlan(left_every=2).button(i) for i in range(6)] == [
-        "A", "A", "DpadLeft", "A", "A", "DpadLeft"]
+        "A", "A", "CircleLeft", "A", "A", "CircleLeft"]
     assert {us.StarterPlan(left_every=0).button(i) for i in range(6)} == {
         "A"}
+
+
+def test_the_received_slot_is_the_one_found_live():
+    assert OFF.received_slot == 0x329C2C74
+    assert games.GAMES["SM-USA-1.2"].offsets.received_slot == 0
 
 
 def test_usum_offers_the_starter_hunt_and_sm_does_not():

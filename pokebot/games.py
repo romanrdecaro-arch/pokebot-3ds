@@ -48,6 +48,9 @@ class GameOffsets:
     # A second, live copy of the party, where a game keeps one apart
     # from the save block (Gen 7: PKMN-NTR's PartyOffset).
     party_live:     int = 0
+    # Where a Pokemon just handed over waits while its nickname screen
+    # is up -- before it is in either party copy.
+    received_slot:  int = 0
 
     # Wild / battle foe (the Pokémon currently fighting you). In Gen 6
     # the encounter is NOT at a fixed sub-offset — PKMN-NTR reads a
@@ -241,11 +244,13 @@ _GEN7_FOE_EXTRA = (
 
 
 def _gen7_offsets(trainer_block: int, party_live: int,
-                  sos_state: int) -> GameOffsets:
+                  sos_state: int,
+                  received_slot: int = 0) -> GameOffsets:
     return GameOffsets(
         party_base=trainer_block + _GEN7_PARTY_FROM_TB,
         party_stride=260,
         party_live=party_live,
+        received_slot=received_slot,
         foe_base=_GEN7_FOE_BASE,
         foe_scan_len=_GEN7_FOE_LEN,
         foe_extra=_GEN7_FOE_EXTRA,
@@ -274,8 +279,14 @@ _register(Game(
     title="Pokémon Ultra Sun/Ultra Moon (US, v1.2)",
     title_ids=(0x00040000001B5000, 0x00040000001B5100),
     generation=7,
+    # received_slot found live on Ultra Moon (2026-10-08): the chosen
+    # starter appears there in the fade to the nickname keyboard --
+    # same address over three resets -- and reaches party_live only
+    # once its name is confirmed. The save-block copy did not change
+    # at all until the game was saved.
     offsets=_gen7_offsets(_USUM_TB, party_live=0x33F7FA44,
-                          sos_state=0x30038E20),
+                          sos_state=0x30038E20,
+                          received_slot=0x329C2C74),
     notes=_GEN7_NOTES,
 ))
 
@@ -444,11 +455,12 @@ def methods_for(game_key: str) -> list[Method]:
         if game_key in _USUM_GAMES:
             methods.append(Method(
                 "Starters (soft reset)", "usum_starters",
-                notes="Save BEFORE choosing, with an empty party. Spams "
-                      "A and taps Left until a starter lands in your "
-                      "party; not shiny soft-resets and goes straight "
-                      "back to it. A SHINY STOPS ALL INPUT — it is in "
-                      "your party, so do not reset."))
+                notes="Save in Route 1's tall grass before the "
+                      "starters appear, with an empty party. Spams A and "
+                      "taps Left (Circle Pad) and reads the starter at "
+                      "the nickname question; not shiny soft-resets and "
+                      "goes straight back to it. A SHINY STOPS ALL "
+                      "INPUT there — answer it yourself, do not reset."))
         return methods
     if game is not None and game.generation == 2:
         # Gen 2 gets its own manual mode. The Gen 6/7 methods below all

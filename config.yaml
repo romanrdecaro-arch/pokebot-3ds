@@ -140,13 +140,18 @@ soft_reset:
 
   # --- USUM starters (mode: usum_starters) ---------------------------
   #
-  # Save BEFORE choosing, with an empty party. Spams A and taps Left
-  # until a starter is in the party; a shiny stops ALL input, anything
-  # else is L+R+Start and straight back to it. Uses press_hold below
-  # (the launcher's Press speed) and the shared reset silences.
+  # Save in Route 1's tall grass before the starters appear, with an
+  # empty party. Spams A and taps Left (the step into the grass starts
+  # the scene); the starter is read at the nickname question, and a
+  # shiny stops ALL input there. Anything else is L+R+Start and straight
+  # back to it. Uses press_hold below (the launcher's Press speed) and
+  # the shared reset silences.
   #
   # A presses per Left tap: 1 alternates A, Left, A, Left. 0 = A only.
   usum_left_every: 1
+  # Left is the Circle Pad -- the D-pad does not walk in USUM -- and is
+  # held a little longer than an A, so a tap is a step, not a turn.
+  usum_left_hold: 0.1
   # No starter after this many seconds of pressing -> reset. Three
   # misses in a row stop the hunt.
   usum_receive_timeout: 180

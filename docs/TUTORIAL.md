@@ -226,23 +226,30 @@ in the game's own trainer block instead, and says so.
 
 ### Ultra Sun / Ultra Moon starters
 
-1. **SAVE before choosing**, with an **empty party**.
+1. **SAVE standing in Route 1's tall grass**, before the starters
+   appear, with an **empty party**.
 2. Launcher: **Starters (soft reset)**.
 
 The loop:
 
-1. **Spam A and tap Left** (A, Left, A, Left…) until a starter lands in
-   your party.
-2. **Shiny** → the bot **stops sending input entirely**. It is in your
-   party: do not reset. Decline the nickname if asked, and save as soon
-   as the game lets you. Its `.pk7` is written to `targets/`.
-3. **Not shiny** → L+R+Start, and **straight back to A and Left**
-   through the boot, the title and the cutscene. No waiting.
-4. Repeat.
+1. **Spam A and tap Left** (A, Left, A, Left…). The Left step into the
+   grass starts the scene; A goes through it and takes the starter.
+2. The starter is **read at the nickname screen** — "Would you like to
+   give Rowlet a nickname?" — before that question is answered.
+3. **Shiny** → the bot **stops sending input entirely**, with the
+   question still on screen. Answer it yourself, do not reset, and save
+   as soon as the game lets you. Its `.pk7` is written to `targets/`.
+4. **Not shiny** → L+R+Start, and **straight back to A and Left**
+   through the boot, the title and the scene. No waiting.
+5. Repeat — about 18 s per attempt at Azahar's 995% limit.
+
+Left is the **Circle Pad**: in USUM the D-pad does not walk at all, even
+held. Each Left is a 0.1 s tap, a little longer than an A, so it is a
+step rather than a turn.
 
 There is no species check: whichever starter arrives is judged, and a
-shiny of any of the three stops the bot. Left is tapped, never held — a
-held direction would walk you in the overworld.
+shiny of any of the three stops the bot. A Pokémon already chosen when
+you press Start is judged too, before anything is pressed.
 
 As in every reset hunt, the bot reads no memory for the first
 `reload_read_grace` seconds (4) after each reset, because reading while
@@ -252,8 +259,8 @@ Three attempts in a row with no starter stop the hunt: the save is not
 just before the choice, or Azahar is not getting the presses.
 
 Tuning, all under `soft_reset:` — `press_hold` (the launcher's Press
-speed), `usum_left_every` (A presses per Left tap, 1),
-`usum_receive_timeout` (180 s).
+speed), `usum_left_every` (A presses per Left tap, 1), `usum_left_hold`
+(0.1 s), `usum_receive_timeout` (180 s).
 
 ## Soft-reset gift Pokémon (X/Y: Snorlax, Lapras)
 

@@ -2150,10 +2150,11 @@ class _App(tk.Tk):
             self._sr_target_lbl.pack_forget()
             self._sr_target_cb.pack_forget()
             self._starter_hint.config(
-                text="SAVE before choosing, with an EMPTY party. Spams A "
-                     "and taps Left until a starter is in your party. Not "
-                     "shiny resets; a SHINY stops all input — don't "
-                     "reset, save as soon as the game lets you.")
+                text="SAVE in Route 1's tall grass before the starters "
+                     "appear, EMPTY party. Spams A and taps Left; the "
+                     "starter is read at the nickname question. Not shiny "
+                     "resets; a SHINY stops all input there — answer it "
+                     "yourself, don't reset.")
         elif m and m.mode == "gifts":
             # Same trainer-name and press-speed controls, no target
             # picker: this mode evaluates whatever it is handed.
