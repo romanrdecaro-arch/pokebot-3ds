@@ -170,12 +170,9 @@ _ORAS_TB = 0x08C81340                   # see LIVEHEX_REFERENCES below
 
 #: ORAS wild-encounter window.
 #:
-#: PKMN-NTR lists the same WildOffset1 for ORAS as for X/Y, and the
-#: README has carried that claim as "same code path, not user-tested"
-#: for a while. It is UNVERIFIED here. It does not affect the soft
-#: reset hunts, which read the party and never touch this -- but an
-#: encounter hunt on ORAS should be treated as unproven until someone
-#: confirms a wild is actually found in this window.
+#: PKMN-NTR lists the same WildOffset1 for ORAS as for X/Y, and a live
+#: Omega Ruby run has confirmed it: the static-encounter hunt found a
+#: wild Reshiram at 0x08803F50, inside this window (2026-10-07).
 _ORAS_FOE_BASE = 0x08800000
 
 _register(Game(
@@ -188,8 +185,8 @@ _register(Game(
         foe_base=_ORAS_FOE_BASE,
     ),
     notes="Party address derived from the published LiveHeX trainer "
-          "block. foe_base is X/Y's, per PKMN-NTR — unverified on "
-          "ORAS, so encounter modes are unproven here.",
+          "block. foe_base is X/Y's, per PKMN-NTR, confirmed on a live "
+          "run (a wild Reshiram at 0x08803F50).",
 ))
 _register(Game(
     key="AS-USA",
@@ -374,10 +371,10 @@ def methods_for(game_key: str) -> list[Method]:
         return [
             Method("Static encounter (soft reset)", "static_encounter",
                    notes="Save standing in front of the Pokémon, facing "
-                         "it. Mashes A (the X/Y static-encounter presses) "
-                         "until the battle starts; not shiny resets, "
-                         "SHINY STOPS ALL INPUT with the battle left on "
-                         "screen for you to catch. No catch sequence."),
+                         "it. Spams A until the battle starts; not shiny "
+                         "soft-resets and goes straight back to spamming "
+                         "A. A SHINY STOPS ALL INPUT with the battle left "
+                         "on screen for you to catch. No catch sequence."),
         ]
     if game is not None and game.generation == 2:
         # Gen 2 gets its own manual mode. The Gen 6/7 methods below all

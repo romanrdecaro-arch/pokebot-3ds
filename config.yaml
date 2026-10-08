@@ -42,8 +42,8 @@ input:
 # Mode-specific options
 soft_reset:
   read_slot: 0           # which party slot the gift Pokemon lands in
-  # (snorlax / lapras targets only — the starter hunt no longer waits
-  # after a reset, it presses A straight through the boot logos)
+  # (snorlax / lapras targets only — the starter, gift and static-
+  # encounter hunts press A straight through the boot logos instead)
   post_reset_wait: 12.0
   post_reset_taps: 6
   post_reset_gap: 1.0
@@ -120,6 +120,23 @@ soft_reset:
   # declined and the hunt then presses A forever at a Pokemon it
   # refused. Leave this empty unless you have a specific reason.
   gift_hold_button: ""
+
+  # --- Static encounter (mode: static_encounter, OR/AS) --------------
+  #
+  # Spam A until the battle starts. A shiny stops ALL input -- no catch,
+  # the battle is left for you. Anything else is L+R+Start and straight
+  # back to spamming A: no post_reset_wait, no slow taps.
+  #
+  # Shares pre_reset_quiet / reload_read_grace / reset_cooldown with the
+  # hunts below. Its press length is its own key, so the starter hunt's
+  # press_hold cannot reach it.
+  static_press_hold: 0.03
+  # Reset again if there is no encounter after this many seconds.
+  static_timeout: 45
+  # One-record checks between full sweeps of the foe window. A sweep
+  # idles A for about half a second: fewer sweeps press faster, more
+  # find a wild that turned up somewhere new sooner.
+  static_full_every: 20
 
   # --- Starter hunt: hold Left, press A until it lands in the party --
   #

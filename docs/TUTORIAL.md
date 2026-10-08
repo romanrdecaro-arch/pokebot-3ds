@@ -170,25 +170,32 @@ on.
 2. **SAVE there.**
 3. Launcher: the only method on offer for ORAS.
 
-Each attempt uses the **same presses as the X/Y Snorlax hunt**: A
-every 0.4 s (up to 60 presses), checking for the battle between
-presses. Then:
+The loop:
 
-- **Not shiny** → L+R+Start and the same post-reset taps as X/Y.
-- **Shiny** → the bot **stops sending input entirely**. There is no
-  catch sequence. The battle is left on screen for you to catch by
-  hand.
+1. **Spam A** until the battle starts.
+2. **Shiny** → the bot **stops sending input entirely**. There is no
+   catch sequence. The battle is left on screen for you to catch by
+   hand.
+3. **Not shiny** → L+R+Start, and **straight back to spamming A**:
+   through the boot logos, the title, CONTINUE and the walk-up, into
+   the next battle. No waiting.
+4. Repeat.
 
 The shiny's `.pk6` is still written to `targets/`. That is a memory
 read, not an input, so it does not touch the battle.
 
-Tuning: `soft_reset.static_a_gap` / `static_a_max`. If you already
-tuned `snorlax_a_gap` / `snorlax_a_max` for X/Y, those carry over.
+For the first `reload_read_grace` seconds (4) after each reset the
+bot presses A but reads nothing, because reading Azahar's memory while
+it relaunches the game crashes it. The boot takes longer than that, so
+those presses only ever land on the logos and the title. If the log
+ever says the battle was **ALREADY UP** when reading resumed, the game
+booted faster than the grace and blind presses may have reached the
+battle menu: lower Azahar's speed limit.
 
-**Not yet proven on ORAS:** the wild-encounter memory window is X/Y's
-address, which PKMN-NTR lists for ORAS too but nobody has confirmed
-here. If the log says *no encounter after 60 A presses* while the
-battle is clearly on screen, that address is the cause. Paste the log.
+Tuning, all under `soft_reset:` — `static_press_hold` (press length,
+0.03 s), `static_timeout` (reset if no encounter after this long,
+45 s), `static_full_every` (one-record checks between full memory
+sweeps, 20).
 
 ## Soft-reset gift Pokémon (X/Y: Snorlax, Lapras)
 

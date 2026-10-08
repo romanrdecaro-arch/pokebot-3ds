@@ -179,20 +179,22 @@ Legend: ✅ verified live · 🟡 wired, not yet user-tested · ⬜ planned
 
 | Capability | X / Y | OR / AS | S / M | US / UM |
 |---|:---:|:---:|:---:|:---:|
-| Live wild detection (species · PID · IVs · nature · ability) | ✅ | 🟡¹ | 🟡² | 🟡² |
+| Live wild detection (species · PID · IVs · nature · ability) | ✅ | ✅¹ | 🟡² | 🟡² |
 | Shiny detection (PSV vs player TSV) | ✅ | 🟡 | 🟡 | 🟡 |
-| Random-encounter shiny hunt (walk → flee → stop on shiny) | ✅ | 🟡¹ | 🟡² | 🟡² |
-| Sweet Scent hordes (5× multi-mon eval per battle) | ✅ | 🟡¹ | — | — |
-| Rock Smash hunt (A at the rock → soft-reset per attempt) | 🟡 | 🟡¹ | — | — |
+| Random-encounter shiny hunt (walk → flee → stop on shiny) | ✅ | —¹ | 🟡² | 🟡² |
+| Sweet Scent hordes (5× multi-mon eval per battle) | ✅ | —¹ | — | — |
+| Rock Smash hunt (A at the rock → soft-reset per attempt) | 🟡 | —¹ | — | — |
 | Manual / observe (read-only, no inputs) | ✅ | 🟡 | 🟡 | 🟡 |
-| Live party read (Recently Seen + Party strip) | ✅ | 🟡 | 🟡 | 🟡 |
-| Soft-reset (starters · gifts · legendaries) | ✅ | 🟡 | 🟡 | 🟡 |
+| Live party read (Recently Seen + Party strip) | ✅ | ✅ | 🟡 | 🟡 |
+| Soft-reset (starters · gifts · legendaries) | ✅ | 🟡¹ | 🟡 | 🟡 |
 | `.pk6` export of hit targets | ✅ | ✅ | ✅ | ✅ |
 | Persistent Phase / Total / best SV / best IVs | ✅ | ✅ | ✅ | ✅ |
 | PKHeX LiveHeX bridge (box / trainer editing) | ✅ | 🟡 | ⬜³ | ⬜³ |
 
-¹ OR/AS shares X/Y's `WildOffset1 = 0x08800000`; same code path,
-not yet user-tested. ² S/M & US/UM offsets are taken from PKMN-NTR's
+¹ OR/AS shares X/Y's `WildOffset1 = 0x08800000`, confirmed on a
+live Omega Ruby run (a wild Reshiram found at `0x08803F50`). By
+request OR/AS offers one mode, the static-encounter soft reset: spam
+A → shiny stops all input, anything else resets. ² S/M & US/UM offsets are taken from PKMN-NTR's
 `LookupTable.cs` and wired in but unverified on Azahar. ³ The
 NTR↔Azahar LiveHeX bridge is implemented for Gen 6; Gen 7 untested.
 
