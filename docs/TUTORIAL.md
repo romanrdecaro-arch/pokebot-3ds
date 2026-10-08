@@ -197,6 +197,32 @@ Tuning, all under `soft_reset:` — `static_press_hold` (press length,
 45 s), `static_full_every` (one-record checks between full memory
 sweeps, 20).
 
+## Sun / Moon / Ultra Sun / Ultra Moon
+
+Gen 7 has **one** mode for now: **Manual control**. The bot sends no
+inputs. You play normally while it watches memory:
+
+- **Party strip:** your team, read from the save block.
+- **Recently Seen:** every wild Pokémon as its battle starts, **and
+  every SOS ally** as it answers a call, with IVs, nature and whether
+  it is shiny. A shiny's file goes to `targets/` as a `.pk7`.
+
+There is nothing to set up: load the game in Azahar, pick Manual
+control, press Start.
+
+**First run on Azahar:** the Gen 7 addresses come from real-hardware
+tools (PKHeX-Plugins and PKMN-NTR) and have not been confirmed on
+Azahar yet. The first lines of the log say whether they line up:
+
+- `trainer block @0x...: OT 'Roman', ID No. 123456` — compare the ID
+  with your trainer card. If it matches, the addresses are right.
+- `holds no readable name` — Azahar keeps this game's memory somewhere
+  else. Paste the log.
+
+The party is found by your trainer name (`soft_reset.trainer_name` in
+config.yaml). If that does not match the game, the bot tries the name
+in the game's own trainer block instead, and says so.
+
 ## Soft-reset gift Pokémon (X/Y: Snorlax, Lapras)
 
 The **Soft reset** method has a **Target** sub-dropdown for hunting

@@ -54,6 +54,10 @@ class GameOffsets:
     foe_stride:     int = 260
     foe_scan_len:   int = 0x20000  # bytes to scan from foe_base for a PK6
     foe_count:      int = 0   # u8: number of foes (1 single, 2 double, ...)
+    # Further (base, length) windows scanned alongside the one above.
+    # Gen 7 keeps its SOS ally in a different part of memory from the
+    # opponent, so a single window sees one or the other, never both.
+    foe_extra:      tuple = ()
 
     # Battle state
     in_battle_flag: int = 0   # u8/u32 that flips when a battle starts
@@ -200,34 +204,71 @@ _register(Game(
     notes="Same engine and same save layout as Omega Ruby.",
 ))
 
-# ---- Gen 7: SM --------------------------------------------------------
+# ---- Gen 7: Sun / Moon, Ultra Sun / Ultra Moon -------------------------
+#
+# Addresses from the two tools that read these games live: PKHeX-Plugins'
+# LiveHeX (RamOffsets.cs: trainer block, box 1) and PKMN-NTR
+# (Helpers/LookupTable.cs: WildOffset1-4). They are real-hardware NTR
+# addresses and none is confirmed on Azahar yet, so each is read as a
+# WINDOW around the address rather than at it.
+#
+# The party is the save-block copy straight after the trainer block.
+# PKHeX's save layout puts PokePartySave (6 x 260 B) directly after
+# MyStatus (0xC0) in both games, and PKMN-NTR gives USUM's party as
+# trainer + 0xCC (0x330128E4) -- so SM's is the same step from its own
+# trainer block. PKMN-NTR's other party address (SM 0x34195E10, USUM
+# 0x33F7FA44) is a live copy at a 484-byte stride, which the party
+# scan's 260-byte contiguity check would cut down to the lead.
+_SM_TB = 0x330D67D0                     # = LIVEHEX_REFERENCES below
+_USUM_TB = 0x33012818
+_GEN7_PARTY_FROM_TB = 0xCC
+
+#: Wild windows. PKMN-NTR's WildOffset1 (0x3254F4AC) and WildOffset2
+#: (0x32663BF0) are shared by all four games; WildOffset3/4 -- the SOS
+#: ally and the allies called before it -- differ (SM 0x3003969C /
+#: 0x3002F7B8, USUM 0x30039888 / 0x3002F9A0), and one window covers
+#: both pairs.
+_GEN7_FOE_BASE = 0x32540000             # WildOffset1 sits 0xF4AC in
+_GEN7_FOE_LEN = 0x20000
+_GEN7_FOE_EXTRA = (
+    (0x3265B000, 0x10000),              # WildOffset2, 0x8BF0 in
+    (0x30028000, 0x18000),              # WildOffset3/4, both games
+)
+
+
+def _gen7_offsets(trainer_block: int, sos_state: int) -> GameOffsets:
+    return GameOffsets(
+        party_base=trainer_block + _GEN7_PARTY_FROM_TB,
+        party_stride=260,
+        foe_base=_GEN7_FOE_BASE,
+        foe_scan_len=_GEN7_FOE_LEN,
+        foe_extra=_GEN7_FOE_EXTRA,
+        sos_state=sos_state,
+    )
+
+
+_GEN7_NOTES = ("Manual mode only. Party and wild windows come from "
+               "PKHeX-Plugins LiveHeX and PKMN-NTR real-hardware "
+               "addresses, not yet confirmed on Azahar.")
+
 _register(Game(
     key="SM-USA-1.2",
     title="Pokémon Sun/Moon (US, v1.2)",
     title_ids=(0x0004000000164800, 0x0004000000175E00),
     generation=7,
-    offsets=GameOffsets(
-        # SOS state block address from projectpokemon.org's Gen7 RAM Map
-        # (published as USUM addresses; SM's location differs):
-        sos_state=0x30038C44,
-    ),
-    notes="Verified-public addresses: SOS status block (per Gen7 RAM Map). "
-          "Party / foe addresses still need finder verification.",
+    # SOS state block from projectpokemon.org's Gen7 RAM Map (published
+    # as USUM addresses; SM's location differs).
+    offsets=_gen7_offsets(_SM_TB, sos_state=0x30038C44),
+    notes=_GEN7_NOTES,
 ))
 
-# ---- Gen 7: USUM ------------------------------------------------------
 _register(Game(
     key="USUM-USA-1.2",
     title="Pokémon Ultra Sun/Ultra Moon (US, v1.2)",
     title_ids=(0x00040000001B5000, 0x00040000001B5100),
     generation=7,
-    offsets=GameOffsets(
-        sos_state=0x30038E20,        # public
-        # Berry-pile data (one example of a published address):
-        # 0x32DE3208 -- not used for bot but proves we can reach FCRAM ranges
-    ),
-    notes="Verified-public: SOS status block. Party offset is well known "
-          "in PKHeX LiveHeX source for v1.2; plug it in once confirmed.",
+    offsets=_gen7_offsets(_USUM_TB, sos_state=0x30038E20),
+    notes=_GEN7_NOTES,
 ))
 
 
@@ -375,6 +416,20 @@ def methods_for(game_key: str) -> list[Method]:
                          "soft-resets and goes straight back to spamming "
                          "A. A SHINY STOPS ALL INPUT with the battle left "
                          "on screen for you to catch. No catch sequence."),
+        ]
+    if game is not None and game.generation == 7:
+        # Manual only, for now. Every hunt below drives the game through
+        # menus written and checked against Gen 6 -- Alola has different
+        # menus, SOS battles and no Sweet Scent hordes -- and Gen 7's
+        # addresses are real-hardware ones nobody has confirmed on
+        # Azahar yet. Watching comes before driving.
+        return [
+            Method("Manual control", "observe",
+                   notes="Bot sends NO inputs — you play normally. The "
+                         "Recently Seen tab logs wild encounters and SOS "
+                         "allies as they appear and flags any shiny. "
+                         "Gen 7 addresses are not yet confirmed on "
+                         "Azahar: if nothing shows up, paste the log."),
         ]
     if game is not None and game.generation == 2:
         # Gen 2 gets its own manual mode. The Gen 6/7 methods below all

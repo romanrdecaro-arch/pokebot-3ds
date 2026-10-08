@@ -58,6 +58,17 @@ def _safe(name: str, fallback: str) -> str:
     return cleaned or fallback
 
 
+def file_ext(ctx) -> str:
+    """"pk7" for a Gen 7 game, "pk6" otherwise.
+
+    The bytes are the same 232-byte layout either way, but PKHeX takes
+    the format from the extension: a Sun/Moon Pokemon saved as .pk6
+    opens as a Gen 6 one, where every Alola species is invalid.
+    """
+    gen = getattr(getattr(ctx, "game", None), "generation", 6)
+    return "pk7" if gen == 7 else "pk6"
+
+
 def save_target_pk6(ctx, addr: int, pkm, label: str) -> Path | None:
     """Read the 232-byte BOX record at ``addr``, decrypt to PKHeX
     plaintext, and write it to ``targets/``. Returns the saved path,
@@ -110,7 +121,7 @@ def save_target_pk6(ctx, addr: int, pkm, label: str) -> Path | None:
     ensure_targets_dir()
     nick = _safe(pkm.nickname, f"sp{pkm.species}")
     fname = (f"{label}_{pkm.species:03d}_{nick}"
-             f"_PID{pkm.pid:08X}_{int(time.time())}.pk6")
+             f"_PID{pkm.pid:08X}_{int(time.time())}.{file_ext(ctx)}")
     path = TARGETS_DIR / fname
     try:
         path.write_bytes(plain)

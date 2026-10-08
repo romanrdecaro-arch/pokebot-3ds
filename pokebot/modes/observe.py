@@ -22,12 +22,19 @@ Wild   → scan a ~128 KB window at ``offsets.foe_base`` (X/Y
   exactly; level is derived from EXP (the box-format record has no
   party level byte). Every valid PK6 is logged on change so the
   picture stays visible.
+
+Gen 7 (SM / USUM) → the party is searched in a small window at the
+  save-block party, never swept for (the 0x30000000 heap is 256 MB),
+  and the wild scan covers several windows: PKMN-NTR's WildOffset1/2
+  for the opponent and WildOffset3/4 for SOS allies. The game's own
+  trainer block is read once at start, which both names the trainer
+  and proves the addresses line up on Azahar.
 """
 from __future__ import annotations
 
 import logging
 
-from ..games import DEFAULT_OT_NAME
+from ..games import DEFAULT_OT_NAME, LIVEHEX_REFERENCES
 from ..parser import calc_checksum, decrypt_pkm, encounter_payload, parse_pkm
 
 log = logging.getLogger(__name__)
@@ -49,14 +56,27 @@ _OPP_PK6 = 232              # min bytes needed to decode a record
 # Validation / parse
 # ---------------------------------------------------------------------------
 
-def _parse_valid(pt: bytes):
+#: Highest national-dex number each generation's games can hold. A
+#: record claiming more is junk that happened to checksum, so the bound
+#: is the game's own: Gen 7 adds 722-807 (Rowlet to Zeraora), and
+#: letting those through on a Gen 6 title would only loosen the junk
+#: filter for nothing.
+_MAX_SPECIES = {6: 721, 7: 807}
+
+
+def _species_max(ctx) -> int:
+    gen = getattr(getattr(ctx, "game", None), "generation", 6)
+    return _MAX_SPECIES.get(gen, _MAX_SPECIES[6])
+
+
+def _parse_valid(pt: bytes, max_species: int = _MAX_SPECIES[6]):
     """ParsedPokemon if ``pt`` (decrypted/plaintext, 232 or 260 B) is a
     sane record, else None."""
     try:
         if calc_checksum(pt) != int.from_bytes(pt[6:8], "little"):
             return None
         species = int.from_bytes(pt[8:10], "little")
-        if not (0 < species <= 721):
+        if not (0 < species <= max_species):
             return None
         pkm = parse_pkm(pt)
     except Exception:
@@ -78,7 +98,8 @@ def _parse_valid(pt: bytes):
     return pkm
 
 
-def _decode(rec: bytes, party: bool = False):
+def _decode(rec: bytes, party: bool = False,
+            max_species: int = _MAX_SPECIES[6]):
     """Decode a record as encrypted ekx (decrypt) or plaintext. Cheap
     pre-filter on the unencrypted header (Sanity@0x04==0, key!=0 —
     PKHeX's own Valid gate) so the window sweep stays fast.
@@ -103,7 +124,7 @@ def _decode(rec: bytes, party: bool = False):
             pt = rec if plaintext else decrypt_pkm(rec)
         except Exception:
             continue
-        pkm = _parse_valid(pt)
+        pkm = _parse_valid(pt, max_species)
         if pkm is not None:
             return pkm
     return None
@@ -191,6 +212,27 @@ def quick_get_party(ctx, player_ot):
 _PARTY_SCAN_RANGES = [(0x08C00000, 0x08F00000),
                       (0x08000000, 0x08C00000)]
 
+#: How far either side of a configured party_base to look, for a game
+#: whose party is outside the ranges above.
+#:
+#: Gen 7 keeps its save block in the 0x30000000 linear heap: 256 MB, a
+#: quarter of a million 1 KB reads to sweep. So it is searched near the
+#: address the community tools give and nowhere else. A window rather
+#: than a single read because Azahar shifts addresses a little (X/Y's
+#: trainer block reads 0x10 low); narrow enough on the high side to
+#: stop short of box 1, which sits ~0x3000 above the party.
+_PARTY_HINT_SPAN = 0x2000
+
+
+def _party_ranges(party_base_cfg) -> list[tuple[int, int]]:
+    """Where get_party looks: the Gen 6 ranges, or -- for a party_base
+    outside them -- a window around that address."""
+    if party_base_cfg and not any(lo <= party_base_cfg < hi
+                                  for lo, hi in _PARTY_SCAN_RANGES):
+        return [(party_base_cfg - _PARTY_HINT_SPAN,
+                 party_base_cfg + _PARTY_HINT_SPAN)]
+    return list(_PARTY_SCAN_RANGES)
+
 
 def _scan_owned(ctx, lo, hi, player_ot):
     """All checksum-valid PK6 in [lo,hi) whose OT == player_ot,
@@ -203,7 +245,7 @@ def _scan_owned(ctx, lo, hi, player_ot):
         if not buf:
             cur += CH
             continue
-        for a, p in _all_valid(buf, cur):
+        for a, p in _all_valid(buf, cur, _species_max(ctx)):
             if ((p.ot_name or "") == player_ot
                     and p.encryption_key not in seen):
                 seen.add(p.encryption_key)
@@ -284,7 +326,7 @@ def _refine_party(ctx, owned, *, contiguous: bool = True):
     for addr, pkm in owned:
         try:
             rec = ctx.rpc.read(addr, _PK6)
-            pp = _decode(rec, party=True)
+            pp = _decode(rec, party=True, max_species=_species_max(ctx))
         except Exception:
             pp = None
         result = pp if (pp is not None and pp.party) else pkm
@@ -316,7 +358,7 @@ def get_party(ctx, party_base_cfg, party_stride, player_ot,
             return _refine_party(ctx, owned, contiguous=contiguous)
         ctx._party_win = None                 # moved → relocate below
 
-    for lo, hi in _PARTY_SCAN_RANGES:
+    for lo, hi in _party_ranges(party_base_cfg):
         owned = _scan_owned(ctx, lo, hi, player_ot)
         if owned:
             a0 = owned[0][0]
@@ -350,7 +392,8 @@ def _read_window(ctx, base: int, length: int) -> bytes:
     return bytes(buf)
 
 
-def _all_valid(buf: bytes, base: int):
+def _all_valid(buf: bytes, base: int,
+               max_species: int = _MAX_SPECIES[6]):
     """Every distinct (by enc_key) checksum-valid PK6 in the window —
     diagnostic so we can see what's actually there."""
     seen = set()
@@ -360,7 +403,8 @@ def _all_valid(buf: bytes, base: int):
             continue
         if not (buf[off] or buf[off + 1] or buf[off + 2] or buf[off + 3]):
             continue
-        pkm = _decode(buf[off:off + _OPP_PK6], party=False)
+        pkm = _decode(buf[off:off + _OPP_PK6], party=False,
+                      max_species=max_species)
         if pkm is None or pkm.encryption_key in seen:
             continue
         seen.add(pkm.encryption_key)
@@ -381,7 +425,7 @@ def read_pk6_at(ctx, addr: int):
         return None
     if not buf or len(buf) < _OPP_PK6:
         return None
-    return _decode(bytes(buf), party=False)
+    return _decode(bytes(buf), party=False, max_species=_species_max(ctx))
 
 
 def scan_nonparty(ctx, foe_base, foe_len, party_keys):
@@ -396,7 +440,7 @@ def scan_nonparty(ctx, foe_base, foe_len, party_keys):
     bug). Single source of truth — manual mode + hunt loop.
     """
     buf = _read_window(ctx, foe_base, foe_len)
-    out = [(a, p) for a, p in _all_valid(buf, foe_base)
+    out = [(a, p) for a, p in _all_valid(buf, foe_base, _species_max(ctx))
            if p.encryption_key not in party_keys]
     out.sort(key=lambda ap: ap[0])
     return out
@@ -492,6 +536,106 @@ def _report_encounter(ctx, pkm, addr: int, count: int, via: str):
 
 
 # ---------------------------------------------------------------------------
+# Windows, and Gen 7's trainer block
+# ---------------------------------------------------------------------------
+
+def foe_windows(o) -> list[tuple[int, int]]:
+    """Every (base, length) the wild scan covers.
+
+    The main window plus any extras the game declares. Gen 7 keeps its
+    SOS ally in a different part of memory from the opponent, so one
+    window would see one or the other, never both.
+    """
+    out = []
+    if o.foe_base:
+        out.append((o.foe_base, getattr(o, "foe_scan_len", 0) or 0x20000))
+    for base, length in getattr(o, "foe_extra", ()) or ():
+        out.append((int(base), int(length)))
+    return out
+
+
+def scan_windows(ctx, windows, party_keys):
+    """scan_nonparty across several windows: (addr, pkm), lowest
+    address first, one entry per encryption key."""
+    keys, out = set(), []
+    for base, length in windows:
+        for a, p in scan_nonparty(ctx, base, length, party_keys):
+            if p.encryption_key not in keys:
+                keys.add(p.encryption_key)
+                out.append((a, p))
+    out.sort(key=lambda ap: ap[0])
+    return out
+
+
+#: MyStatus7, the Gen 7 trainer block (PKHeX MyStatus7.cs): TID16 at
+#: 0x00, SID16 at 0x02, the OT name at 0x38 as up to 13 UTF-16 chars.
+_MYSTATUS7_LEN = 0xC0
+_MYSTATUS7_OT = slice(0x38, 0x38 + 0x1A)
+
+
+def gen7_trainer_ot(ctx) -> str | None:
+    """The OT name in a Gen 7 game's own trainer block, or None.
+
+    One 0xC0-byte read at the address PKHeX-Plugins' LiveHeX uses. It
+    is the quickest proof that the Gen 7 addresses -- real-hardware
+    ones -- line up on Azahar, and it names the trainer the party scan
+    needs whatever config.yaml says.
+    """
+    game = getattr(ctx, "game", None)
+    if getattr(game, "generation", 0) != 7:
+        return None
+    ref = LIVEHEX_REFERENCES.get(getattr(game, "key", "")) or {}
+    tb = ref.get("trainer_block")
+    if not tb:
+        return None
+    try:
+        raw = bytes(ctx.rpc.read(tb, _MYSTATUS7_LEN))
+    except Exception as exc:
+        log.warning(f"  Gen 7 trainer block @{tb:#010x} unreadable: {exc}")
+        return None
+    ot = raw[_MYSTATUS7_OT].decode("utf-16-le", errors="replace")
+    ot = ot.split("\x00", 1)[0]
+    if not ot.strip() or "\ufffd" in ot:
+        log.warning(f"  Gen 7 trainer block @{tb:#010x} holds no readable "
+                    f"name. The Gen 7 addresses come from real hardware; "
+                    f"if Azahar keeps this game's memory elsewhere, the "
+                    f"party and wilds will not be found either. Paste "
+                    f"this log.")
+        return None
+    tid, sid = (int.from_bytes(raw[i:i + 2], "little") for i in (0, 2))
+    # What the trainer card shows: the low six digits of the 32-bit ID.
+    card_id = ((sid << 16) | tid) % 1_000_000
+    log.info(f"  trainer block @{tb:#010x}: OT {ot!r}, "
+             f"ID No. {card_id:06d}")
+    return ot
+
+
+def _first_party(ctx, party_base, party_stride, player_ot):
+    """The party at startup, and the OT it was found under.
+
+    A Gen 7 game can name its trainer itself: when config.yaml's name
+    finds nothing and the trainer block holds a different one, that is
+    tried before giving up. Either way the search is retried every poll.
+    """
+    game_ot = gen7_trainer_ot(ctx)
+    party = get_party(ctx, party_base, party_stride, player_ot)
+    if not party and game_ot and game_ot != player_ot:
+        log.warning(f"  no party under OT {player_ot!r}; the game's own "
+                    f"trainer block says {game_ot!r}, so trying that. Set "
+                    f"soft_reset.trainer_name to it to skip this step.")
+        party = get_party(ctx, party_base, party_stride, game_ot)
+        if party:
+            player_ot = game_ot
+    if not party:
+        where = ", ".join(f"{lo:#010x}-{hi:#010x}"
+                          for lo, hi in _party_ranges(party_base))
+        log.warning(f"  no party found yet (OT {player_ot!r}; searched "
+                    f"{where}). Retried every poll; wild detection runs "
+                    f"either way.")
+    return party, player_ot
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
@@ -499,8 +643,7 @@ def run(ctx) -> None:
     o = ctx.game.offsets
     party_base = o.party_base
     party_stride = o.party_stride or 484
-    foe_base = o.foe_base
-    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
+    windows = foe_windows(o)
     player_ot = (ctx.config.get("soft_reset", {}) or {}).get(
         "trainer_name", DEFAULT_OT_NAME)
 
@@ -509,22 +652,31 @@ def run(ctx) -> None:
     log.info("Mode: manual control (live wild detection — bot sends "
              f"no inputs; player OT {player_ot!r})")
     log.info(f"  party_base={party_base:#010x} stride={party_stride}  "
-             f"foe window=[{foe_base:#010x},{foe_base + foe_len:#010x})")
-    if not party_base and not foe_base:
+             f"foe window(s) " + ", ".join(
+                 f"[{b:#010x},{b + n:#010x})" for b, n in windows))
+    if not party_base and not windows:
         log.error("No party_base/foe_base configured (X/Y: party_base "
                   "0x08CE1CF8, foe_base 0x08800000).")
         return
 
-    party = get_party(ctx, party_base, party_stride, player_ot)
+    party, player_ot = _first_party(ctx, party_base, party_stride,
+                                    player_ot)
     party_keys: set[int] = broadcast_party(ctx, party)
+
+    def wilds():
+        """Non-party records the player does not own. A wild has no OT
+        until it is caught, so a record carrying the player's is their
+        own battle copy -- whether or not the party read found it."""
+        return [(a, p) for a, p in scan_windows(ctx, windows, party_keys)
+                if (p.ot_name or "") != player_ot]
 
     # Baseline: ignore every non-party PK6 already in the foe window
     # (a wild left over from before the bot started + the player's
     # battle copy). Detection is by NEW encryption key after this —
     # robust to a stale wild lingering at a low address.
     seen: set[int] = set()
-    if foe_base:
-        for _, p in scan_nonparty(ctx, foe_base, foe_len, party_keys):
+    if windows:
+        for _, p in wilds():
             seen.add(p.encryption_key)
         log.info(f"  baseline: {len(seen)} pre-existing non-party "
                  f"PK6 ignored. Watching for new keys…")
@@ -544,11 +696,11 @@ def run(ctx) -> None:
         if keys:
             party_keys = keys
 
-        if not foe_base:
+        if not windows:
             ctx._stop_evt.wait(_POLL_INTERVAL_S)
             continue
 
-        cands = scan_nonparty(ctx, foe_base, foe_len, party_keys)
+        cands = wilds()
         new = [(a, p) for a, p in cands
                if p.encryption_key not in seen]
 
