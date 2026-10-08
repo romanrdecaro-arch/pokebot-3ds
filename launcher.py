@@ -2144,6 +2144,16 @@ class _App(tk.Tk):
                 text="Stand in front of the Pokémon, facing it, and SAVE "
                      "there. Not shiny resets; a SHINY stops all input "
                      "and leaves the battle for you to catch.")
+        elif m and m.mode == "usum_starters":
+            self._starter_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
+            self._sr_target_lbl.pack_forget()
+            self._sr_target_cb.pack_forget()
+            self._starter_hint.config(
+                text="SAVE before choosing, with an EMPTY party. Spams A "
+                     "and taps Left until a starter is in your party. Not "
+                     "shiny resets; a SHINY stops all input — don't "
+                     "reset, save as soon as the game lets you.")
         elif m and m.mode == "gifts":
             # Same trainer-name and press-speed controls, no target
             # picker: this mode evaluates whatever it is handed.
@@ -2409,7 +2419,8 @@ class _App(tk.Tk):
             # "Up (↑)" -> "up"
             args += ["--noibat-direction",
                      self._noibat_dir_var.get().split()[0].lower()]
-        if method.mode in ("soft_reset", "gifts", "static_encounter"):
+        if method.mode in ("soft_reset", "gifts", "static_encounter",
+                           "usum_starters"):
             tn = self._trainer_var.get().strip()
             if tn:
                 args += ["--trainer-name", tn]

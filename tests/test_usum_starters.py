@@ -1,0 +1,481 @@
+"""
+The USUM starter soft reset, as the loop was laid out:
+
+    spam A and tap Left until a starter is in the party (slot 1)
+    if shiny, stop; if not shiny, reset
+    immediately start spamming A again
+    ...repeat
+
+The fake game runs on its own clock and holds real PK7 bytes at the
+Gen 7 addresses, so the mode's real detection path runs against it.
+What it models, because each is a way this hunt goes wrong:
+
+* the save holds an EMPTY party, and loading it clears the slot -- or,
+  with ``clears=False``, leaves last attempt's starter sitting there;
+* the starter can land in the save-block party, the live copy, or both;
+* the nickname prompt comes up a moment after the starter lands, and an
+  A from then on opens the naming keyboard;
+* every read is timestamped, so a read inside the relaunch window --
+  what crashed Azahar -- is caught.
+"""
+from __future__ import annotations
+
+import re
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+
+from pokebot import games  # noqa: E402
+from pokebot.modes import soft_reset as sr  # noqa: E402
+from pokebot.modes import usum_starters as us  # noqa: E402
+from test_gen7 import OT, SHINY_PID, mystatus, pk7  # noqa: E402
+
+clock = time.perf_counter
+
+KEY = "USUM-USA-1.2"
+OFF = games.GAMES[KEY].offsets
+TB = games.LIVEHEX_REFERENCES[KEY]["trainer_block"]
+SLOTS = {"save": OFF.party_base, "live": OFF.party_live}
+
+
+class Starter:
+    _n = 0
+
+    def __init__(self, shiny=False, species=722):
+        Starter._n += 1
+        self.key = 0x7700_0000 + Starter._n
+        self.shiny = shiny
+        self.species = species
+        pid = SHINY_PID if shiny else 0x9D1A0000 | (0x1000 + Starter._n)
+        self.bytes = pk7(key=self.key, species=species, pid=pid, ot=OT,
+                         party=True, level=5)
+
+
+class Game:
+    """A USUM save made just before the choice, on the game's own clock.
+
+    After a reset the title boots for ``boot`` seconds, during which
+    presses do nothing. Then the ``presses``-th A brings the choice up,
+    and the starter is written ``delay`` later. The nickname prompt is
+    up ``prompt`` after that.
+    """
+
+    def __init__(self, starters, *, presses=3, delay=0.03, boot=0.3,
+                 prompt=0.25, where=("save",), clears=True, trainer=OT):
+        self.queue = list(starters)
+        self.where = [SLOTS[w] for w in where]
+        self.presses_needed = presses
+        self.delay, self.boot, self.prompt = delay, boot, prompt
+        self.clears = clears
+        self.mem: dict[int, bytes] = {TB: mystatus(trainer)}
+        self.booted_at = 0.0
+        self.clear_at = None
+        self.presses = 0
+        self.receive_at = None
+        self.received = None
+        self.prompt_at = None
+        self.first_read_t = None
+        self.inputs: list[tuple[float, str]] = []
+        self.reads: list[tuple[float, int, int]] = []
+        self.resets: list[float] = []
+        self.arrivals: list[float] = []
+        self.keyboard = 0
+
+    def _tick(self, now):
+        if self.clear_at is not None and now >= self.clear_at:
+            self.clear_at = None
+            for addr in SLOTS.values():
+                self.mem.pop(addr, None)       # the save's party is empty
+        if (self.received is None and self.receive_at is not None
+                and now >= self.receive_at and self.queue):
+            self.received = self.queue.pop(0)
+            for addr in self.where:
+                self.mem[addr] = self.received.bytes
+            self.prompt_at = now + self.prompt
+            self.first_read_t = None
+            self.arrivals.append(now)
+
+    # -- controller -----------------------------------------------------
+    def tap(self, button, hold_s=0.05):
+        now = clock()
+        self._tick(now)
+        self.inputs.append((now, button))
+        if self.received is not None:
+            if button == "A" and now >= self.prompt_at:
+                self.keyboard += 1
+        elif (button == "A" and self.receive_at is None
+              and now >= self.booted_at):
+            self.presses += 1
+            if self.presses >= self.presses_needed:
+                self.receive_at = now + self.delay
+        time.sleep(hold_s)
+        return "postmessage"
+
+    def hold(self, button):
+        raise AssertionError(f"{button} was HELD -- it must be tapped")
+
+    def needs_focus(self):
+        return False
+
+    def soft_reset(self, hold_s=0.5):
+        now = clock()
+        self.inputs.append((now, "RESET"))
+        self.resets.append(now)
+        self.booted_at = now + self.boot
+        self.received = self.receive_at = self.prompt_at = None
+        self.presses = 0
+        if self.clears:
+            self.clear_at = self.booted_at
+
+    # -- memory (ctx.rpc) -----------------------------------------------
+    def read(self, addr, n):
+        now = clock()
+        self._tick(now)
+        self.reads.append((now, addr, n))
+        if (self.received is not None and self.first_read_t is None
+                and any(addr <= a and a + 232 <= addr + n
+                        for a in self.where)):
+            self.first_read_t = now
+        out = bytearray(n)
+        for a, d in self.mem.items():
+            lo, hi = max(a, addr), min(a + len(d), addr + n)
+            if lo < hi:
+                out[lo - addr:hi - addr] = d[lo - a:hi - a]
+        return bytes(out)
+
+    def buttons_after(self, t):
+        return [b for at, b in self.inputs if at > t]
+
+
+FAST = {"trainer_name": OT, "press_hold": 0.01,
+        "usum_receive_timeout": 3.0, "usum_scan_gap": 0.02,
+        "usum_sweep_every": 0.3, "pre_reset_quiet": 0.05,
+        "reload_read_grace": 0.15}
+
+
+class Ctx:
+    def __init__(self, game, cfg=None, target=None, seconds=10.0):
+        self.input = game
+        self.rpc = game
+        self.target = target
+        self.game = games.GAMES[KEY]
+        self.config = {"soft_reset": dict(FAST if cfg is None else cfg)}
+        self._stop_evt = threading.Event()
+        self.ran_away = False
+        self._deadline = time.monotonic() + seconds
+        self.events: list[tuple[str, dict]] = []
+        events = self.events
+
+        class Dash:
+            @staticmethod
+            def broadcast(kind, **kw):
+                events.append((kind, kw))
+
+        self.dashboard = Dash()
+
+    def should_stop(self):
+        if self._stop_evt.is_set():
+            return True
+        if time.monotonic() > self._deadline:
+            self.ran_away = True
+            return True
+        return False
+
+    def request_stop(self, reason=""):
+        self._stop_evt.set()
+
+    def kinds(self):
+        return [k for k, _ in self.events]
+
+    def judged(self):
+        return [(kw["species"], kw["pid"]) for k, kw in self.events
+                if k == "candidate"]
+
+
+@pytest.fixture
+def wired(monkeypatch):
+    """Returns the species of every .pk7 the hunt saved."""
+    saved = []
+    monkeypatch.setattr(us, "_MIN_GRACE_S", 0.05)
+    monkeypatch.setattr(us, "ensure_targets_dir", lambda: None)
+    monkeypatch.setattr(us, "save_target_pk6",
+                        lambda ctx, a, p, lbl: saved.append(p.species))
+    monkeypatch.setattr(sr, "focus_azahar", lambda: None)
+
+    import pokebot.modes.catch as catch_mod
+
+    def no_catch(*a, **k):
+        raise AssertionError("a catch sequence ran -- it must not")
+
+    monkeypatch.setattr(catch_mod, "catch_wild", no_catch)
+    return saved
+
+
+def run(ctx):
+    us.run(ctx)
+    assert not ctx.ran_away, "the hunt never stopped on its own"
+
+
+def shipped_soft_reset() -> dict:
+    import yaml
+
+    with open(REPO / "config.yaml", encoding="utf-8") as f:
+        return dict(yaml.safe_load(f)["soft_reset"])
+
+
+# ----------------------------------------------------------------------
+# If shiny, stop -- all input, for good
+# ----------------------------------------------------------------------
+def test_a_shiny_starter_stops_the_hunt(wired):
+    game = Game([Starter(shiny=True)])
+    ctx = Ctx(game)
+    run(ctx)
+
+    assert "target_hit" in ctx.kinds()
+    assert game.resets == [], "reset away a shiny starter"
+    assert wired == [722], "the shiny's .pk7 was not saved"
+
+
+def test_no_input_of_any_kind_once_the_shiny_has_been_read(wired):
+    game = Game([Starter(), Starter(), Starter(shiny=True)])
+    run(Ctx(game))
+
+    assert game.first_read_t is not None
+    after = game.buttons_after(game.first_read_t)
+    assert after == [], f"sent {after} after the shiny was read"
+
+
+# ----------------------------------------------------------------------
+# If not shiny, reset -- and immediately spam A and Left again
+# ----------------------------------------------------------------------
+def test_every_plain_starter_is_reset_and_judged_once(wired):
+    starters = [Starter(), Starter(species=725), Starter(species=728),
+                Starter(shiny=True)]
+    game = Game(starters)
+    ctx = Ctx(game)
+    run(ctx)
+
+    assert len(game.resets) == 3
+    assert [sp for sp, _ in ctx.judged()] == [722, 725, 728, 722]
+
+
+def test_presses_resume_straight_after_each_reset_with_the_shipped_config(
+        wired):
+    """config.yaml still ships the X/Y targets' post-reset wait and
+    taps; this mode must not read them."""
+    shipped = shipped_soft_reset()
+    assert float(shipped["post_reset_wait"]) >= 10, "precondition"
+    speed = {k: v for k, v in FAST.items() if k != "trainer_name"}
+    game = Game([Starter(), Starter(), Starter(shiny=True)])
+    run(Ctx(game, cfg={**shipped, **speed}))
+
+    assert len(game.resets) == 2
+    for r in game.resets:
+        first = min(t for t, b in game.inputs
+                    if b in ("A", "DpadLeft") and t > r)
+        assert first - r < 0.1, f"first press {first - r:.2f}s after reset"
+
+
+def test_the_stream_is_a_then_left_through_the_whole_boot(wired):
+    game = Game([Starter(), Starter(shiny=True)], boot=0.4)
+    run(Ctx(game))
+
+    r, arrival = game.resets[0], game.arrivals[1]
+    stream = [b for t, b in game.inputs if r < t < arrival]
+    assert len(stream) >= 20, f"only {len(stream)} presses through the boot"
+    assert stream[:6] == ["A", "DpadLeft"] * 3
+    assert set(stream) == {"A", "DpadLeft"}
+
+
+def test_nothing_is_read_while_azahar_relaunches(wired):
+    game = Game([Starter(), Starter(), Starter(shiny=True)])
+    run(Ctx(game))
+
+    quiet, grace, eps = FAST["pre_reset_quiet"], FAST["reload_read_grace"], 0.03
+    assert len(game.resets) == 2
+    for r in game.resets:
+        bad = [t - r for t, _, _ in game.reads
+               if r - quiet + eps < t < r + grace - eps]
+        assert not bad, f"read at {bad[0]:+.3f}s from a reset"
+
+
+def test_a_starter_left_in_memory_is_not_judged_again(wired):
+    """A reset leaves RAM alone; if the reload does not clear the slot
+    either, last attempt's starter sits exactly where the check reads."""
+    starters = [Starter(), Starter(), Starter(shiny=True)]
+    game = Game(starters, clears=False, boot=0.4)
+    ctx = Ctx(game)
+    run(ctx)
+
+    grace = FAST["reload_read_grace"]
+    looked = [t for t, a, n in game.reads
+              if a == SLOTS["save"] and n == 232
+              and game.resets[0] + grace < t < game.arrivals[1]]
+    assert looked, "precondition: the stale slot was read after the reset"
+    assert len(ctx.judged()) == 3
+    assert len(game.resets) == 2
+
+
+def test_the_live_party_copy_is_watched_too(wired):
+    """Neither copy is confirmed on Azahar, so either one is enough."""
+    game = Game([Starter(), Starter(shiny=True)], where=("live",))
+    ctx = Ctx(game)
+    run(ctx)
+    assert len(game.resets) == 1
+    assert "target_hit" in ctx.kinds() and wired == [722]
+
+
+def test_no_press_reaches_the_nickname_keyboard(wired):
+    game = Game([Starter() for _ in range(4)] + [Starter(shiny=True)],
+                prompt=0.15)
+    run(Ctx(game, seconds=20.0))
+    assert len(game.resets) == 4
+    assert game.keyboard == 0, f"{game.keyboard} A press(es) hit the prompt"
+
+
+def test_once_the_slot_is_known_a_check_is_one_read(wired):
+    game = Game([Starter() for _ in range(3)] + [Starter(shiny=True)])
+    run(Ctx(game))
+
+    slot_reads = sum(1 for _, a, n in game.reads if n == 232)
+    scans = sum(1 for _, a, n in game.reads if n > 232 and a != TB)
+    assert slot_reads > 2 * scans, f"{slot_reads} slot reads, {scans} scans"
+
+
+def test_reads_stay_inside_the_party_windows(wired):
+    """Gen 7's heap is 256 MB; nothing may wander into it."""
+    game = Game([Starter(), Starter(shiny=True)])
+    run(Ctx(game))
+
+    allowed = us.party_windows(OFF) + [(TB, TB + 0xC0)]
+    stray = [(hex(a), n) for _, a, n in game.reads
+             if not any(lo <= a and a + n <= hi for lo, hi in allowed)]
+    assert stray == []
+
+
+def test_a_record_without_the_players_ot_is_never_the_starter():
+    """The choice's three on-screen Pokemon, or any other record that
+    lands in the slot, are not yours until one is chosen."""
+    game = Game([])
+    ctx = Ctx(game)
+    watch = us.StarterWatch(ctx, us.party_windows(OFF), OT, set(),
+                            us.StarterPlan.from_config(FAST))
+    watch.hot = SLOTS["save"]
+    for ot in ("", "Hala"):
+        game.mem[SLOTS["save"]] = pk7(key=0xCAFE, species=725, ot=ot,
+                                      party=True, level=5)
+        watch._next_scan = 0.0
+        assert watch.check(time.monotonic()) is None, f"OT {ot!r} counted"
+
+
+# ----------------------------------------------------------------------
+# Refusals and misses
+# ----------------------------------------------------------------------
+def test_a_save_with_a_party_already_is_refused(wired):
+    game = Game([Starter(shiny=True)])
+    game.mem[SLOTS["save"]] = Starter().bytes
+    ctx = Ctx(game)
+    run(ctx)
+
+    assert "read_failure" in ctx.kinds()
+    assert game.inputs == [], "pressed buttons at a save it cannot use"
+
+
+def test_no_starter_resets_and_tries_again(wired):
+    game = Game([Starter(shiny=True)], presses=10 ** 9)
+    ctx = Ctx(game, cfg={**FAST, "usum_receive_timeout": 1.0})
+    real = game.soft_reset
+
+    def soft_reset(hold_s=0.5):
+        real(hold_s)
+        game.presses_needed = 2          # works after the reset
+
+    game.soft_reset = soft_reset                   # type: ignore
+    run(ctx)
+
+    assert len(game.resets) == 1
+    assert "read_failure" in ctx.kinds() and "target_hit" in ctx.kinds()
+
+
+def test_three_misses_in_a_row_stop_the_hunt(wired):
+    game = Game([Starter(shiny=True)], presses=10 ** 9)
+    ctx = Ctx(game, cfg={**FAST, "usum_receive_timeout": 1.0})
+    run(ctx)
+
+    assert ctx.kinds().count("read_failure") == 3
+    assert len(game.resets) == 2, "should stop on the third miss, not reset"
+
+
+def test_the_games_own_trainer_name_wins_over_config(wired):
+    """The party is matched by OT. A config name that differs from the
+    game's would make every starter invisible."""
+    game = Game([Starter(), Starter(shiny=True)])
+    run(Ctx(game, cfg={**FAST, "trainer_name": "Ash"}))
+    assert len(game.resets) == 1
+
+
+def test_the_shiny_is_saved_as_a_pk7(tmp_path, monkeypatch):
+    import pokebot.pk6_export as pk6_export
+
+    monkeypatch.setattr(us, "_MIN_GRACE_S", 0.05)
+    monkeypatch.setattr(sr, "focus_azahar", lambda: None)
+    monkeypatch.setattr(us, "ensure_targets_dir", lambda: None)
+    monkeypatch.setattr(pk6_export, "TARGETS_DIR", tmp_path)
+    monkeypatch.setattr(pk6_export, "ensure_targets_dir", lambda: tmp_path)
+    shiny = Starter(shiny=True)
+    run(Ctx(Game([shiny])))
+
+    files = list(tmp_path.iterdir())
+    assert [f.suffix for f in files] == [".pk7"]
+    assert files[0].read_bytes() == shiny.bytes[:232]
+
+
+# ----------------------------------------------------------------------
+# Plan, registry, launcher
+# ----------------------------------------------------------------------
+def test_the_plan_takes_the_launchers_press_speed():
+    """--press-speed writes soft_reset.press_hold."""
+    plan = us.StarterPlan.from_config({"press_hold": 0.02})
+    assert plan.press_hold == 0.02
+
+
+def test_the_relaunch_silences_come_from_the_shared_keys_with_floors():
+    shipped = shipped_soft_reset()
+    plan = us.StarterPlan.from_config(shipped)
+    assert plan.reload_grace == float(shipped["reload_read_grace"])
+    assert plan.pre_reset_quiet == float(shipped["pre_reset_quiet"])
+    zeroed = us.StarterPlan.from_config({"pre_reset_quiet": 0,
+                                         "reload_read_grace": 0})
+    assert zeroed.pre_reset_quiet >= 0.05 and zeroed.reload_grace >= 0.5
+
+
+def test_left_every_sets_the_pattern():
+    assert [us.StarterPlan(left_every=2).button(i) for i in range(6)] == [
+        "A", "A", "DpadLeft", "A", "A", "DpadLeft"]
+    assert {us.StarterPlan(left_every=0).button(i) for i in range(6)} == {
+        "A"}
+
+
+def test_usum_offers_the_starter_hunt_and_sm_does_not():
+    assert [m.mode for m in games.methods_for(KEY)] == [
+        "observe", "usum_starters"]
+    assert [m.mode for m in games.methods_for("SM-USA-1.2")] == ["observe"]
+
+
+def test_the_mode_is_registered():
+    from pokebot.modes import MODES
+
+    assert MODES["usum_starters"] is us.run
+
+
+def test_the_launcher_passes_the_trainer_name_and_press_speed():
+    src = (REPO / "launcher.py").read_text(encoding="utf-8")
+    m = re.search(r"if method\.mode in \(([^)]*)\):\s*\n\s*tn = "
+                  r"self\._trainer_var", src)
+    assert m and "usum_starters" in re.findall(r'"(\w+)"', m.group(1))

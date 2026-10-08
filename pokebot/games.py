@@ -45,6 +45,9 @@ class GameOffsets:
     party_base:     int = 0   # first party slot (260-byte PK7)
     party_stride:   int = 260 # bytes between party slot N and N+1
     party_count:    int = 0   # u8 byte: how many slots are filled
+    # A second, live copy of the party, where a game keeps one apart
+    # from the save block (Gen 7: PKMN-NTR's PartyOffset).
+    party_live:     int = 0
 
     # Wild / battle foe (the Pokémon currently fighting you). In Gen 6
     # the encounter is NOT at a fixed sub-offset — PKMN-NTR reads a
@@ -218,7 +221,8 @@ _register(Game(
 # trainer + 0xCC (0x330128E4) -- so SM's is the same step from its own
 # trainer block. PKMN-NTR's other party address (SM 0x34195E10, USUM
 # 0x33F7FA44) is a live copy at a 484-byte stride, which the party
-# scan's 260-byte contiguity check would cut down to the lead.
+# scan's 260-byte contiguity check would cut down to the lead -- so
+# it is kept as party_live, watched only for a starter arriving.
 _SM_TB = 0x330D67D0                     # = LIVEHEX_REFERENCES below
 _USUM_TB = 0x33012818
 _GEN7_PARTY_FROM_TB = 0xCC
@@ -236,10 +240,12 @@ _GEN7_FOE_EXTRA = (
 )
 
 
-def _gen7_offsets(trainer_block: int, sos_state: int) -> GameOffsets:
+def _gen7_offsets(trainer_block: int, party_live: int,
+                  sos_state: int) -> GameOffsets:
     return GameOffsets(
         party_base=trainer_block + _GEN7_PARTY_FROM_TB,
         party_stride=260,
+        party_live=party_live,
         foe_base=_GEN7_FOE_BASE,
         foe_scan_len=_GEN7_FOE_LEN,
         foe_extra=_GEN7_FOE_EXTRA,
@@ -247,7 +253,7 @@ def _gen7_offsets(trainer_block: int, sos_state: int) -> GameOffsets:
     )
 
 
-_GEN7_NOTES = ("Manual mode only. Party and wild windows come from "
+_GEN7_NOTES = ("Party and wild windows come from "
                "PKHeX-Plugins LiveHeX and PKMN-NTR real-hardware "
                "addresses, not yet confirmed on Azahar.")
 
@@ -258,7 +264,8 @@ _register(Game(
     generation=7,
     # SOS state block from projectpokemon.org's Gen7 RAM Map (published
     # as USUM addresses; SM's location differs).
-    offsets=_gen7_offsets(_SM_TB, sos_state=0x30038C44),
+    offsets=_gen7_offsets(_SM_TB, party_live=0x34195E10,
+                          sos_state=0x30038C44),
     notes=_GEN7_NOTES,
 ))
 
@@ -267,7 +274,8 @@ _register(Game(
     title="Pokémon Ultra Sun/Ultra Moon (US, v1.2)",
     title_ids=(0x00040000001B5000, 0x00040000001B5100),
     generation=7,
-    offsets=_gen7_offsets(_USUM_TB, sos_state=0x30038E20),
+    offsets=_gen7_offsets(_USUM_TB, party_live=0x33F7FA44,
+                          sos_state=0x30038E20),
     notes=_GEN7_NOTES,
 ))
 
@@ -372,6 +380,8 @@ class Method:
 
 #: ORAS offers only the static-encounter soft reset.
 _ORAS_GAMES = ("OR-USA", "AS-USA")
+#: The starter hunt was asked for, and written, for USUM only.
+_USUM_GAMES = ("USUM-USA-1.2",)
 
 #: Games the place-specific modes below were built against.
 _KALOS_ONLY_GAMES = ("X-USA", "Y-USA")
@@ -418,12 +428,12 @@ def methods_for(game_key: str) -> list[Method]:
                          "on screen for you to catch. No catch sequence."),
         ]
     if game is not None and game.generation == 7:
-        # Manual only, for now. Every hunt below drives the game through
-        # menus written and checked against Gen 6 -- Alola has different
-        # menus, SOS battles and no Sweet Scent hordes -- and Gen 7's
-        # addresses are real-hardware ones nobody has confirmed on
-        # Azahar yet. Watching comes before driving.
-        return [
+        # Manual mode, plus the one hunt written for Alola so far. Every
+        # hunt below drives the game through menus written and checked
+        # against Gen 6 -- Alola has different menus, SOS battles and no
+        # Sweet Scent hordes -- and Gen 7's addresses are real-hardware
+        # ones nobody has confirmed on Azahar yet.
+        methods = [
             Method("Manual control", "observe",
                    notes="Bot sends NO inputs — you play normally. The "
                          "Recently Seen tab logs wild encounters and SOS "
@@ -431,6 +441,15 @@ def methods_for(game_key: str) -> list[Method]:
                          "Gen 7 addresses are not yet confirmed on "
                          "Azahar: if nothing shows up, paste the log."),
         ]
+        if game_key in _USUM_GAMES:
+            methods.append(Method(
+                "Starters (soft reset)", "usum_starters",
+                notes="Save BEFORE choosing, with an empty party. Spams "
+                      "A and taps Left until a starter lands in your "
+                      "party; not shiny soft-resets and goes straight "
+                      "back to it. A SHINY STOPS ALL INPUT — it is in "
+                      "your party, so do not reset."))
+        return methods
     if game is not None and game.generation == 2:
         # Gen 2 gets its own manual mode. The Gen 6/7 methods below all
         # read PK6/PK7 records at 3DS addresses; a Virtual Console title

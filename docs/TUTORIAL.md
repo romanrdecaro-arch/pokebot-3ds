@@ -199,7 +199,8 @@ sweeps, 20).
 
 ## Sun / Moon / Ultra Sun / Ultra Moon
 
-Gen 7 has **one** mode for now: **Manual control**. The bot sends no
+Gen 7 has **Manual control**, and Ultra Sun / Ultra Moon also have a
+**starter soft reset** (below). In Manual control the bot sends no
 inputs. You play normally while it watches memory:
 
 - **Party strip:** your team, read from the save block.
@@ -222,6 +223,37 @@ Azahar yet. The first lines of the log say whether they line up:
 The party is found by your trainer name (`soft_reset.trainer_name` in
 config.yaml). If that does not match the game, the bot tries the name
 in the game's own trainer block instead, and says so.
+
+### Ultra Sun / Ultra Moon starters
+
+1. **SAVE before choosing**, with an **empty party**.
+2. Launcher: **Starters (soft reset)**.
+
+The loop:
+
+1. **Spam A and tap Left** (A, Left, A, Left…) until a starter lands in
+   your party.
+2. **Shiny** → the bot **stops sending input entirely**. It is in your
+   party: do not reset. Decline the nickname if asked, and save as soon
+   as the game lets you. Its `.pk7` is written to `targets/`.
+3. **Not shiny** → L+R+Start, and **straight back to A and Left**
+   through the boot, the title and the cutscene. No waiting.
+4. Repeat.
+
+There is no species check: whichever starter arrives is judged, and a
+shiny of any of the three stops the bot. Left is tapped, never held — a
+held direction would walk you in the overworld.
+
+As in every reset hunt, the bot reads no memory for the first
+`reload_read_grace` seconds (4) after each reset, because reading while
+Azahar relaunches the game crashes it. The presses carry on throughout.
+
+Three attempts in a row with no starter stop the hunt: the save is not
+just before the choice, or Azahar is not getting the presses.
+
+Tuning, all under `soft_reset:` — `press_hold` (the launcher's Press
+speed), `usum_left_every` (A presses per Left tap, 1),
+`usum_receive_timeout` (180 s).
 
 ## Soft-reset gift Pokémon (X/Y: Snorlax, Lapras)
 

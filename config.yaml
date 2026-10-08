@@ -138,6 +138,19 @@ soft_reset:
   # find a wild that turned up somewhere new sooner.
   static_full_every: 20
 
+  # --- USUM starters (mode: usum_starters) ---------------------------
+  #
+  # Save BEFORE choosing, with an empty party. Spams A and taps Left
+  # until a starter is in the party; a shiny stops ALL input, anything
+  # else is L+R+Start and straight back to it. Uses press_hold below
+  # (the launcher's Press speed) and the shared reset silences.
+  #
+  # A presses per Left tap: 1 alternates A, Left, A, Left. 0 = A only.
+  usum_left_every: 1
+  # No starter after this many seconds of pressing -> reset. Three
+  # misses in a row stop the hunt.
+  usum_receive_timeout: 180
+
   # --- Starter hunt: hold Left, press A until it lands in the party --
   #
   # Left is HELD for the whole sequence rather than tapped. A tap only

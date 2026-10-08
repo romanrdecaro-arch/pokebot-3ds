@@ -543,7 +543,18 @@ def test_the_mode_is_registered():
     assert "static_encounter" in MODES
 
 
+def launcher_modes_given_the_trainer_name() -> set[str]:
+    """The modes in the launcher's `if method.mode in (...)` guarding
+    the --trainer-name flag -- by meaning, not by the tuple's text."""
+    import re
+
+    src = (REPO / "launcher.py").read_text(encoding="utf-8")
+    m = re.search(r"if method\.mode in \(([^)]*)\):\s*\n\s*tn = "
+                  r"self\._trainer_var", src)
+    assert m, "the launcher's --trainer-name guard was not found"
+    return set(re.findall(r'"(\w+)"', m.group(1)))
+
+
 def test_the_launcher_passes_the_trainer_name():
     """The party's own keys are excluded from wild detection by OT."""
-    src = (REPO / "launcher.py").read_text(encoding="utf-8")
-    assert '("soft_reset", "gifts", "static_encounter")' in src
+    assert "static_encounter" in launcher_modes_given_the_trainer_name()

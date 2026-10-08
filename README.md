@@ -186,7 +186,7 @@ Legend: ✅ verified live · 🟡 wired, not yet user-tested · ⬜ planned
 | Rock Smash hunt (A at the rock → soft-reset per attempt) | 🟡 | —¹ | — | — |
 | Manual / observe (read-only, no inputs) | ✅ | 🟡 | 🟡² | 🟡² |
 | Live party read (Recently Seen + Party strip) | ✅ | ✅ | 🟡² | 🟡² |
-| Soft-reset (starters · gifts · legendaries) | ✅ | 🟡¹ | —² | —² |
+| Soft-reset (starters · gifts · legendaries) | ✅ | 🟡¹ | —² | 🟡² starters |
 | `.pk6` / `.pk7` export of hit targets | ✅ | ✅ | ✅ | ✅ |
 | Persistent Phase / Total / best SV / best IVs | ✅ | ✅ | ✅ | ✅ |
 | PKHeX LiveHeX bridge (box / trainer editing) | ✅ | 🟡 | ⬜³ | ⬜³ |
@@ -194,7 +194,8 @@ Legend: ✅ verified live · 🟡 wired, not yet user-tested · ⬜ planned
 ¹ OR/AS shares X/Y's `WildOffset1 = 0x08800000`, confirmed on a
 live Omega Ruby run (a wild Reshiram found at `0x08803F50`). By
 request OR/AS offers one mode, the static-encounter soft reset: spam
-A → shiny stops all input, anything else resets. ² S/M and US/UM offer Manual mode only for now. The
+A → shiny stops all input, anything else resets. ² S/M and US/UM offer Manual mode, and US/UM a starter
+soft reset (spam A + tap Left → shiny stops all input). The
 party is read from the save block (PKHeX-Plugins' trainer block +
 `0xCC`), wilds and SOS allies from windows over PKMN-NTR's
 `WildOffset1-4`. Real-hardware addresses, not yet confirmed on

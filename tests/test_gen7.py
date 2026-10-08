@@ -373,8 +373,10 @@ def test_gen6_targets_stay_pk6():
 # Registry
 # ----------------------------------------------------------------------
 @pytest.mark.parametrize("key", GEN7)
-def test_gen7_offers_manual_mode_only(key):
-    assert [m.mode for m in games.methods_for(key)] == ["observe"]
+def test_gen7_offers_manual_mode_and_no_gen6_hunt(key):
+    modes = [m.mode for m in games.methods_for(key)]
+    assert modes[0] == "observe"
+    assert set(modes) <= {"observe", "usum_starters"}
 
 
 def test_gen6_menus_are_unchanged():
