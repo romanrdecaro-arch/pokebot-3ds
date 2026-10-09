@@ -96,6 +96,22 @@ class Game:
         self.resets: list[float] = []
         self.arrivals: list[float] = []
         self.answered = 0
+        #: Crash Azahar on this reset (1-based): its window is gone,
+        #: and every tap returns "none" until it is relaunched.
+        self.crash_on_reset = None
+        self.crashed = False
+        self.taps_into_nothing = 0
+
+    def relaunch(self):
+        """What a fresh Azahar on the ROM looks like: a cold boot."""
+        now = clock()
+        self.crashed = False
+        self.booted_at = now + self.boot
+        self.received = self.receive_at = self.prompt_at = None
+        self.stepped = False
+        self.presses = 0
+        for addr in SLOTS.values():
+            self.mem.pop(addr, None)
 
     def _tick(self, now):
         if self.clear_at is not None and now >= self.clear_at:
@@ -114,6 +130,9 @@ class Game:
     # -- controller -----------------------------------------------------
     def tap(self, button, hold_s=0.05):
         now = clock()
+        if self.crashed:
+            self.taps_into_nothing += 1
+            return "none"
         self._tick(now)
         self.inputs.append((now, button, hold_s))
         booted = now >= self.booted_at
@@ -140,6 +159,8 @@ class Game:
         now = clock()
         self.inputs.append((now, "RESET", hold_s))
         self.resets.append(now)
+        if self.crash_on_reset == len(self.resets):
+            self.crashed = True
         self.booted_at = now + self.boot
         self.received = self.receive_at = self.prompt_at = None
         self.stepped = False
@@ -221,6 +242,9 @@ def wired(monkeypatch):
     monkeypatch.setattr(us, "save_target_pk6",
                         lambda ctx, a, p, lbl: saved.append(p.species))
     monkeypatch.setattr(sr, "focus_azahar", lambda: None)
+    # No test may look for, or relaunch, the real emulator.
+    monkeypatch.setattr(us.Recovery, "for_hunt",
+                        classmethod(lambda cls, ctx: None))
 
     import pokebot.modes.catch as catch_mod
 
@@ -410,6 +434,106 @@ def test_a_record_without_the_players_ot_is_never_the_starter():
                                           party=True, level=5)
         watch._next_scan = 0.0
         assert watch.check(time.monotonic()) is None, f"OT {ot!r} counted"
+
+
+# ----------------------------------------------------------------------
+# Azahar crashing in its own relaunch (~1 in 650-900 resets)
+# ----------------------------------------------------------------------
+class FakeRecovery:
+    def __init__(self, game, ok=True, dialog_on_miss=False):
+        self.game, self.ok, self.revives = game, ok, 0
+        self.dialog_on_miss = dialog_on_miss
+        self.dismissed = 0
+
+    def dismiss_dialogs(self):
+        if self.dialog_on_miss and not self.dismissed:
+            self.dismissed += 1
+            return ["Update Available"]
+        return []
+
+    def revive(self, ctx):
+        self.revives += 1
+        if self.ok:
+            self.game.relaunch()
+        return self.ok
+
+
+def with_recovery(monkeypatch, recovery):
+    monkeypatch.setattr(us.Recovery, "for_hunt",
+                        classmethod(lambda cls, ctx: recovery))
+
+
+def test_a_crash_is_survived_and_the_hunt_goes_on(wired, monkeypatch):
+    game = Game([Starter(), Starter(), Starter(shiny=True)])
+    game.crash_on_reset = 1
+    rec = FakeRecovery(game)
+    with_recovery(monkeypatch, rec)
+    ctx = Ctx(game)
+    run(ctx)
+
+    assert rec.revives == 1
+    assert "target_hit" in ctx.kinds(), "the hunt did not carry on"
+    assert game.taps_into_nothing == 1, (
+        f"{game.taps_into_nothing} taps into a dead emulator; the first "
+        f"one is the probe that notices")
+
+
+def test_the_relaunch_is_the_reset(wired, monkeypatch):
+    """A cold boot already puts the game back at the save; sending
+    L+R+Start on top of it would only cost another relaunch."""
+    game = Game([Starter(), Starter(shiny=True)])
+    game.crash_on_reset = 1
+    with_recovery(monkeypatch, FakeRecovery(game))
+    run(Ctx(game))
+    assert len(game.resets) == 1, "reset again straight after relaunching"
+
+
+def test_with_no_recovery_a_crash_stops_the_hunt_at_once(wired):
+    """Not three 180 s timeouts of pressing into nothing."""
+    game = Game([Starter(), Starter(shiny=True)])
+    game.crash_on_reset = 1
+    ctx = Ctx(game, cfg={**FAST, "usum_receive_timeout": 60.0})
+    t0 = time.monotonic()
+    run(ctx)
+
+    assert time.monotonic() - t0 < 5.0
+    assert ("read_failure", "Azahar crashed") in [
+        (k, kw.get("reason")) for k, kw in ctx.events]
+    assert game.taps_into_nothing == 1
+
+
+def test_a_dialog_found_on_a_miss_is_answered_not_counted(wired,
+                                                          monkeypatch):
+    """A blocked window looks exactly like "no starter came". A miss
+    that turned out to be a dialog must not count towards stopping:
+    here a real miss follows it, and two counted misses would end the
+    hunt before the shiny on the third attempt."""
+    game = Game([Starter(shiny=True)], presses=10 ** 9)
+    rec = FakeRecovery(game, dialog_on_miss=True)
+    with_recovery(monkeypatch, rec)
+    real = game.soft_reset
+
+    def soft_reset(hold_s=0.5):
+        real(hold_s)
+        if len(game.resets) == 2:
+            game.presses_needed = 2           # the third attempt works
+
+    game.soft_reset = soft_reset                   # type: ignore
+    ctx = Ctx(game, cfg={**FAST, "usum_receive_timeout": 1.0,
+                         "usum_max_misses": 2})
+    run(ctx)
+    assert rec.dismissed == 1
+    assert "target_hit" in ctx.kinds(), "the dialog's miss was counted"
+
+
+def test_a_relaunch_that_fails_stops_the_hunt(wired, monkeypatch):
+    game = Game([Starter(), Starter(shiny=True)])
+    game.crash_on_reset = 1
+    rec = FakeRecovery(game, ok=False)
+    with_recovery(monkeypatch, rec)
+    ctx = Ctx(game)
+    run(ctx)
+    assert rec.revives == 1 and "target_hit" not in ctx.kinds()
 
 
 # ----------------------------------------------------------------------

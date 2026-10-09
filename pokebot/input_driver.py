@@ -163,6 +163,8 @@ class InputDriver:
         if sys.platform.startswith("win"):
             if self._send_via_postmessage(button, hold_s):
                 return "postmessage"
+            if self._target_missing():
+                return "none"
 
         # Path B: pynput global keyboard. Requires Azahar to be focused.
         if self._kb is None:
@@ -201,6 +203,38 @@ class InputDriver:
             self._azahar_hwnd = 0
         return ok
 
+    def _target_missing(self) -> bool:
+        """Windows: is there no Azahar window at all?
+
+        Then there is nothing for the keys to reach, and every pynput
+        fallback below sends them to whatever window IS focused instead.
+        That is not hypothetical: when Azahar crashed mid-hunt, the bot
+        typed L+R+Start and a stream of A and Left into the desktop for
+        nine minutes until its timeouts ran out. With no target, press
+        nothing -- the caller sees "none" and can act on it.
+
+        The pynput fallback stays for what it was written for: a window
+        that exists but will not take posted messages.
+        """
+        if not sys.platform.startswith("win"):
+            return False
+        try:
+            from .platform_utils import find_azahar_hwnd
+            self._azahar_hwnd = find_azahar_hwnd() or 0
+        except Exception:
+            return False
+        if self._azahar_hwnd:
+            return False
+        if not self._postmsg_warned:
+            log.warning("No Azahar window -- pressing NOTHING rather than "
+                        "typing into whatever window has focus.")
+            self._postmsg_warned = True
+        return True
+
+    def target_alive(self) -> bool:
+        """True while there is an Azahar window to send keys to."""
+        return not self._target_missing()
+
     def diagnose(self) -> dict:
         """One-shot snapshot of where keystrokes will be sent. Useful for
         logging at mode startup so the user can tell why their keys
@@ -234,11 +268,6 @@ class InputDriver:
         if not self._azahar_hwnd:
             self._azahar_hwnd = find_azahar_hwnd() or 0
         if not self._azahar_hwnd:
-            if not self._postmsg_warned:
-                log.warning("PostMessage path: no Azahar window found; "
-                            "falling back to pynput (Azahar must be "
-                            "focused for keys to land).")
-                self._postmsg_warned = True
             return False
         ok = post_key_to_window(self._azahar_hwnd, vk, hold_s)
         if not ok:
@@ -280,6 +309,8 @@ class InputDriver:
                 pass
 
         # pynput fallback — needs Azahar focused.
+        if self._target_missing():
+            return "none"
         if self._kb is None:
             # Last resort: at least move (walk) so the bot isn't stuck.
             return self.tap(direction, hold_s=hold_s)
@@ -380,7 +411,7 @@ class InputDriver:
                 self._held_vks.add(vk)
                 return True
             self._azahar_hwnd = 0        # stale handle; retry next time
-        if self._kb is None:
+        if self._target_missing() or self._kb is None:
             return False
         self._press(self._key_for(button))
         return True
@@ -461,7 +492,10 @@ class InputDriver:
                 log.warning(f"  {what} PostMessage failed ({e}); "
                             f"falling back to pynput.")
         # pynput fallback (needs focus; may crash on Python 3.14 —
-        # the PostMessage path above is the primary route).
+        # the PostMessage path above is the primary route). Never with
+        # no Azahar at all: L+R+Start would land on the focused window.
+        if self._target_missing():
+            return
         self.combo(*buttons, hold_s=hold_s)
 
     def soft_reset(self, hold_s: float = 0.5):

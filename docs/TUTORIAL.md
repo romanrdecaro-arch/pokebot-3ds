@@ -258,6 +258,15 @@ Azahar relaunches the game crashes it. The presses carry on throughout.
 Three attempts in a row with no starter stop the hunt: the save is not
 just before the choice, or Azahar is not getting the presses.
 
+**If Azahar crashes**, the hunt brings it back. Azahar 2125.1.1 dies
+inside its own soft-reset relaunch about once every 650–900 resets — a
+bug in its OpenGL renderer, not anything the bot sends. The hunt notices
+within a press, sends **nothing** while Azahar is gone (it used to fall
+back to typing into whatever window had focus), relaunches Azahar on the
+same ROM, clicks **Ignore** on the "Update Available" dialog a fresh
+Azahar opens, and carries on — about 35 seconds lost. It gives up after
+5 crashes in an hour. Settings: the `azahar:` block in config.yaml.
+
 Tuning, all under `soft_reset:` — `press_hold` (the launcher's Press
 speed), `usum_left_every` (A presses per Left tap, 1), `usum_left_hold`
 (0.1 s), `usum_receive_timeout` (180 s).

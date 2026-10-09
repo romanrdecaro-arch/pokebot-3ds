@@ -46,6 +46,7 @@ import logging
 import time
 from dataclasses import dataclass
 
+from ..azahar_recover import AzaharGone, Recovery
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir, save_target_pk6
 from .observe import (_PARTY_HINT_SPAN, _scan_owned, broadcast_party,
@@ -215,7 +216,12 @@ def mash_until_starter(ctx, plan: StarterPlan, watch: StarterWatch,
             if hit is not None:
                 return Received(hit[0], hit[1], presses, now)
         btn = plan.button(presses)
-        _note_path(ctx, ctx.input.tap(btn, hold_s=plan.hold(btn)))
+        path = ctx.input.tap(btn, hold_s=plan.hold(btn))
+        _note_path(ctx, path)
+        if path == "none":
+            # No Azahar window to press into: it crashed. Waiting out
+            # the timeout would only burn three minutes per attempt.
+            raise AzaharGone()
         presses += 1
     return None
 
@@ -240,6 +246,8 @@ def run(ctx) -> None:
     watch = _start(ctx, cfg, plan)
     if watch is None:
         return
+    # Worked out now, while Azahar is alive to say where it lives.
+    recovery = Recovery.for_hunt(ctx)
 
     attempt = misses = 0
     reset_at = reads_from = 0.0      # nothing reset yet: reading is safe
@@ -247,12 +255,22 @@ def run(ctx) -> None:
         attempt += 1
         log.info(f"USUM starter attempt #{attempt}")
         ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
-        got = mash_until_starter(ctx, plan, watch, reads_from)
+        try:
+            got = mash_until_starter(ctx, plan, watch, reads_from)
+        except AzaharGone:
+            nxt = _recover(ctx, plan, recovery, attempt)
+            if nxt is None:
+                return
+            # The fresh boot IS the reset: no L+R+Start on top of it.
+            reset_at, reads_from = nxt
+            continue
         if ctx.should_stop():
             return
         if got is None:
             misses += 1
-            if _missed(ctx, plan, attempt, misses):
+            if recovery is not None and recovery.dismiss_dialogs():
+                misses = 0               # it was the dialog, not the save
+            elif _missed(ctx, plan, attempt, misses):
                 return
         else:
             misses = 0
@@ -321,6 +339,23 @@ def _missed(ctx, plan: StarterPlan, attempt: int, misses: int) -> bool:
     log.warning(f"  attempt {attempt}: no starter in "
                 f"{plan.receive_timeout:.0f}s. Resetting.")
     return False
+
+
+def _recover(ctx, plan: StarterPlan, recovery, attempt: int):
+    """Azahar is gone. Relaunch it, or stop; never press into nothing.
+
+    Returns ``(reset_at, reads_from)`` like a reset, or None to stop.
+    """
+    log.error(f"  attempt {attempt}: Azahar is GONE — it crashed. Nothing "
+              f"more is being pressed.")
+    ctx.dashboard.broadcast("read_failure", attempt=attempt,
+                            reason="Azahar crashed")
+    if recovery is None or not recovery.revive(ctx):
+        log.error("  stopping the hunt: Azahar could not be brought back.")
+        ctx.request_stop("Azahar crashed")
+        return None
+    now = time.monotonic()
+    return now, now + plan.reload_grace
 
 
 def _stop_on(ctx, got: Received, attempt: int) -> None:

@@ -39,6 +39,25 @@ input:
     DpadLeft: f
     DpadRight: h
 
+# Azahar crash recovery (the USUM starter hunt).
+#
+# Azahar 2125.1.1 crashes inside its own L+R+Start relaunch about once
+# every 650-900 resets -- its OpenGL paint reads the GPU it is tearing
+# down. Nothing the bot does causes it. A reset hunt's save is its
+# starting point, so relaunching Azahar on the same ROM is just a slow
+# soft reset: the hunt relaunches it, answers the "Update Available"
+# dialog a fresh Azahar opens (Ignore -- while it is up, every key is
+# dropped), re-attaches and carries on.
+azahar:
+  restart_on_crash: true
+  # Empty = found automatically: the exe from the Azahar running when
+  # the hunt starts, the ROM from Azahar's recent files for that game.
+  exe: ""
+  rom: ""
+  # Stop instead of relaunching past this many crashes in the window.
+  max_restarts: 5
+  restart_window_minutes: 60
+
 # Mode-specific options
 soft_reset:
   read_slot: 0           # which party slot the gift Pokemon lands in
