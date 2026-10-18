@@ -187,6 +187,9 @@ soft_reset:
   # So you get the starter at the held end of the row. Set this to
   # CircleLeft if the title acts on the Circle Pad, DpadRight for the
   # other end, or leave it empty ("") for no hold at all.
+  # X/Y with a starter set: the hold walks you to the table and is let
+  # go when the selection screen comes up (read from RAM); the bot then
+  # moves the cursor to that starter itself.
   hold_button: DpadLeft
   #
   # Save in front of the starter table with an EMPTY party.

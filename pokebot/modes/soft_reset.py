@@ -32,6 +32,11 @@ So the starter taken is the one at the held end of the row, and the
 Set ``soft_reset.hold_button`` to CircleLeft if the title acts on the
 Circle Pad, DpadRight for the other end, or "" for no hold at all.
 
+X/Y are the exception: their selection screen is read from RAM
+(pokebot/xy_starter_screen.py). With ``starter`` set, the hold still
+walks the player to the table, and when the screen comes up the bot
+lets go, stops pressing A, and moves the cursor to that starter.
+
 config.yaml soft_reset.trainer_name MUST match your in-game OT (it's
 how the party is found). Defaults to games.DEFAULT_OT_NAME.
 """
@@ -40,10 +45,12 @@ from __future__ import annotations
 import logging
 import time
 
+from ..citra_rpc import RPCError
 from ..games import (DEFAULT_OT_NAME, starter_species, starter_spot,
                      starters_for)
 from ..pk6_export import ensure_targets_dir, save_target_pk6
 from ..platform_utils import focus_azahar
+from ..xy_starter_screen import LOADING, STARTER_INDEX, focused_starter
 from .observe import (get_party, broadcast_party, quick_get_party,
                        scan_nonparty, _report_encounter)
 
@@ -76,6 +83,13 @@ _DETECT_EVERY_S = 0.15
 #: Set soft_reset.hold_button to "CircleLeft" if the title acts on the
 #: Circle Pad instead, or to "" for no hold at all.
 _HOLD_BUTTON = "DpadLeft"
+
+#: X/Y: pause after a cursor tap so the focus has moved before it is read
+#: again, or the bot taps twice and overshoots.
+_CURSOR_SETTLE_S = 0.25
+#: X/Y: how long the selection screen may stay up with an unreadable
+#: cursor before the bot gives up steering and presses A blind.
+_SCREEN_READ_TIMEOUT_S = 5.0
 
 #: Seconds of NO memory reads before the reset combo is sent.
 #:
@@ -219,7 +233,8 @@ def _warn_if_hotkey(button: str) -> None:
 
 def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
                            detect_cb, detect_every: float = _DETECT_EVERY_S,
-                           hold_button: str = _HOLD_BUTTON) -> bool:
+                           hold_button: str = _HOLD_BUTTON,
+                           starter_index=None) -> bool:
     """Hold Left and press A until something lands in the party.
 
     Replaces the old fixed, hand-timed sequence — 1x DpadLeft, 25x A,
@@ -240,11 +255,18 @@ def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
     what keeps the spam out of the nickname prompt, which comes AFTER
     the mon is added to the party — so detecting it promptly means the
     presses stop before the prompt matters.
+
+    ``starter_index`` (X/Y) steers the selection screen from RAM instead:
+    the hold is let go when the screen comes up, no A while it loads,
+    then Left/Right until the focused starter is the wanted one, then A
+    as before.
     """
     deadline = time.monotonic() + timeout
     started = time.monotonic()
     next_check = 0.0
     presses = 0
+    steered = False             # the cursor has been read this attempt
+    blind_after = None
     if hold_button:
         if ctx.input.hold(hold_button):
             log.info(f"  holding {hold_button} for the whole sequence")
@@ -262,7 +284,36 @@ def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
                              f"({presses / max(elapsed, 1e-9):.0f}/s, "
                              f"{elapsed:.1f}s)")
                     return True
-            _note_path(ctx, ctx.input.tap("A", hold_s=hold))
+            button = "A"
+            if starter_index is not None:
+                try:
+                    at = focused_starter(ctx.rpc)
+                except (RPCError, OSError):
+                    at = None           # one dropped read; the next press re-reads
+                if at is not None and hold_button:
+                    # the hold walked us to the table; now it would push the cursor
+                    ctx.input.release(hold_button)
+                    hold_button = ""
+                if at == LOADING and not steered:
+                    blind_after = blind_after or now + _SCREEN_READ_TIMEOUT_S
+                    if now < blind_after:
+                        # an A now would take whichever starter is focused
+                        ctx._stop_evt.wait(0.03)
+                        continue
+                    log.error("  the starter screen is up but its cursor "
+                              "cannot be read; pressing A blind")
+                    steered = True
+                elif at is not None and at != LOADING:
+                    if not steered:
+                        log.info(f"  starter screen up, focus {at}, "
+                                 f"steering to {starter_index}")
+                        steered = True
+                    if at != starter_index:
+                        button = "DpadRight" if at < starter_index else "DpadLeft"
+            _note_path(ctx, ctx.input.tap(button, hold_s=hold))
+            if button != "A":
+                ctx._stop_evt.wait(_CURSOR_SETTLE_S)
+                continue
             presses += 1
             if gap:
                 ctx._stop_evt.wait(gap)
@@ -776,6 +827,13 @@ def _run_starters(ctx, cfg):
     reload_grace = float(cfg.get("reload_read_grace", _RELOAD_READ_GRACE_S))
     pre_reset_quiet = float(cfg.get("pre_reset_quiet", _PRE_RESET_QUIET_S))
     hold_button = str(cfg.get("hold_button", _HOLD_BUTTON) or "")
+    # X/Y steer their selection screen from RAM. The hold still walks the
+    # player to the table and is let go when the screen comes up.
+    starter_index = (STARTER_INDEX.get(str(cfg.get("starter") or "").lower())
+                     if ctx.game.key in ("X-USA", "Y-USA") else None)
+    if starter_index is not None:
+        for button in ("DpadLeft", "DpadRight"):
+            _warn_if_hotkey(button)
     if hold_button:
         from ..input_driver import BUTTON_NAMES
         if hold_button not in BUTTON_NAMES:
@@ -826,13 +884,19 @@ def _run_starters(ctx, cfg):
             log.warning(f"  unknown starter {starter_name!r} for "
                         f"{ctx.game.key}; known: "
                         f"{list(all_starters)}")
-    if hold_button:
+    if hold_button and starter_index is not None:
+        log.info(f"  {hold_button} is held until the selection screen comes "
+                 f"up, then let go.")
+    elif hold_button:
         log.info(f"  {hold_button} is HELD for the whole sequence, so the "
                  f"starter taken is the one at that end of the row.")
-    if starter_id is None:
+    if starter_index is not None:
+        log.info("  The starter is picked on the selection screen, read "
+                 "from RAM.")
+    elif starter_id is None:
         log.info("  No starter configured — whatever arrives is evaluated, "
                  "and the species can be changed in PKHeX afterwards.")
-    else:
+    elif not hold_button:
         log.info("  No directional hold: whichever starter is under the "
                  "default cursor is the one taken.")
     log.info("  Stopping on: " + ("the configured target filter"
@@ -892,7 +956,8 @@ def _run_starters(ctx, cfg):
         # mashing A deep into the nickname keyboard.
         if not _spam_a_until_received(ctx, press_hold, press_gap,
                                       receive_timeout, _party_has_mon,
-                                      detect_every, hold_button):
+                                      detect_every, hold_button,
+                                      starter_index):
             if ctx.should_stop():
                 return
             log.error(f"  nothing reached the party in "

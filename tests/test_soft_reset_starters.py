@@ -114,6 +114,7 @@ class FakeCtx:
         self.stop_reason = None
         self.target = FakeTarget()
         self.config = {"soft_reset": cfg or {}}
+        self.rpc = None
 
     def should_stop(self):
         return self._stop_evt.is_set()
@@ -174,6 +175,11 @@ class World:
         self.boot_s = boot_s
         self.boot_until = 0.0
 
+    def screen(self):
+        """X/Y selection screen as focused_starter reports it: never up
+        in this world."""
+        return None
+
     def press(self, button):
         if button == "A":
             self.presses += 1
@@ -212,6 +218,7 @@ def _wire(monkeypatch, world, ctx):
         return list(world.party)
 
     monkeypatch.setattr(sr, "quick_get_party", _quick)
+    monkeypatch.setattr(sr, "focused_starter", lambda rpc: world.screen())
     monkeypatch.setattr(sr, "get_party",
                         lambda c, b, s, ot, contiguous=True: list(world.party))
     monkeypatch.setattr(sr, "broadcast_party", lambda c, p: None)
@@ -1143,3 +1150,103 @@ def test_a_shiny_with_no_filter_is_labelled_shiny(monkeypatch):
 
     hits = [p for k, p in ctx.dashboard.sent if k == "target_hit"]
     assert hits and hits[0]["reason"] == "SHINY", hits
+
+
+# --------------------------------------------------------------------
+# X/Y: the selection screen is read from RAM and steered
+# --------------------------------------------------------------------
+
+class SelectionWorld(World):
+    """X/Y: the selection screen comes up after a few A presses, its
+    cursor unreadable for a few reads, then it moves with Left/Right
+    (clamped at the ends) and A takes the focused starter."""
+
+    SPECIES = (650, 653, 656)
+
+    def __init__(self, screen_after=3, loading_reads=3, cursor=0, **kw):
+        super().__init__(presses_to_receive=10 ** 9, shiny=True, **kw)
+        self.screen_after = screen_after
+        self.loading_left = loading_reads
+        self.cursor = cursor
+        self.up = False
+        self.a_while_loading = 0
+
+    def screen(self):
+        if not self.up:
+            return None
+        if self.loading_left > 0:
+            self.loading_left -= 1
+            return sr.LOADING
+        return self.cursor
+
+    def press(self, button):
+        if self.party:
+            return
+        if not self.up:
+            if button == "A":
+                self.presses += 1
+                self.up = self.presses >= self.screen_after
+            return
+        if button == "DpadRight":
+            self.cursor = min(self.cursor + 1, 2)
+        elif button == "DpadLeft":
+            self.cursor = max(self.cursor - 1, 0)
+        elif button == "A":
+            self.a_while_loading += self.loading_left > 0
+            self.party = [FakePkm(self.SPECIES[self.cursor], self.shiny)]
+            self.up = False
+
+
+def _steer(monkeypatch, world, starter):
+    monkeypatch.setattr(sr, "_CURSOR_SETTLE_S", 0.0)
+    return _run(world, monkeypatch, starter=starter)
+
+
+def test_xy_steers_right_to_the_middle_starter(monkeypatch):
+    world = SelectionWorld(cursor=0)
+    ctx = _steer(monkeypatch, world, "fennekin")
+    assert world.party[0].species == 653
+    assert ctx.input.events.count("DpadRight") == 1
+    assert ctx.stop_reason and "wrong" not in ctx.stop_reason
+
+
+def test_xy_steers_left(monkeypatch):
+    world = SelectionWorld(cursor=2)
+    ctx = _steer(monkeypatch, world, "chespin")
+    assert world.party[0].species == 650
+    assert ctx.input.events.count("DpadLeft") == 2
+
+
+def test_xy_takes_the_focused_starter_without_moving(monkeypatch):
+    world = SelectionWorld(cursor=2)
+    ctx = _steer(monkeypatch, world, "froakie")
+    assert world.party[0].species == 656
+    assert not [e for e in ctx.input.events if e.startswith("Dpad")]
+
+
+def test_xy_never_presses_a_while_the_screen_is_coming_up(monkeypatch):
+    world = SelectionWorld(loading_reads=5, cursor=1)
+    _steer(monkeypatch, world, "froakie")
+    assert world.a_while_loading == 0
+    assert world.party[0].species == 656
+
+
+def test_xy_lets_go_of_the_hold_before_steering(monkeypatch):
+    """The held Left walks the player to the table; still held on the
+    selection screen it would push the cursor back to Chespin."""
+    world = SelectionWorld(cursor=0)
+    ctx = _steer(monkeypatch, world, "froakie")
+    ev = ctx.input.events
+    assert ev.index("HOLD:DpadLeft") < ev.index("A")
+    assert ev.index("RELEASE:DpadLeft") < ev.index("DpadRight")
+    assert world.party[0].species == 656
+
+
+def test_xy_presses_a_blind_when_the_cursor_never_reads(monkeypatch):
+    """Wrong offsets (another revision) must not stall the hunt: after
+    the timeout it takes whatever is focused and the species check
+    reports it."""
+    monkeypatch.setattr(sr, "_SCREEN_READ_TIMEOUT_S", 0.05)
+    world = SelectionWorld(loading_reads=10 ** 9, cursor=0)
+    _steer(monkeypatch, world, "fennekin")
+    assert world.party and world.party[0].species == 650
