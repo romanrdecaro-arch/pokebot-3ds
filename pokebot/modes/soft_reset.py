@@ -84,9 +84,10 @@ _DETECT_EVERY_S = 0.15
 #: Circle Pad instead, or to "" for no hold at all.
 _HOLD_BUTTON = "DpadLeft"
 
-#: X/Y: pause after a cursor tap so the focus has moved before it is read
-#: again, or the bot taps twice and overshoots.
-_CURSOR_SETTLE_S = 0.25
+#: X/Y: longest wait for the focus to move after a cursor tap. The wait
+#: ends as soon as it moves, so it fits any emulator speed; re-reading
+#: before the move lands would tap twice and overshoot.
+_CURSOR_SETTLE_S = 1.0
 #: X/Y: how long the selection screen may stay up with an unreadable
 #: cursor before the bot gives up steering and presses A blind.
 _SCREEN_READ_TIMEOUT_S = 5.0
@@ -231,6 +232,19 @@ def _warn_if_hotkey(button: str) -> None:
         log.debug(f"hotkey check skipped: {exc}")
 
 
+def _wait_for_cursor_move(ctx, was: int) -> None:
+    """Return once the X/Y focus is off ``was``, or after _CURSOR_SETTLE_S
+    (a tap the screen did not take yet)."""
+    until = time.monotonic() + _CURSOR_SETTLE_S
+    while time.monotonic() < until and not ctx.should_stop():
+        try:
+            if focused_starter(ctx.rpc) != was:
+                return
+        except (RPCError, OSError):
+            pass
+        ctx._stop_evt.wait(0.01)
+
+
 def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
                            detect_cb, detect_every: float = _DETECT_EVERY_S,
                            hold_button: str = _HOLD_BUTTON,
@@ -312,7 +326,7 @@ def _spam_a_until_received(ctx, hold: float, gap: float, timeout: float,
                         button = "DpadRight" if at < starter_index else "DpadLeft"
             _note_path(ctx, ctx.input.tap(button, hold_s=hold))
             if button != "A":
-                ctx._stop_evt.wait(_CURSOR_SETTLE_S)
+                _wait_for_cursor_move(ctx, at)
                 continue
             presses += 1
             if gap:

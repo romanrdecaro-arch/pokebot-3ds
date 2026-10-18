@@ -1163,13 +1163,24 @@ class SelectionWorld(World):
 
     SPECIES = (650, 653, 656)
 
-    def __init__(self, screen_after=3, loading_reads=3, cursor=0, **kw):
+    def __init__(self, screen_after=3, loading_reads=3, cursor=0,
+                 lag_reads=0, **kw):
         super().__init__(presses_to_receive=10 ** 9, shiny=True, **kw)
         self.screen_after = screen_after
         self.loading_left = loading_reads
         self.cursor = cursor
         self.up = False
         self.a_while_loading = 0
+        #: A slow emulator: a tap shows in RAM only this many reads later.
+        self.lag_reads = lag_reads
+        self.pending = []           # [delta, reads left] per unseen tap
+
+    def _settle(self, reads_pass):
+        for move in self.pending:
+            move[1] -= reads_pass
+        for delta, left in [m for m in self.pending if m[1] <= 0]:
+            self.cursor = min(max(self.cursor + delta, 0), 2)
+        self.pending = [m for m in self.pending if m[1] > 0]
 
     def screen(self):
         if not self.up:
@@ -1177,6 +1188,7 @@ class SelectionWorld(World):
         if self.loading_left > 0:
             self.loading_left -= 1
             return sr.LOADING
+        self._settle(1)
         return self.cursor
 
     def press(self, button):
@@ -1187,11 +1199,12 @@ class SelectionWorld(World):
                 self.presses += 1
                 self.up = self.presses >= self.screen_after
             return
-        if button == "DpadRight":
-            self.cursor = min(self.cursor + 1, 2)
-        elif button == "DpadLeft":
-            self.cursor = max(self.cursor - 1, 0)
+        if button in ("DpadRight", "DpadLeft"):
+            self.pending.append([1 if button == "DpadRight" else -1,
+                                 self.lag_reads])
+            self._settle(0)
         elif button == "A":
+            self._settle(10 ** 9)   # the game takes inputs in order
             self.a_while_loading += self.loading_left > 0
             self.party = [FakePkm(self.SPECIES[self.cursor], self.shiny)]
             self.up = False
@@ -1250,3 +1263,13 @@ def test_xy_presses_a_blind_when_the_cursor_never_reads(monkeypatch):
     world = SelectionWorld(loading_reads=10 ** 9, cursor=0)
     _steer(monkeypatch, world, "fennekin")
     assert world.party and world.party[0].species == 650
+
+
+def test_xy_waits_for_a_slow_cursor_instead_of_tapping_twice(monkeypatch):
+    """At low emulator speed the move lands in RAM a while after the tap.
+    Re-reading too soon used to tap again, and the second Right landed
+    after the A: Froakie instead of Fennekin."""
+    world = SelectionWorld(cursor=0, lag_reads=5)
+    ctx = _run(world, monkeypatch, starter="fennekin")
+    assert ctx.input.events.count("DpadRight") == 1
+    assert world.party[0].species == 653
