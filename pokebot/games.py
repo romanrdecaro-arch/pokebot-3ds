@@ -411,11 +411,8 @@ def methods_for(game_key: str) -> list[Method]:
     up wild encounters and any Pokémon added to the party (gifts,
     starters, hatched eggs).
 
-    "Debug — find offsets" runs a one-shot brute-force scan to
-    discover party_base and cache the trainer-name anchor offset.
-    Run this once after a fresh save (with at least one Pokémon in
-    slot 0) so subsequent Starters / Manual runs can use the fast
-    anchor path.
+    The offset finder (debug mode) is not offered: hunts locate the
+    party by content, so it is only for ``run.py --mode debug``.
 
     Generation 2 (Virtual Console) games get an EMPTY list. Every mode
     below reads PK6/PK7 records over Azahar's RPC at 3DS addresses,
@@ -556,12 +553,6 @@ def methods_for(game_key: str) -> list[Method]:
                      "Random-encounter ones unchanged. Needs a party "
                      "member that knows Sweet Scent and a horde-enabled "
                      "route (Route 5+; routes 1-3 have no horde table)."),
-        Method("Debug — find offsets", "debug",
-               notes="One-shot offset bootstrap. Sends NO inputs. "
-                     "Brute-force scans memory for party_base, then "
-                     "caches the trainer-name anchor offset to "
-                     "config.yaml. Run once with a Pokémon in slot 0; "
-                     "after that the bot uses the fast anchor path."),
     ]
 
     # Noibat is the one mode written against a specific PLACE: its

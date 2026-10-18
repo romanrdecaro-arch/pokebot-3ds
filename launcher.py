@@ -1448,7 +1448,6 @@ class _App(tk.Tk):
         self._exit_q: "queue.Queue" = queue.Queue()
         self._cfg = _load_config()
         self._bot = _BotProcess(self._on_bot_line, self._on_bot_exit)
-        self._offset_proc: subprocess.Popen | None = None
         self._poll_alive = True
         self._last_detected_game: str | None = None
 
@@ -1972,12 +1971,6 @@ class _App(tk.Tk):
         self._dry_var = tk.BooleanVar(value=False)
         self._verb_var = tk.BooleanVar(value=False)
 
-        # Hidden manual-override scan button (CLI fallback only — not
-        # surfaced in the UI; kept so the existing _run_find_offsets
-        # plumbing still has a target widget.)
-        self._scan_btn = tk.Button(p, command=self._run_find_offsets)
-        self._offset_lbl = tk.Label(p)
-
     def _build_sticky_actions(self, parent):
         """Always-visible Start/Stop bar at the top of the sidebar."""
         bar = tk.Frame(parent, bg=_PANEL, padx=12, pady=12)
@@ -2168,7 +2161,6 @@ class _App(tk.Tk):
     # ---- Game / method helpers --------------------------------------------
 
     def _on_game_change(self, *_):
-        self._refresh_offset_status()
         self._refresh_method_options()
 
     def _current_methods(self):
@@ -2452,13 +2444,6 @@ class _App(tk.Tk):
 
     # ---- Offset status helper (no-op stub; kept so callers don't break) ----
 
-    def _refresh_offset_status(self, *_):
-        # The visual offset-status label was removed when auto-discovery
-        # was added — the bot now logs its own offset state. This stub
-        # keeps existing callers (game-change trace, post-scan reload)
-        # working without blowing up.
-        return
-
     # ---- Actions -----------------------------------------------------------
 
     _TARGET_FILTER_FLAG = {
@@ -2623,62 +2608,6 @@ class _App(tk.Tk):
     def _stop_bot(self):
         self._log("Stopping bot...", "warn")
         self._bot.stop()
-
-    def _run_find_offsets(self):
-        if self._bot.running:
-            messagebox.showwarning(
-                "Bot running",
-                "Stop the bot before scanning for offsets.")
-            return
-        if self._offset_proc and self._offset_proc.poll() is None:
-            messagebox.showinfo("Already scanning",
-                                "Offset scan is already running.")
-            return
-        self._log("Starting offset scan (this may take several minutes)...",
-                  "accent")
-        self._log("Keep Azahar open with your game on the overworld.", "muted")
-        self._scan_btn.config(state="disabled")
-        cfg_path = ROOT / "config.yaml"
-        # Pass --save-config so find_offsets writes the discovered values
-        # straight into config.yaml. The user never has to edit YAML.
-        self._offset_proc = subprocess.Popen(
-            [sys.executable, "-m", "pokebot.find_offsets",
-             "--save-config", str(cfg_path)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, cwd=str(ROOT),
-        )
-        wrote_offsets = {"ok": False, "summary": ""}
-        def _drain():
-            assert self._offset_proc and self._offset_proc.stdout
-            for line in self._offset_proc.stdout:
-                line = line.rstrip()
-                # find_offsets emits "WROTE_OFFSETS: ..." on success.
-                if "WROTE_OFFSETS:" in line:
-                    wrote_offsets["ok"] = True
-                    wrote_offsets["summary"] = line.split("WROTE_OFFSETS:", 1)[1].strip()
-                    self._log_thread(line, "good")
-                else:
-                    self._log_thread(line, "muted")
-            self._offset_proc.wait()
-            if wrote_offsets["ok"]:
-                self._log_thread(
-                    "Offsets saved to config.yaml automatically. "
-                    "You can press Start Bot now.", "good")
-                # Force the launcher to re-read the config so the
-                # offset preflight check passes immediately.
-                try:
-                    self._cfg = _load_config()
-                except Exception:
-                    pass
-                self.after(0, self._refresh_offset_status)
-            else:
-                self._log_thread(
-                    "Scan finished but couldn't auto-identify offsets. "
-                    "Make sure your party has at least one Pokémon "
-                    "and you're standing in the overworld, then re-scan.",
-                    "warn")
-            self.after(0, lambda: self._scan_btn.config(state="normal"))
-        threading.Thread(target=_drain, daemon=True).start()
 
     # ---- Bot callbacks -----------------------------------------------------
 
@@ -2856,13 +2785,6 @@ class _App(tk.Tk):
 
     def _on_close(self):
         self._poll_alive = False
-        # Don't leave an orphaned offset-scan subprocess running in the
-        # background if the user closes the launcher mid-scan.
-        if self._offset_proc and self._offset_proc.poll() is None:
-            try:
-                self._offset_proc.terminate()
-            except Exception:
-                pass
         if self._bot.running:
             if messagebox.askyesno("Quit", "The bot is running. Stop it and quit?"):
                 self._bot.stop()
