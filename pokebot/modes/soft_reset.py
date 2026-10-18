@@ -145,6 +145,10 @@ def _note_path(ctx, path) -> None:
         log.error("  keypresses have NO route to Azahar — neither "
                   "PostMessage nor pynput is usable. Nothing is reaching "
                   "the game.")
+    elif path == "refused":
+        log.error("  keypresses are being REFUSED by Windows (Azahar is "
+                  "running as administrator — see above). Nothing is "
+                  "reaching the game.")
     elif path == "pynput":
         log.warning("  keypresses fell back to the global keyboard, which "
                     "goes to whatever window is FOCUSED rather than to "
@@ -194,8 +198,11 @@ def _warn_if_hotkey(button: str) -> None:
     """
     try:
         from ..azahar_config import load_hotkeys, load_active_profile_binds
+        from ..input_driver import KeyBinds
         binds = load_active_profile_binds() or {}
-        key = binds.get(button)
+        # A button the profile has no keyboard key for is still pressed,
+        # with the default key — and that key still fires its hotkey.
+        key = binds.get(button) or getattr(KeyBinds(), button, None)
         if not key:
             return
         action = load_hotkeys().get(str(key).strip().lower())

@@ -163,6 +163,8 @@ class InputDriver:
         if sys.platform.startswith("win"):
             if self._send_via_postmessage(button, hold_s):
                 return "postmessage"
+            if self._post_refused():
+                return "refused"
             if self._target_missing():
                 return "none"
 
@@ -230,6 +232,22 @@ class InputDriver:
                         "typing into whatever window has focus.")
             self._postmsg_warned = True
         return True
+
+    @staticmethod
+    def _post_refused() -> bool:
+        """Has Windows refused our posted keys (Azahar elevated)?
+
+        Then the pynput fallback must not run: Windows blocks it for
+        Azahar the same way, so every key would land in whatever other
+        window has focus -- the launcher, a browser, a chat box.
+        """
+        if not sys.platform.startswith("win"):
+            return False
+        try:
+            from .platform_utils import post_refused
+        except Exception:
+            return False
+        return post_refused()
 
     def target_alive(self) -> bool:
         """True while there is an Azahar window to send keys to."""
@@ -300,15 +318,21 @@ class InputDriver:
                 if self._azahar_hwnd and b_vk and d_vk:
                     post_key_down(self._azahar_hwnd, b_vk)
                     try:
-                        post_key_to_window(self._azahar_hwnd, d_vk,
-                                           hold_s)
+                        moved = post_key_to_window(self._azahar_hwnd,
+                                                   d_vk, hold_s)
                     finally:
                         post_key_up(self._azahar_hwnd, b_vk)
-                    return "postmessage"
+                    if moved:
+                        return "postmessage"
+                    # Not taken: say so below rather than report a
+                    # step that never reached the game.
+                    self._azahar_hwnd = 0
             except Exception:
                 pass
 
         # pynput fallback — needs Azahar focused.
+        if self._post_refused():
+            return "refused"
         if self._target_missing():
             return "none"
         if self._kb is None:
@@ -411,7 +435,8 @@ class InputDriver:
                 self._held_vks.add(vk)
                 return True
             self._azahar_hwnd = 0        # stale handle; retry next time
-        if self._target_missing() or self._kb is None:
+        if (self._post_refused() or self._target_missing()
+                or self._kb is None):
             return False
         self._press(self._key_for(button))
         return True
@@ -466,27 +491,25 @@ class InputDriver:
             return
         if sys.platform.startswith("win"):
             try:
-                from .platform_utils import (
-                    find_azahar_hwnd, post_key_down, post_key_up,
-                    char_to_vk,
-                )
+                from .platform_utils import find_azahar_hwnd, char_to_vk
                 vks = [char_to_vk(getattr(self.binds, b, None))
                        for b in buttons]
                 if not self._azahar_hwnd:
                     self._azahar_hwnd = find_azahar_hwnd() or 0
                 if self._azahar_hwnd and all(vks):
-                    try:
-                        for vk in vks:
-                            post_key_down(self._azahar_hwnd, vk)
-                            self._held_vks.add(vk)
-                        time.sleep(hold_s)
-                    finally:
-                        # Without this, a failure between the downs and
-                        # the ups fell through to the pynput combo below
-                        # with buttons still latched in Azahar.
-                        for vk in vks:
-                            post_key_up(self._azahar_hwnd, vk)
-                            self._held_vks.discard(vk)
+                    if self._post_combo(vks, hold_s):
+                        return
+                    # The downs' results used to be ignored, so a combo
+                    # Azahar never received returned exactly like one it
+                    # did. A stale handle (Azahar restarted) is the usual
+                    # cause, so look the window up again and retry once.
+                    self._azahar_hwnd = find_azahar_hwnd() or 0
+                    if (self._azahar_hwnd and not self._post_refused()
+                            and self._post_combo(vks, hold_s)):
+                        return
+                    log.warning(f"  {what}: Azahar did not take every "
+                                f"key-down, so the combo did not register.")
+                    self._azahar_hwnd = 0
                     return
             except Exception as e:
                 log.warning(f"  {what} PostMessage failed ({e}); "
@@ -494,9 +517,27 @@ class InputDriver:
         # pynput fallback (needs focus; may crash on Python 3.14 —
         # the PostMessage path above is the primary route). Never with
         # no Azahar at all: L+R+Start would land on the focused window.
-        if self._target_missing():
+        if self._post_refused() or self._target_missing():
             return
         self.combo(*buttons, hold_s=hold_s)
+
+    def _post_combo(self, vks, hold_s: float) -> bool:
+        """Hold every vk together by PostMessage; True if all went down."""
+        from .platform_utils import post_key_down, post_key_up
+        downs = []
+        try:
+            for vk in vks:
+                downs.append(post_key_down(self._azahar_hwnd, vk))
+                self._held_vks.add(vk)
+            time.sleep(hold_s)
+        finally:
+            # Without this, a failure between the downs and the ups fell
+            # through to the pynput combo with buttons still latched in
+            # Azahar.
+            for vk in vks:
+                post_key_up(self._azahar_hwnd, vk)
+                self._held_vks.discard(vk)
+        return all(downs)
 
     def soft_reset(self, hold_s: float = 0.5):
         """3DS soft-reset combo: L + R + Start held together."""

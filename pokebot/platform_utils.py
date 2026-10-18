@@ -299,10 +299,10 @@ def click_window_at(hwnd: int, x_frac: float, y_frac: float,
         # A move first: Qt tracks the pointer position from the message
         # stream, and a press at a position it has never seen can be
         # dropped as spurious.
-        user32.PostMessageW(hwnd, WM_MOUSEMOVE, 0, lparam)
-        down = user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+        _post_message(hwnd, WM_MOUSEMOVE, 0, lparam)
+        down = _post_message(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
         _t.sleep(hold_s)
-        up = user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
+        up = _post_message(hwnd, WM_LBUTTONUP, 0, lparam)
         # PostMessageW returns 0 on failure, so the caller drops its
         # cached hwnd and re-acquires instead of assuming it landed.
         return bool(down and up)
@@ -405,17 +405,81 @@ def post_key_to_window(hwnd: int, vk_code: int, hold_s: float = 0.05) -> bool:
     """
     if not _window_is_alive(hwnd):
         return False
-    import ctypes
-    user32 = ctypes.windll.user32
     WM_KEYDOWN = 0x0100
     WM_KEYUP   = 0x0101
     # lParam encoding: bit 0-15 repeat count, 16-23 scan code (0 OK),
     # 30 prev key state (0=up→down for KEYDOWN, 1 for KEYUP).
-    down = user32.PostMessageW(hwnd, WM_KEYDOWN, vk_code, 0x00000001)
+    down = _post_message(hwnd, WM_KEYDOWN, vk_code, 0x00000001)
     import time as _t
     _t.sleep(hold_s)
-    up = user32.PostMessageW(hwnd, WM_KEYUP, vk_code, 0xC0000001)
-    return bool(down) and bool(up)
+    up = _post_message(hwnd, WM_KEYUP, vk_code, 0xC0000001)
+    return down and up
+
+
+#: What PostMessage reports when User Interface Privilege Isolation
+#: drops the message: the window belongs to a process running at a
+#: higher integrity level than ours.
+_ERROR_ACCESS_DENIED = 5
+
+_poster = None
+_elevation_warned = False
+
+
+def _posting_user32():
+    """user32 loaded with last-error capture, for PostMessageW alone.
+
+    A separate handle from ``ctypes.windll.user32``, so the argtypes set
+    here cannot change how any other call site's arguments convert.
+    """
+    global _poster
+    if _poster is None:
+        import ctypes
+        from ctypes import wintypes
+        dll = ctypes.WinDLL("user32", use_last_error=True)
+        dll.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                     wintypes.WPARAM, wintypes.LPARAM]
+        dll.PostMessageW.restype = wintypes.BOOL
+        _poster = dll
+    return _poster
+
+
+def _last_error() -> int:
+    import ctypes
+    return ctypes.get_last_error()
+
+
+def _post_message(hwnd: int, msg: int, wparam: int, lparam: int) -> bool:
+    """PostMessageW, and say so once if Windows refuses it outright.
+
+    Azahar started "as administrator" while the bot was not is the case
+    this exists for. Windows then drops every key the bot posts, and
+    the pynput fallback is blocked the same way, so the hunt presses
+    into nothing with no other symptom.
+    """
+    global _elevation_warned
+    ok = bool(_posting_user32().PostMessageW(hwnd, msg, wparam, lparam))
+    if (not ok and not _elevation_warned
+            and _last_error() == _ERROR_ACCESS_DENIED):
+        # Never cleared: an elevated process stays elevated, and a
+        # restarted Azahar keeps its "Run as administrator" setting.
+        _elevation_warned = True
+        log.error("Windows refused the bot's keypress: Azahar is running "
+                  "as administrator and the bot is not, so Windows drops "
+                  "every key the bot sends it. Start Azahar normally (not "
+                  "'Run as administrator', and untick that box under "
+                  "Properties > Compatibility), or run the bot as "
+                  "administrator too.")
+    return ok
+
+
+def post_refused() -> bool:
+    """Has Windows refused a posted key for elevation in this process?
+
+    Then the global-keyboard fallback is no use either: Windows blocks
+    it the same way for Azahar, and the keys land in whatever other
+    window has focus instead.
+    """
+    return _elevation_warned
 
 
 def _window_is_alive(hwnd: int) -> bool:
@@ -440,9 +504,7 @@ def post_key_down(hwnd: int, vk_code: int) -> bool:
     while other keys are pressed (e.g. B held to run)."""
     if not _window_is_alive(hwnd):
         return False
-    import ctypes
-    return bool(ctypes.windll.user32.PostMessageW(
-        hwnd, 0x0100, vk_code, 0x00000001))
+    return _post_message(hwnd, 0x0100, vk_code, 0x00000001)
 
 
 def post_key_up(hwnd: int, vk_code: int) -> bool:
@@ -450,9 +512,7 @@ def post_key_up(hwnd: int, vk_code: int) -> bool:
     ``post_key_down``."""
     if not _window_is_alive(hwnd):
         return False
-    import ctypes
-    return bool(ctypes.windll.user32.PostMessageW(
-        hwnd, 0x0101, vk_code, 0xC0000001))
+    return _post_message(hwnd, 0x0101, vk_code, 0xC0000001)
 
 
 _SPECIAL_VK = {

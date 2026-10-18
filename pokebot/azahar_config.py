@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -47,6 +48,14 @@ _CONFIG_KEY = {
     "DpadRight": "button_right",
 }
 
+# Circle Pad direction → its sub-key inside profiles\<n>\circle_pad.
+_CIRCLE_KEY = {
+    "CircleUp":    "up",
+    "CircleDown":  "down",
+    "CircleLeft":  "left",
+    "CircleRight": "right",
+}
+
 
 # Qt::Key code → bind-name our InputDriver understands.
 # Source: qt6/qtbase/src/corelib/global/qnamespace.h.
@@ -55,7 +64,9 @@ _QT_SPECIAL = {
     0x01000001: "tab",
     0x01000003: "backspace",
     0x01000004: "enter",
-    0x01000005: "enter",        # Key_Enter (numpad) — same logical name
+    # 0x01000005 Key_Enter (numpad) is deliberately absent: the bot
+    # posts VK_RETURN, which Qt reports as Key_Return, so a numpad-Enter
+    # bind would never match. Better reported as unsendable than missed.
     0x01000010: "home",
     0x01000011: "end",
     0x01000012: "left",
@@ -85,18 +96,45 @@ def _qt_code_to_bind(code: int) -> Optional[str]:
     return None
 
 
+def _running_azahar_user_dir() -> Optional[Path]:
+    """The portable ``user`` folder beside the running Azahar, if any.
+
+    Azahar uses ``<exe folder>\\user`` instead of %APPDATA% whenever that
+    folder exists. Checking %APPDATA% first meant a portable install's
+    real config lost to a leftover file from some earlier install.
+    """
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        from .azahar_recover import exe_of, window_pid
+        from .platform_utils import find_azahar_hwnd
+        hwnd = find_azahar_hwnd()
+        exe = exe_of(window_pid(hwnd)) if hwnd else None
+    except Exception as e:
+        log.debug(f"couldn't locate the running Azahar: {e}")
+        return None
+    if not exe:
+        return None
+    user = Path(exe).parent / "user"
+    return user if user.is_dir() else None
+
+
 def _candidate_paths() -> list[Path]:
-    """Likely locations of qt-config.ini, in priority order."""
+    """Likely locations of qt-config.ini, in priority order: the
+    running emulator's portable folder, an explicit user dir, then the
+    per-user install."""
     out: list[Path] = []
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        out.append(Path(appdata) / "Azahar" / "config" / "qt-config.ini")
-        out.append(Path(appdata) / "Citra" / "config" / "qt-config.ini")
-    # Portable installs
+    portable = _running_azahar_user_dir()
+    if portable:
+        out.append(portable / "config" / "qt-config.ini")
     for env in ("AZAHAR_USER_DIR", "CITRA_USER_DIR"):
         p = os.environ.get(env)
         if p:
             out.append(Path(p) / "config" / "qt-config.ini")
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        out.append(Path(appdata) / "Azahar" / "config" / "qt-config.ini")
+        out.append(Path(appdata) / "Citra" / "config" / "qt-config.ini")
     return out
 
 
@@ -107,11 +145,12 @@ def find_config_path() -> Optional[Path]:
     return None
 
 
-def _parse_value(raw: str) -> Optional[int]:
-    """Pull the `code:N` field out of a Qt INI button value.
+def _parse_package(raw: str) -> dict[str, str]:
+    """Split a Citra ParamPackage string into its top-level fields.
 
-    Example raw: ``"code:70,engine:keyboard"`` → 70.
-    Returns None if engine isn't keyboard or the code can't be parsed.
+    ``"code:70,engine:keyboard"`` → ``{"code": "70", "engine": "keyboard"}``.
+    A nested package (the Circle Pad's per-direction binds) stays
+    escaped inside its field; ``_unescape`` opens it.
     """
     raw = raw.strip().strip('"')
     parts: dict[str, str] = {}
@@ -120,12 +159,76 @@ def _parse_value(raw: str) -> Optional[int]:
             continue
         k, v = piece.split(":", 1)
         parts[k.strip()] = v.strip()
-    if parts.get("engine") != "keyboard":
-        return None
+    return parts
+
+
+def _unescape(value: str) -> str:
+    """Undo ParamPackage's escaping of a nested package.
+
+    ``$0`` is ``:``, ``$1`` is ``,`` and ``$2`` is ``$`` — so ``$2`` has
+    to go last, or an escaped ``$`` followed by ``0`` would be misread.
+    """
+    return value.replace("$0", ":").replace("$1", ",").replace("$2", "$")
+
+
+def _bind_or_reason(package: dict[str, str]
+                    ) -> tuple[Optional[str], Optional[str]]:
+    """``(bind, None)`` for a key the bot can press, else ``(None, why)``.
+
+    The bot can only press keyboard keys. A button Azahar has mapped to
+    a gamepad ignores the keyboard entirely, so a key sent for it is
+    dropped without a trace — worth naming rather than guessing past.
+    """
+    if not package:
+        return None, "not bound"
+    engine = package.get("engine", "?")
+    if engine != "keyboard":
+        return None, f"controller ({engine})"
     try:
-        return int(parts["code"])
+        code = int(package["code"])
     except (KeyError, ValueError):
-        return None
+        return None, "keyboard, with no key code"
+    bind = _qt_code_to_bind(code)
+    if bind is None:
+        return None, f"a key the bot cannot send (Qt code {code:#x})"
+    return bind, None
+
+
+def _circle_packages(raw: str) -> dict[str, dict[str, str]]:
+    """Each Circle Pad direction's own bind, keyed by KeyBinds name.
+
+    A keyboard Circle Pad is ``engine:analog_from_button`` with one
+    escaped package per direction. Anything else is a controller stick,
+    which has no per-direction key at all.
+    """
+    top = _parse_package(raw)
+    if top.get("engine") != "analog_from_button":
+        stick = {"engine": top.get("engine", "?")}
+        return {name: stick for name in _CIRCLE_KEY}
+    return {name: _parse_package(_unescape(top.get(direction, "")))
+            for name, direction in _CIRCLE_KEY.items()}
+
+
+def _active_profile_number(section: dict[str, str]) -> int:
+    """The INI number of the input profile Azahar is actually using.
+
+    Azahar stores ``profile`` as a 0-based index and clamps it to the
+    profiles that exist, while QSettings writes the array itself
+    1-based — so index N lives under ``profiles\\<N+1>``. Reading
+    ``profiles\\<N>`` found nothing on a fresh install (``profile=0``)
+    and read the wrong profile for everyone else.
+    """
+    def number(key: str, default: int) -> int:
+        try:
+            return int(section.get(key, "").strip() or default)
+        except ValueError:
+            return default
+
+    index = max(number("profile", 0), 0)
+    size = number("profiles\\size", 0)
+    if size > 0:
+        index = min(index, size - 1)
+    return index + 1
 
 
 def load_screen_layout() -> dict:
@@ -254,13 +357,20 @@ def load_hotkeys() -> dict[str, str]:
     return out
 
 
-def load_active_profile_binds() -> Optional[dict[str, str]]:
+def load_active_profile_binds() -> Optional[dict]:
     """Read the active-profile keybindings out of Azahar's qt-config.ini.
 
     Returns ``{"A": "a", "DpadLeft": "f", …}`` mirroring the keys on
-    pokebot.input_driver.KeyBinds. Returns None on any failure (no
-    config file, parse error, no Controls section, etc.) so callers
-    can fall back to their existing defaults.
+    pokebot.input_driver.KeyBinds, plus three underscored entries:
+    ``_source`` (the file), ``_profile`` (its name) and ``_unusable``
+    (``{button: why}`` for every button the bot has no keyboard key to
+    press, e.g. one mapped to a controller). A button the profile does
+    not mention is left out: Azahar uses its default for it, which
+    KeyBinds already mirrors.
+
+    Returns None when there is nothing to read (no config file, no
+    Controls section, no profile) so callers fall back to their
+    existing defaults.
     """
     cfg = find_config_path()
     if not cfg:
@@ -294,24 +404,54 @@ def load_active_profile_binds() -> Optional[dict[str, str]]:
     if not section:
         return None
 
-    profile_idx = section.get("profile", "1").strip() or "1"
-
-    binds: dict[str, str] = {}
-    for button, ini_key in _CONFIG_KEY.items():
-        raw = section.get(f"profiles\\{profile_idx}\\{ini_key}")
-        if raw is None:
-            continue
-        code = _parse_value(raw)
-        if code is None:
-            continue
-        bind = _qt_code_to_bind(code)
-        if bind:
-            binds[button] = bind
-    if not binds:
+    # Without a profiles array Azahar falls back to its legacy top-level
+    # keys; the bot falls back to its defaults, which mirror Azahar's.
+    if not section.get("profiles\\size", "").strip():
         return None
+    number = _active_profile_number(section)
+    prefix = f"profiles\\{number}\\"
+    if not any(k.startswith(prefix) for k in section):
+        return None
+
+    packages = {button: _parse_package(section[prefix + ini_key])
+                for button, ini_key in _CONFIG_KEY.items()
+                if prefix + ini_key in section}
+    circle = section.get(prefix + "circle_pad")
+    if circle is not None:
+        packages.update(_circle_packages(circle))
+
+    resolved = {button: _bind_or_reason(package)
+                for button, package in packages.items()}
     return {
         "_source": str(cfg),
-        "_profile": section.get(f"profiles\\{profile_idx}\\name",
-                                profile_idx).strip().strip('"'),
-        **binds,
+        "_profile": section.get(prefix + "name",
+                                str(number)).strip().strip('"'),
+        "_unusable": {button: why for button, (bind, why)
+                      in resolved.items() if bind is None},
+        **{button: bind for button, (bind, _) in resolved.items()
+           if bind is not None},
     }
+
+
+def unusable_binds_message(profile: str,
+                           unusable: dict[str, str]) -> Optional[str]:
+    """What to tell the user about buttons the bot cannot press, or None.
+
+    The common case is a profile set up for a gamepad: Azahar then
+    ignores the keyboard for those buttons, and every key the bot sends
+    is dropped with nothing on screen to say why.
+    """
+    if not unusable:
+        return None
+    by_reason: dict[str, list[str]] = {}
+    for button, why in unusable.items():
+        by_reason.setdefault(why, []).append(button)
+    detail = "; ".join(f"{', '.join(buttons)}: {why}"
+                       for why, buttons in by_reason.items())
+    return (f"Azahar's active input profile {profile!r} has no keyboard "
+            f"key the bot can press for {detail}. The bot presses "
+            f"KEYBOARD keys, so Azahar ignores those presses. Fix: in "
+            f"Azahar, Emulation > Configure > Controls, select a profile "
+            f"that uses the keyboard (a new profile starts on the keyboard "
+            f"defaults) or bind keyboard keys to those buttons, then start "
+            f"the bot again.")

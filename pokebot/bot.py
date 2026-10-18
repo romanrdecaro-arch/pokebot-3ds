@@ -22,7 +22,7 @@ from . import games as games_mod
 from .citra_rpc import CitraRPC, wait_for_emulator
 from .dashboard_server import DashboardServer
 from .input_driver import InputDriver, KeyBinds
-from .modes import MODES
+from .modes import MODES, READ_ONLY_MODES
 from .targets import Target, target_from_dict
 
 log = logging.getLogger(__name__)
@@ -169,7 +169,8 @@ class Bot:
         # in Azahar, even if config.yaml is stale.
         bind_kwargs: dict = dict(input_cfg.get("binds", {}))
         try:
-            from .azahar_config import load_active_profile_binds
+            from .azahar_config import (load_active_profile_binds,
+                                        unusable_binds_message)
             azahar_binds = load_active_profile_binds()
         except Exception as e:
             log.warning(f"Couldn't read Azahar config: {e}")
@@ -177,15 +178,22 @@ class Bot:
         if azahar_binds:
             src = azahar_binds.pop("_source", "?")
             prof = azahar_binds.pop("_profile", "?")
+            unusable = azahar_binds.pop("_unusable", {})
             log.info(f"Using Azahar profile {prof!r} keybinds from {src}.")
             bind_kwargs.update(azahar_binds)
+            problem = unusable_binds_message(prof, unusable)
+            if problem:
+                log.error(problem)
+            self._cannot_press_a = "A" in unusable
         else:
             log.info("Azahar qt-config.ini not found / not parseable — "
                      "using config.yaml binds (or hard-coded defaults).")
         binds = KeyBinds(**bind_kwargs)
         log.info(f"Active binds: A={binds.A!r} B={binds.B!r} "
                  f"DpadL={binds.DpadLeft!r} DpadR={binds.DpadRight!r} "
-                 f"DpadU={binds.DpadUp!r} DpadD={binds.DpadDown!r}")
+                 f"DpadU={binds.DpadUp!r} DpadD={binds.DpadDown!r} "
+                 f"L={binds.L!r} R={binds.R!r} Start={binds.Start!r} "
+                 f"CircleL={binds.CircleLeft!r}")
         dry = bool(input_cfg.get("dry_run", False))
         self.input = InputDriver(binds=binds, dry_run=dry)
 
@@ -221,6 +229,9 @@ class Bot:
         if mode_name not in MODES:
             raise ValueError(f"Unknown mode: {mode_name}. "
                              f"Available: {list(MODES)}")
+        if self._refuse_to_press(mode_name):
+            self._cleanup()
+            return
 
         # Heartbeat — confirms the EVENT pipeline is alive before any
         # actual game data tries to flow. If the launcher Log tab
@@ -245,6 +256,22 @@ class Bot:
             MODES[mode_name](ctx)
         finally:
             self._cleanup()
+
+    def _refuse_to_press(self, mode_name: str) -> bool:
+        """Stop before a pressing mode starts when A cannot be pressed.
+
+        Every mode that presses anything presses A. With A mapped to a
+        controller, Azahar drops every key the bot sends, and the hunt
+        would run on with nothing happening and nothing more to say
+        than the one error line already logged.
+        """
+        if (not getattr(self, "_cannot_press_a", False)
+                or mode_name in READ_ONLY_MODES):
+            return False
+        log.error(f"Not starting {mode_name}: it presses buttons, and "
+                  f"Azahar's input profile has no keyboard key for A. Fix "
+                  f"the profile as described above, then start again.")
+        return True
 
     # ------------------------------------------------------------------
     # Plumbing

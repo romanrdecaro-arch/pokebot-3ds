@@ -37,3 +37,8 @@ MODES = {
     "crystal_encounter": run_crystal_encounter,
     "crystal_celebi": run_crystal_celebi,
 }
+
+#: Modes that only read memory and never press a button, so they can
+#: run whatever Azahar's input profile is mapped to.
+READ_ONLY_MODES = frozenset({"observe", "debug", "livehex",
+                             "crystal_observe"})

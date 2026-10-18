@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pokebot.azahar_config import load_active_profile_binds   # noqa: E402
 from pokebot.platform_utils import (list_azahar_windows,      # noqa: E402
-                                    focus_azahar)
+                                    focus_azahar, char_to_vk)
 
 u = ctypes.windll.user32
 
@@ -44,8 +44,16 @@ u = ctypes.windll.user32
 CHANGED_PX = 2500
 
 
-def vk_for(char: str) -> int:
-    return u.VkKeyScanW(ord(char[:1])) & 0xFF
+def vk_for(bind: str) -> int:
+    """The VK the bot itself posts for a bind name ("a", "left", "f1").
+
+    Not VkKeyScanW(first character): that turned "left" into the L key,
+    so the Circle Pad test sent the wrong key and reported nothing moved.
+    """
+    vk = char_to_vk(bind)
+    if vk is None:
+        raise SystemExit(f"no virtual-key code for bind {bind!r}")
+    return vk
 
 
 def children(top: int) -> list:
