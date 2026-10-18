@@ -158,7 +158,17 @@ overwritten; commit or discard them and update again.
   with a full party go to a PC box, and those are found there too
 - **GUI launcher** ([launcher.py](launcher.py)) — auto-installs deps,
   live-detects Azahar + your loaded game, animated party + Recently
-  Seen tab, persistent phase / total / best-SV / best-IV stats
+  Seen tab, persistent stats: current phase with the chance of a shiny
+  by now, average and last phase length, shinies, totals, best SV / IV
+- **Stream overlays** — while the launcher runs, OBS can show
+  `http://127.0.0.1:8765/bar` (a counter strip) or
+  `http://127.0.0.1:8765/panel` (phase, odds, last encounter, recent
+  shinies) as a Browser Source with a transparent background. Served to
+  this machine only; change the port with `stream.port` in config.yaml
+- **Discord** — paste a channel webhook (Channel settings →
+  Integrations → Webhooks) into the launcher's *Stream & Discord* card
+  and every shiny is posted there with its sprite, phase, nature and
+  IVs. The URL is kept in `discord.local.yaml`, which git ignores
 - **Shiny-lock awareness** — the launcher's method dropdown flags
   shiny-locked starters / legendaries before you waste hours on them
   (full list: [docs/SHINY_LOCKED.md](docs/SHINY_LOCKED.md))

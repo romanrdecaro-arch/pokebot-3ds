@@ -712,3 +712,16 @@ noibat:
   # Note time.monotonic() has ~16 ms granularity on Windows, so values
   # below that behave as 16 ms.
   a_gap: 0.2
+
+# --- Stream overlays ----------------------------------------------------
+#
+# The launcher serves live overlays for OBS on this machine only
+# (127.0.0.1): http://127.0.0.1:8765/bar is a counter strip and
+# http://127.0.0.1:8765/panel the full stats card. Add either as a
+# Browser Source; the background is transparent. Change the port if
+# something else already uses 8765.
+#
+# Discord: paste a channel webhook in the launcher's "Stream & Discord"
+# card. It is saved to discord.local.yaml, which git ignores, never here.
+stream:
+  port: 8765

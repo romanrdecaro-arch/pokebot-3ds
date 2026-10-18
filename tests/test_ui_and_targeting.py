@@ -305,6 +305,44 @@ def test_a_hit_closes_the_phase_into_last_phase(
     assert launcher_mod._load_stats()["last_phase"] == 3
 
 
+def test_overlay_state_has_what_the_displays_show(launcher_mod) -> None:
+    stats = {"total": 627379, "phase": 1746, "shinies": 484,
+             "last_phase": 3108, "phase_best_sv": None, "phase_best_iv": None,
+             "shiny_log": [{"species": 650, "phase": 3108, "at": 1.0}]}
+    last = dict(ENCOUNTER, shiny=True, _at=99.0)
+    s = launcher_mod._overlay_state(stats, last)
+    assert (s["phase"], s["shinies"], s["total"], s["last_phase"]) == (
+        1746, 484, 627379, 3108)
+    assert s["half_odds_at"] == 2839 and 0.34 < s["chance"] < 0.35
+    assert s["last"]["species"] == 25 and s["last"]["shiny"]
+    assert s["last"]["at"] == 99.0
+    assert s["last"]["ivs"] == [31, 20, 15, 31, 5, 9]    # table order
+    assert s["last"]["fallback"].endswith("/shiny/25.png")
+    assert s["recent"][0]["phase"] == 3108 and s["recent"][0]["shiny"]
+    assert launcher_mod._overlay_state(stats, None)["last"] is None
+
+
+def test_shinies_are_logged_newest_first_and_capped(tk_root, launcher_mod) -> None:
+    table = launcher_mod._RecentlySeen(tk_root)
+    for i in range(launcher_mod._SHINY_LOG_LEN + 2):
+        table.add_pokemon(dict(ENCOUNTER, pid=0x3000 + i, species=100 + i,
+                               shiny=True))
+    log = table._stats["shiny_log"]
+    assert len(log) == launcher_mod._SHINY_LOG_LEN
+    assert log[0]["species"] == 100 + launcher_mod._SHINY_LOG_LEN + 1
+    assert launcher_mod._STATS_DEFAULT["shiny_log"] == [], "default mutated"
+
+
+def test_a_damaged_shiny_log_keeps_the_counters(launcher_mod, tmp_path) -> None:
+    import json
+    (tmp_path / "stats.json").write_text(json.dumps({
+        "version": 2, "total": 500, "phase": 7, "shinies": 2,
+        "shiny_log": [{"species": "not a number"}]}))
+    s = launcher_mod._load_stats()
+    assert (s["total"], s["phase"], s["shinies"]) == (500, 7, 2)
+    assert s["shiny_log"] == []
+
+
 def test_slug_is_filesystem_safe(launcher_mod) -> None:
     slug = launcher_mod._slug('Azahar | "X" <v2>/beta')
     assert not set(slug) & set('<>:"/\\|?* ')

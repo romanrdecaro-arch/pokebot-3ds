@@ -71,7 +71,11 @@ _STATS_DEFAULT = {
     "phase_best_sv": None,
     "phase_best_iv": None,   # highest IV-sum seen this phase
     "last_phase": None,      # length of the most recently closed phase
+    "shiny_log": [],         # newest first: {species, phase, at}
 }
+
+#: Recent shinies kept for the stream overlay.
+_SHINY_LOG_LEN = 6
 
 #: Full odds, the rate for a starter. shortcut: the Shiny Charm, Masuda
 #: and chaining raise it; take it from the hunt once the launcher knows.
@@ -92,6 +96,55 @@ def _phase_metrics(stats: dict) -> dict:
             "chance": 1 - (1 - _SHINY_ODDS) ** phase}
 
 
+def _species_name(species_id: int) -> str:
+    """Name from the sprite cache (filled as sprites load), never the
+    network; '#653' until the species has been seen once."""
+    try:
+        from pokebot.sprites import _load_name_cache
+        slug = _load_name_cache().get(str(species_id))
+    except Exception:
+        slug = None
+    return slug.title() if slug else f"#{species_id}"
+
+
+def _sprite_urls(species_id: int, shiny: bool) -> tuple[str, str]:
+    """(animated Showdown sprite, static PokeAPI fallback)."""
+    still = ("https://raw.githubusercontent.com/PokeAPI/sprites/master/"
+             "sprites/pokemon/versions/generation-vi/x-y/"
+             f"{'shiny/' if shiny else ''}{species_id}.png")
+    name = _species_name(species_id)
+    if name.startswith("#"):
+        return still, still
+    folder = "ani-shiny" if shiny else "ani"
+    return (f"https://play.pokemonshowdown.com/sprites/{folder}/"
+            f"{name.lower()}.gif", still)
+
+
+def _overlay_state(stats: dict, last: dict | None) -> dict:
+    """What the stream overlay shows; ``last`` is the latest encounter
+    with the launcher's receive time in ``_at``."""
+    def mon(species: int, shiny: bool) -> dict:
+        sprite, fallback = _sprite_urls(species, shiny)
+        return {"species": species, "name": _species_name(species),
+                "shiny": shiny, "sprite": sprite, "fallback": fallback}
+
+    m = _phase_metrics(stats)
+    state = {"phase": stats["phase"], "chance": m["chance"],
+             "half_odds_at": _HALF_ODDS_AT, "avg_phase": m["avg_phase"],
+             "last_phase": stats.get("last_phase"),
+             "shinies": stats.get("shinies", 0), "total": stats["total"],
+             "recent": [dict(mon(e["species"], True), phase=e["phase"])
+                        for e in stats.get("shiny_log", [])],
+             "last": None}
+    if last and last.get("species"):
+        ivs = last.get("ivs") or {}
+        state["last"] = dict(
+            mon(int(last["species"]), bool(last.get("shiny"))),
+            nature=last.get("nature") or "", at=last.get("_at", 0),
+            ivs=[ivs.get(k) for k in _RecentlySeen._IV_ORDER] if ivs else None)
+    return state
+
+
 def _load_stats() -> dict:
     s = dict(_STATS_DEFAULT)
     try:
@@ -104,6 +157,13 @@ def _load_stats() -> dict:
         s["phase_best_iv"] = int(biv) if biv is not None else None
         last = d.get("last_phase")
         s["last_phase"] = int(last) if last is not None else None
+        try:            # a bad entry must not cost the counters above
+            s["shiny_log"] = [
+                {"species": int(e["species"]), "phase": int(e["phase"]),
+                 "at": float(e.get("at", 0))}
+                for e in (d.get("shiny_log") or [])[:_SHINY_LOG_LEN]]
+        except (TypeError, KeyError, ValueError):
+            s["shiny_log"] = []
 
         # phase_best_sv changed meaning in v2 (bare PSV -> psv ^ tsv).
         # The two are not comparable, and an old small PSV would sit
@@ -303,6 +363,7 @@ _WARN   = "#f5c451"
 _DANGER = "#ff6369"
 _SHINY  = "#ffd86b"   # shiny text, rows and the chance meter
 _SHINY_BG = "#2a230a"
+_SHINY_TRACK = "#3b3421"
 
 #: Segoe UI ships with Windows; the Semibold face gives headings and
 #: numbers weight without the heaviness of Bold.
@@ -1076,8 +1137,9 @@ class _RecentlySeen(tk.Frame):
         self._phase_lbl = tk.Label(hero, bg=_PANEL2, fg=_TEXT,
                                    font=(_FONT_SEMI, 28), anchor="w")
         self._phase_lbl.pack(fill="x")
+        # track is a dark step of the fill's own hue, so the bar reads whole
         self._meter = tk.Canvas(hero, width=self.METER_W, height=6,
-                                bg=_PANEL3, highlightthickness=0, bd=0)
+                                bg=_SHINY_TRACK, highlightthickness=0, bd=0)
         self._meter.pack(anchor="w", pady=(4, 5))
         self._meter_fill = self._meter.create_rectangle(
             0, 0, 0, 6, fill=_SHINY, width=0)
@@ -1188,6 +1250,10 @@ class _RecentlySeen(tk.Frame):
             if evt.get("shiny"):
                 self._stats["shinies"] = (
                     int(self._stats.get("shinies", 0)) + 1)
+                entry = {"species": int(evt.get("species") or 0),
+                         "phase": self._stats["phase"], "at": time.time()}
+                self._stats["shiny_log"] = (
+                    [entry] + list(self._stats.get("shiny_log", [])))[:_SHINY_LOG_LEN]
             dist = self._evt_shiny_distance(evt)
             if dist is not None:
                 cur = self._stats["phase_best_sv"]
@@ -1450,9 +1516,13 @@ class _App(tk.Tk):
         self._bot = _BotProcess(self._on_bot_line, self._on_bot_exit)
         self._poll_alive = True
         self._last_detected_game: str | None = None
+        self._last_evt: dict | None = None
+        self._discord_path = ROOT / "discord.local.yaml"
+        self._overlay = self._start_overlay()
 
         self._build()
         self._dark_title_bar()
+        self._publish_overlay()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._pump_bot_lines()
         self._pump_bot_exit()
@@ -1970,6 +2040,58 @@ class _App(tk.Tk):
         # BooleanVars so _start_bot doesn't need conditionals.
         self._dry_var = tk.BooleanVar(value=False)
         self._verb_var = tk.BooleanVar(value=False)
+
+        # ── Card: stream overlays + Discord ─────────────────────────────────
+        share = self._card(p, "Stream & Discord")
+
+        def small_btn(parent, text, cmd):
+            b = tk.Button(parent, text=text, command=cmd, bg=_PANEL3, fg=_TEXT,
+                          relief="flat", bd=0, font=(_FONT, 9), cursor="hand2",
+                          activebackground=_PANEL3, activeforeground=_TEXT,
+                          padx=10, pady=3, highlightthickness=0)
+            _hover(b)
+            return b
+
+        if self._overlay is not None:
+            for layout, what in (("bar", "counter bar"), ("panel", "stats panel")):
+                row = tk.Frame(share, bg=_PANEL2)
+                row.pack(fill="x", pady=(0, 6))
+                tk.Label(row, text=what.capitalize(), bg=_PANEL2, fg=_TEXT,
+                         font=(_FONT, 10), anchor="w").pack(side="left")
+                url = self._overlay.url(layout)
+                small_btn(row, "Copy link",
+                          lambda u=url, w=what: self._copy(u, w)).pack(side="right")
+            hint = ("In OBS, add a Browser Source with the link. The "
+                    "background is transparent.")
+        else:
+            hint = ("Overlays are off: their port is in use. Set "
+                    "stream.port in config.yaml.")
+        tk.Label(share, text=hint, bg=_PANEL2, fg=_MUTED, font=(_FONT, 8),
+                 anchor="w", wraplength=235, justify="left").pack(fill="x")
+
+        tk.Frame(share, bg=_BORDER, height=1).pack(fill="x", pady=(10, 8))
+        tk.Label(share, text="Discord webhook", bg=_PANEL2, fg=_MUTED,
+                 font=(_FONT_SEMI, 9), anchor="w").pack(fill="x")
+        from pokebot import discord_notify
+        self._webhook_var = tk.StringVar(
+            value=discord_notify.load_webhook(self._discord_path))
+        tk.Entry(share, textvariable=self._webhook_var, show="•",
+                 bg=_PANEL3, fg=_TEXT, insertbackground=_TEXT, relief="flat",
+                 font=(_FONT, 9), highlightthickness=1,
+                 highlightbackground=_BORDER, highlightcolor=_MUTED
+                 ).pack(fill="x", pady=(3, 6), ipady=4)
+        btns = tk.Frame(share, bg=_PANEL2)
+        btns.pack(fill="x")
+        small_btn(btns, "Save", self._save_webhook).pack(side="left")
+        small_btn(btns, "Send test", self._test_webhook).pack(side="left", padx=(6, 0))
+        self._discord_lbl = tk.Label(
+            share, bg=_PANEL2, fg=_MUTED, font=(_FONT, 8), anchor="w",
+            wraplength=235, justify="left",
+            text=("Shinies are posted to this webhook."
+                  if self._webhook_var.get() else
+                  "Paste a channel webhook (Channel settings → "
+                  "Integrations → Webhooks) to get a post per shiny."))
+        self._discord_lbl.pack(fill="x", pady=(6, 0))
 
     def _build_sticky_actions(self, parent):
         """Always-visible Start/Stop bar at the top of the sidebar."""
@@ -2722,6 +2844,11 @@ class _App(tk.Tk):
                 self._seen.add_pokemon(evt)
             except Exception as e:
                 self._log(f"[seen] failed to render: {e}", "warn")
+            if kind != "target_hit":
+                self._last_evt = dict(evt, _at=time.time())
+                if evt.get("shiny"):
+                    self._notify_discord(evt)
+            self._publish_overlay()
             # Also reflect slot 0 in the party strip up top.
             if kind == "candidate":
                 try:
@@ -2733,6 +2860,84 @@ class _App(tk.Tk):
                 self._party.update_from_party(evt.get("slots", []))
             except Exception as e:
                 self._log(f"[party] update failed: {e}", "warn")
+
+    # ---- Stream overlay and Discord -----------------------------------------
+
+    def _start_overlay(self):
+        from pokebot import stream_overlay
+        try:
+            port = int(((self._cfg or {}).get("stream") or {}).get(
+                "port", stream_overlay.DEFAULT_PORT))
+        except (TypeError, ValueError):
+            port = stream_overlay.DEFAULT_PORT
+        return stream_overlay.start(port)
+
+    def _publish_overlay(self) -> None:
+        if self._overlay is not None:
+            self._overlay.publish(
+                _overlay_state(self._seen._stats, self._last_evt))
+
+    def _notify_discord(self, evt: dict) -> None:
+        from pokebot import discord_notify
+        url = discord_notify.load_webhook(self._discord_path)   # saved, not typed
+        if not url:
+            return
+        species = int(evt.get("species") or 0)
+        ivs = evt.get("ivs") or {}
+        stats = self._seen._stats
+        message = discord_notify.shiny_message(
+            _species_name(species), _sprite_urls(species, True)[0],
+            stats["phase"], stats.get("shinies", 0), evt.get("nature") or "",
+            [ivs.get(k) for k in _RecentlySeen._IV_ORDER] if ivs else None,
+            self._game_display_lbl.cget("text"))
+
+        def done(err):
+            self._log_thread(f"Discord: {err}" if err else
+                             "Discord: shiny posted", "warn" if err else "good")
+        discord_notify.send_async(url, message, done)
+
+    def _copy(self, text: str, what: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._log(f"Copied the {what} link: {text}", "muted")
+
+    def _save_webhook(self) -> None:
+        from pokebot import discord_notify
+        url = self._webhook_var.get().strip()
+        if url and not discord_notify.valid_webhook(url):
+            self._discord_lbl.config(
+                text="Not a Discord webhook URL (https://discord.com/"
+                     "api/webhooks/…)", fg=_DANGER)
+            return
+        discord_notify.save_webhook(self._discord_path, url)
+        self._discord_lbl.config(
+            text="Saved. Shinies will be posted." if url else
+                 "Cleared. Nothing will be posted.", fg=_GOOD)
+
+    def _test_webhook(self) -> None:
+        from pokebot import discord_notify
+        url = self._webhook_var.get().strip()
+        if not discord_notify.valid_webhook(url):
+            self._discord_lbl.config(text="Paste a Discord webhook URL first.",
+                                     fg=_DANGER)
+            return
+        self._discord_lbl.config(text="Sending a test…", fg=_MUTED)
+        message = discord_notify.shiny_message(
+            "Fennekin (test)", _sprite_urls(653, True)[1], 1234,
+            self._seen._stats.get("shinies", 0), "Timid",
+            game="test message")
+
+        result: list = []           # filled on the sender thread, read here
+
+        def show():
+            if not result:
+                self.after(200, show)
+                return
+            err = result[0]
+            self._discord_lbl.config(text=err or "Test sent. Check the channel.",
+                                     fg=_DANGER if err else _GOOD)
+        discord_notify.send_async(url, message, result.append)
+        self.after(200, show)
 
     def _on_bot_exit(self, code: int) -> None:
         """Also called on the reader thread — queue, never touch Tk."""
@@ -2782,6 +2987,14 @@ class _App(tk.Tk):
         self._log_box.config(state="normal")
         self._log_box.delete("1.0", "end")
         self._log_box.config(state="disabled")
+
+    def destroy(self):
+        # here, not in _on_close: answering "No" to the quit prompt must
+        # leave the overlay serving
+        if getattr(self, "_overlay", None) is not None:
+            self._overlay.close()
+            self._overlay = None
+        super().destroy()
 
     def _on_close(self):
         self._poll_alive = False

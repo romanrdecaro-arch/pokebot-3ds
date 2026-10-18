@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pokebot-3ds overlay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --card: rgba(20, 21, 24, 0.88);
+    --tile: rgba(255, 255, 255, 0.045);
+    --line: rgba(255, 255, 255, 0.08);
+    --text: #ecedef;
+    --muted: #8b9099;
+    --gold: #ffd86b;
+    --gold-track: #3b3421;
+    --font: "Outfit", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: transparent; color: var(--text); font-family: var(--font); }
+  body { padding: 12px; }
+  .label { color: var(--muted); font-size: 13px; font-weight: 500; }
+  .value { font-size: 22px; font-weight: 600; line-height: 1.15; }
+  .hero { font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
+  .meter { height: 8px; border-radius: 4px; background: var(--gold-track); overflow: hidden; }
+  .meter > i { display: block; height: 100%; width: 0; border-radius: 4px; background: var(--gold);
+               transition: width 600ms ease; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+          transition: border-color 300ms, box-shadow 300ms; }
+  .shiny-on .card { border-color: var(--gold); box-shadow: 0 0 28px rgba(255, 216, 107, 0.35); }
+  .badge { display: none; color: #1b1500; background: var(--gold); font-weight: 600; font-size: 12px;
+           padding: 3px 8px; border-radius: 6px; letter-spacing: 0.02em; }
+  .shiny-on .badge { display: inline-block; }
+  .sprite { image-rendering: auto; object-fit: contain; }
+  .waiting { color: var(--muted); font-size: 14px; padding: 8px 4px; display: none; }
+  .offline .waiting { display: block; }
+  .offline .card { opacity: 0.55; }
+  @media (prefers-reduced-motion: reduce) { .meter > i, .card { transition: none; } }
+
+  /* ---- /bar: a strip for a corner of the stream ---- */
+  #bar { display: none; width: 560px; padding: 12px 18px 12px 12px; align-items: center; gap: 18px; }
+  .layout-bar #bar { display: flex; }
+  #bar .sprite { width: 72px; height: 72px; flex: none; }
+  #bar .phase .hero { font-size: 44px; }
+  #bar .odds { flex: 1; min-width: 0; }
+  #bar .odds .meter { margin: 8px 0 6px; }
+  #bar .shinies { text-align: right; }
+
+  /* ---- /panel: the full card ---- */
+  #panel { display: none; width: 380px; padding: 20px; }
+  .layout-panel #panel { display: block; }
+  #panel header { display: flex; justify-content: space-between; align-items: center; }
+  #panel .hero { font-size: 64px; margin: 6px 0 12px; }
+  #panel .caption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 18px 0; }
+  .tile { background: var(--tile); border-radius: 12px; padding: 10px 12px; }
+  .last { display: flex; gap: 12px; align-items: center; border-top: 1px solid var(--line); padding-top: 14px; }
+  .last .sprite { width: 64px; height: 64px; flex: none; }
+  .last .name { font-size: 18px; font-weight: 600; }
+  .last .detail { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .shiny-name { color: var(--gold); }
+  .recent { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+  .recent .row { display: flex; gap: 6px; margin-top: 6px; min-height: 64px; }
+  .recent figure { width: 52px; text-align: center; }
+  .recent img { width: 48px; height: 48px; }
+  .recent figcaption { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .recent .none { color: var(--muted); font-size: 13px; align-self: center; }
+</style>
+</head>
+<body>
+  <p class="waiting">Waiting for pokebot-3ds…</p>
+
+  <section id="bar" class="card" aria-label="Hunt counter">
+    <img class="sprite" data-bind="last-sprite" alt="">
+    <div class="phase">
+      <div class="label">Phase</div>
+      <div class="hero" data-bind="phase">0</div>
+    </div>
+    <div class="odds">
+      <div class="label"><span data-bind="chance">0.0%</span> chance by now</div>
+      <div class="meter"><i data-bind="meter"></i></div>
+      <span class="badge">Shiny!</span>
+    </div>
+    <div class="shinies">
+      <div class="label">Shinies</div>
+      <div class="value" data-bind="shinies">0</div>
+    </div>
+  </section>
+
+  <section id="panel" class="card" aria-label="Hunt stats">
+    <header>
+      <span class="label">Current phase</span>
+      <span class="badge">Shiny!</span>
+    </header>
+    <div class="hero" data-bind="phase">0</div>
+    <div class="meter"><i data-bind="meter"></i></div>
+    <div class="caption"><span data-bind="chance">0.0%</span> chance of a shiny by now ·
+      50% at <span data-bind="half">2,839</span></div>
+    <div class="tiles">
+      <div class="tile"><div class="label">Avg phase</div><div class="value" data-bind="avg">—</div></div>
+      <div class="tile"><div class="label">Last phase</div><div class="value" data-bind="last-phase">—</div></div>
+      <div class="tile"><div class="label">Shinies</div><div class="value" data-bind="shinies">0</div></div>
+      <div class="tile"><div class="label">Total seen</div><div class="value" data-bind="total">0</div></div>
+    </div>
+    <div class="last">
+      <img class="sprite" data-bind="last-sprite" alt="">
+      <div>
+        <div class="label">Last encounter</div>
+        <div class="name" data-bind="last-name">—</div>
+        <div class="detail" data-bind="last-detail"></div>
+      </div>
+    </div>
+    <div class="recent">
+      <div class="label">Recent shinies</div>
+      <div class="row" data-bind="recent"></div>
+    </div>
+  </section>
+
+<script>
+  const layout = location.pathname.replace(/\//g, "") || "panel";
+  document.body.classList.add("layout-" + (layout === "bar" ? "bar" : "panel"));
+  const SHINY_GLOW_S = 120;
+  const fmt = (n) => (n === null || n === undefined) ? "—" : Number(n).toLocaleString("en-US");
+  const all = (key) => document.querySelectorAll(`[data-bind="${key}"]`);
+  const set = (key, text) => all(key).forEach((el) => { el.textContent = text; });
+
+  function setSprite(img, mon) {
+    if (!mon) { img.removeAttribute("src"); img.alt = ""; return; }
+    if (img.dataset.src === mon.sprite) return;
+    img.dataset.src = mon.sprite;
+    img.alt = mon.name;
+    img.onerror = () => { if (mon.fallback && img.src !== mon.fallback) img.src = mon.fallback; };
+    img.src = mon.sprite;
+  }
+
+  function render(s) {
+    set("phase", fmt(s.phase));
+    set("chance", (100 * s.chance).toFixed(1) + "%");
+    set("half", fmt(s.half_odds_at));
+    set("avg", fmt(s.avg_phase));
+    set("last-phase", fmt(s.last_phase));
+    set("shinies", fmt(s.shinies));
+    set("total", fmt(s.total));
+    all("meter").forEach((el) => { el.style.width = (100 * s.chance).toFixed(2) + "%"; });
+
+    const last = s.last;
+    all("last-sprite").forEach((img) => setSprite(img, last));
+    all("last-name").forEach((el) => {
+      el.textContent = last ? last.name : "—";
+      el.classList.toggle("shiny-name", Boolean(last && last.shiny));
+    });
+    set("last-detail", last ? [last.shiny ? "★ Shiny" : "", last.nature,
+                               last.ivs ? "IVs " + last.ivs.join("/") : ""]
+                               .filter(Boolean).join(" · ") : "");
+    const fresh = last && last.shiny && (Date.now() / 1000 - last.at) < SHINY_GLOW_S;
+    document.body.classList.toggle("shiny-on", Boolean(fresh));
+
+    all("recent").forEach((row) => {
+      const key = JSON.stringify(s.recent);
+      if (row.dataset.key === key) return;
+      row.dataset.key = key;
+      row.replaceChildren();
+      if (!s.recent.length) {
+        const none = document.createElement("span");
+        none.className = "none";
+        none.textContent = "None yet";
+        row.append(none);
+      }
+      for (const mon of s.recent) {
+        const fig = document.createElement("figure");
+        const img = document.createElement("img");
+        setSprite(img, mon);
+        const cap = document.createElement("figcaption");
+        cap.textContent = fmt(mon.phase);
+        fig.append(img, cap);
+        row.append(fig);
+      }
+    });
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch("/state.json", { cache: "no-store" });
+      const state = await res.json();
+      document.body.classList.toggle("offline", !("phase" in state));
+      if ("phase" in state) render(state);
+    } catch (err) {
+      document.body.classList.add("offline");
+    }
+    setTimeout(poll, 1000);
+  }
+  poll();
+</script>
+</body>
+</html>
