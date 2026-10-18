@@ -28,8 +28,10 @@ import logging
 import time
 from dataclasses import dataclass
 
+from ..citra_rpc import RPCError
 from ..games import DEFAULT_OT_NAME
 from ..pk6_export import ensure_targets_dir
+from ..xy_battle import BUSY, MENU, NONE, battle_state
 from . import (catch, fishing_loop, foe_watch, game_reset,
                rock_smash_loop)
 from .observe import (scan_nonparty, get_party,
@@ -300,6 +302,59 @@ def _use_sweet_scent(ctx, gap: float, seq: list | None = None) -> None:
         ctx._stop_evt.wait(gap)
 
 
+#: X/Y: how long to wait for the battle to start after the wild shows up
+#: in RAM (it is generated before the battle screen takes over).
+_BATTLE_START_S = 15.0
+
+
+def _reads_battle(ctx) -> bool:
+    """X/Y: the battle's own state is readable (pokebot/xy_battle.py)."""
+    return getattr(getattr(ctx, "game", None), "key", "") in ("X-USA", "Y-USA")
+
+
+def _flee_watching_ram(ctx, layout, run_local, override,
+                       timeout: float) -> bool:
+    """Flee by watching the battle instead of a timed script.
+
+    B clears text until the command menu is drawn, RUN is touched, and
+    the flee is over when the battle module lets go. A failed escape
+    brings the menu back, and RUN is touched again. Works at any
+    emulator speed. False if the battle never ended within ``timeout``.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
+    start_by = started + _BATTLE_START_S
+    seen = False
+    fx, fy, how = _run_fraction(layout, run_local, override)
+    while not ctx.should_stop() and time.monotonic() < deadline:
+        try:
+            state = battle_state(ctx.rpc)
+        except (RPCError, OSError):
+            state = BUSY                      # one dropped read
+        if state == NONE:
+            if seen:
+                log.info(f"  flee: battle over after "
+                         f"{time.monotonic() - started:.1f}s")
+                return True
+            # the wild is in RAM before the battle starts running
+            if time.monotonic() > start_by:
+                log.info("  flee: no battle started; nothing to flee")
+                return True
+            ctx._stop_evt.wait(0.05)
+            continue
+        seen = True
+        if state == MENU:
+            ok = ctx.input.tap_touch(fx, fy, hold_s=0.08)
+            log.info(f"  flee: command menu up -> touch RUN @ "
+                     f"({fx:.3f},{fy:.3f}) [{how}] "
+                     f"-> {'sent' if ok else 'FAILED (touch unavailable)'}")
+            ctx._stop_evt.wait(0.3)           # let the menu take the touch
+        else:
+            ctx.input.tap("B", hold_s=0.05)
+            ctx._stop_evt.wait(0.1)
+    return False
+
+
 def _flee(ctx, layout, run_local, override, plan: FleePlan,
           walker: "Walker | None" = None) -> None:
     """Clear the appearance text so the command menu is up, wait for
@@ -308,7 +363,16 @@ def _flee(ctx, layout, run_local, override, plan: FleePlan,
     Given a ``walker``, every wait here is spent moving instead of
     standing still. move_running holds B for each step, so the walking
     also does the text-clearing these taps used to do on their own.
+
+    X/Y watch the battle itself instead (_flee_watching_ram); the timed
+    sequence is their fallback when it does not see the battle end.
     """
+    if _reads_battle(ctx):
+        if _flee_watching_ram(ctx, layout, run_local, override,
+                              plan.stuck_timeout or 60.0):
+            return
+        log.warning("  flee: the battle did not end; trying the timed "
+                    "sequence")
     def pause(seconds: float) -> None:
         if walker is not None:
             walker.wait(seconds)
@@ -682,8 +746,11 @@ def run(ctx) -> None:
                     # Wait out the battle intro/animation so the command
                     # menu (and the RUN button) is actually on screen —
                     # walking through it, so the player is already moving
-                    # when the battle lets go.
-                    if flee_walker is not None:
+                    # when the battle lets go. X/Y read when the menu is
+                    # up instead (_flee_watching_ram), so need no wait.
+                    if _reads_battle(ctx):
+                        pass
+                    elif flee_walker is not None:
                         flee_walker.wait(flee_plan.delay)
                     else:
                         ctx._stop_evt.wait(flee_plan.delay)

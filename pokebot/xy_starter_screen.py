@@ -43,25 +43,31 @@ def _follow(rpc, addr: int, *offsets: int) -> int:
     return ptr
 
 
-def _module_base(rpc) -> Optional[int]:
+def module_base(rpc, name: bytes) -> Optional[int]:
+    """Live base of the loaded CRO module ``name``, or None."""
     m = _follow(rpc, STATIC_CRS_PTR, 0x88)
     for _ in range(_MAX_MODULES):
         if not m:
             return None
         name_ptr, nxt = struct.unpack("<II", rpc.read(m + 0x84, 8))
-        if rpc.read(name_ptr, len(MODULE) + 1) == MODULE + b"\0":
+        if rpc.read(name_ptr, len(name) + 1) == name + b"\0":
             return m
         m = nxt
     return None
 
 
+def running_proc(rpc) -> int:
+    """Address of the process the game is running, or 0."""
+    return _follow(rpc, GAME_MANAGER_PTR, 0x14, 0x10, 0x0C)
+
+
 def focused_starter(rpc) -> Optional[int]:
     """None when the selection screen is not up, LOADING while it is
     coming up, otherwise the focused starter's index."""
-    base = _module_base(rpc)
+    base = module_base(rpc, MODULE)
     if base is None:
         return None
-    proc = _follow(rpc, GAME_MANAGER_PTR, 0x14, 0x10, 0x0C)
+    proc = running_proc(rpc)
     if not proc or rpc.read_u32(proc) != base + _PROC_VTABLE:
         return LOADING
     upper = _follow(rpc, proc + 0x3C, 0x7C)
