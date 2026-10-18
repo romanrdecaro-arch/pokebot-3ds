@@ -13,6 +13,7 @@ It will:
 """
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -69,7 +70,26 @@ _STATS_DEFAULT = {
     # PSV is near YOUR TSV, not when it is near zero.
     "phase_best_sv": None,
     "phase_best_iv": None,   # highest IV-sum seen this phase
+    "last_phase": None,      # length of the most recently closed phase
 }
+
+#: Full odds, the rate for a starter. shortcut: the Shiny Charm, Masuda
+#: and chaining raise it; take it from the hunt once the launcher knows.
+_SHINY_ODDS = 1 / 4096
+#: Encounters at which a phase passes even odds of having found a shiny.
+_HALF_ODDS_AT = math.ceil(math.log(0.5) / math.log(1 - _SHINY_ODDS))
+
+
+def _phase_metrics(stats: dict) -> dict:
+    """Average phase and the chance of a shiny by now.
+
+    Every encounter outside the open phase belongs to a finished one, so
+    the average phase is (total - phase) / shinies."""
+    phase = int(stats.get("phase", 0))
+    shinies = int(stats.get("shinies", 0))
+    finished = int(stats.get("total", 0)) - phase
+    return {"avg_phase": round(finished / shinies) if shinies else None,
+            "chance": 1 - (1 - _SHINY_ODDS) ** phase}
 
 
 def _load_stats() -> dict:
@@ -82,6 +102,8 @@ def _load_stats() -> dict:
         s["shinies"] = int(d.get("shinies", 0))
         biv = d.get("phase_best_iv")
         s["phase_best_iv"] = int(biv) if biv is not None else None
+        last = d.get("last_phase")
+        s["last_phase"] = int(last) if last is not None else None
 
         # phase_best_sv changed meaning in v2 (bare PSV -> psv ^ tsv).
         # The two are not comparable, and an old small PSV would sit
@@ -264,23 +286,28 @@ import queue
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
 
-# iOS-leaning dark palette: pure-black background with slightly raised
-# 'cards' in iOS Dark's typical surface gray, plus the brand red as the
-# primary action. Borders are barely-there so cards float instead of
-# looking boxed-in.
-_BG     = "#000000"   # iOS dark background
-_PANEL  = "#0a0a0a"   # 'group' container
-_PANEL2 = "#1c1c1e"   # iOS Dark elevated surface
-_PANEL3 = "#2c2c2e"   # iOS Dark grouped table row
-_BORDER = "#262626"
-_TEXT   = "#ffffff"
-_MUTED  = "#8e8e93"   # iOS secondary label
-_ACCENT = "#ee1515"   # Pokéball red — primary CTA
-_ACCENT_DEEP = "#b80f0f"  # darker red for hairline accents on dark bg
-_ACCENT2 = "#0a84ff"  # iOS systemBlue
-_GOOD   = "#30d158"   # iOS systemGreen
-_WARN   = "#ffd60a"   # iOS systemYellow
-_DANGER = "#ff453a"   # iOS systemRed
+# Dark palette: off-black base and one cool grey family, so surfaces
+# step up in even increments instead of jumping from pure black. One
+# accent (a softened Pokeball red) marks the primary action and the
+# active tab only; green/amber/red are status colours, never decoration.
+_BG     = "#0f1012"   # window background
+_PANEL  = "#141518"   # sidebar and right pane
+_PANEL2 = "#1b1d21"   # cards and table
+_PANEL3 = "#25272c"   # inputs, disabled buttons, hover
+_BORDER = "#2a2d33"
+_TEXT   = "#ecedef"
+_MUTED  = "#8b9099"   # secondary text, 5.6:1 on _PANEL2
+_ACCENT = "#e5484d"   # primary action
+_GOOD   = "#3dd68c"
+_WARN   = "#f5c451"
+_DANGER = "#ff6369"
+_SHINY  = "#ffd86b"   # shiny text, rows and the chance meter
+_SHINY_BG = "#2a230a"
+
+#: Segoe UI ships with Windows; the Semibold face gives headings and
+#: numbers weight without the heaviness of Bold.
+_FONT = "Segoe UI"
+_FONT_SEMI = "Segoe UI Semibold"
 
 
 _LOGO_PNG = Path(__file__).resolve().parent / "assets" / "logo.png"
@@ -411,6 +438,31 @@ def _hex_to_rgb(c: str):
     if len(c) != 6:
         return (28, 28, 30)
     return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _lighten(c: str, amount: float = 0.12) -> str:
+    """``c`` mixed ``amount`` of the way toward white."""
+    return "#%02x%02x%02x" % tuple(
+        round(v + (255 - v) * amount) for v in _hex_to_rgb(c))
+
+
+def _hover(btn: tk.Button) -> None:
+    """Lighten a flat button under the pointer.
+
+    Tk on Windows only recolours a button while it is pressed. The
+    colour is read on entry, so it stays right when a button changes
+    colour with the run state."""
+    def enter(_):
+        if str(btn["state"]) != "disabled":
+            btn._rest_bg = btn["bg"]
+            btn.config(bg=_lighten(btn["bg"]))
+
+    def leave(_):
+        rest = getattr(btn, "_rest_bg", None)
+        if rest and btn["bg"] == _lighten(rest):
+            btn.config(bg=rest)
+    btn.bind("<Enter>", enter, add="+")
+    btn.bind("<Leave>", leave, add="+")
 
 
 def _prep_gif(path, max_w: int, max_h: int, bg: str = "#1c1c1e"):
@@ -766,13 +818,10 @@ class _PartyStrip(tk.Frame):
 
         title_bar = tk.Frame(self, bg=_PANEL)
         title_bar.pack(fill="x", padx=6, pady=(0, 6))
-        tk.Frame(title_bar, bg=_ACCENT, width=3, height=14).pack(
-            side="left", padx=(0, 8))
-        tk.Label(title_bar, text="Party", bg=_PANEL, fg=_TEXT,
-                 font=("Segoe UI", 11, "bold")).pack(side="left")
+        tk.Label(title_bar, text="Party", bg=_PANEL, fg=_MUTED,
+                 font=(_FONT_SEMI, 10)).pack(side="left")
 
-        row = tk.Frame(self, bg=_PANEL2,
-                       highlightthickness=1, highlightbackground=_BORDER)
+        row = tk.Frame(self, bg=_PANEL2)
         row.pack(fill="x", padx=4, pady=(0, 6), ipady=4)
         # Six equal-width slot cells.
         for i in range(self.SLOTS):
@@ -828,7 +877,7 @@ class _PartyStrip(tk.Frame):
         box.pack_propagate(False)
         spr = tk.Label(box, bg=bg, bd=0, highlightthickness=0)
         spr.place(relx=0.5, rely=0.5, anchor="center")
-        lvl = tk.Label(cell, bg=bg, font=("Segoe UI", 9, "bold"))
+        lvl = tk.Label(cell, bg=bg, font=(_FONT_SEMI, 9))
         lvl.pack()
         name = tk.Label(cell, bg=bg, fg=_MUTED,
                         font=("Segoe UI", 8))
@@ -849,8 +898,8 @@ class _PartyStrip(tk.Frame):
         level = evt.get("level")
         nick = evt.get("nickname") or ""
         if shiny:
-            cell.configure(bg="#2a230a", highlightthickness=1,
-                           highlightbackground="#ffd86b")
+            cell.configure(bg=_SHINY_BG, highlightthickness=1,
+                           highlightbackground=_SHINY)
         else:
             cell.configure(bg=_PANEL2, highlightthickness=0)
         bg = cell.cget("bg")
@@ -860,7 +909,7 @@ class _PartyStrip(tk.Frame):
         if shiny:
             lvl_text += "  ★"
         lvl.config(text=lvl_text, bg=bg,
-                   fg="#ffd86b" if shiny else _TEXT)
+                   fg=_SHINY if shiny else _TEXT)
         name.config(text=nick if nick else f"#{species_id}", bg=bg,
                     fg=_MUTED, font=("Segoe UI", 8))
 
@@ -897,14 +946,14 @@ class _RecentlySeen(tk.Frame):
 
     #: (column id, heading, width px, anchor)
     _COLUMNS = (
-        ("gender",  "Gender",        62, "center"),
-        ("level",   "Level",         62, "center"),
-        ("pid",     "PID",           92, "center"),
-        ("sv",      "Shiny Value",   98, "center"),
-        ("ability", "Ability",      140, "w"),
-        ("nature",  "Nature",        86, "center"),
-        ("ivs",     "IVs",          186, "center"),
-        ("hp",      "Hidden Power", 118, "center"),
+        ("gender",  "Gender",        58, "center"),
+        ("level",   "Level",         54, "center"),
+        ("pid",     "PID",           86, "center"),
+        ("sv",      "Shiny value",   90, "center"),
+        ("ability", "Ability",      124, "w"),
+        ("nature",  "Nature",        80, "center"),
+        ("ivs",     "IVs",          168, "center"),
+        ("hp",      "Hidden power", 104, "center"),
     )
 
     _IV_ORDER = ("HP", "Atk", "Def", "Spe", "SpA", "SpD")
@@ -913,21 +962,11 @@ class _RecentlySeen(tk.Frame):
         super().__init__(parent, bg=_PANEL)
         self.pack(fill="both", expand=True)
 
-        # Title bar
-        title_bar = tk.Frame(self, bg=_PANEL)
-        title_bar.pack(fill="x", padx=14, pady=(10, 4))
-        tk.Frame(title_bar, bg=_ACCENT, width=4, height=18).pack(
-            side="left", padx=(0, 10))
-        tk.Label(title_bar, text="Recently Seen",
-                 bg=_PANEL, fg=_TEXT,
-                 font=("Segoe UI", 13, "bold")).pack(side="left")
         self._stats = _load_stats()
         self._sess_start = time.time()   # this run only (rate)
         self._sess_n = 0
-        self._counter_lbl = tk.Label(
-            title_bar, text=self._counter_text(),
-            bg=_PANEL, fg=_MUTED, font=("Segoe UI", 9))
-        self._counter_lbl.pack(side="right")
+        self._build_stats_panel()
+        self._refresh_stats()
 
         self._install_style()
 
@@ -949,7 +988,7 @@ class _RecentlySeen(tk.Frame):
         for cid, text, width, anchor in self._COLUMNS:
             self._tree.heading(cid, text=text, anchor="center")
             self._tree.column(cid, width=width, minwidth=width,
-                              anchor=anchor, stretch=False)
+                              anchor=anchor, stretch=True)
 
         sb = ttk.Scrollbar(holder, orient="vertical",
                            command=self._tree.yview)
@@ -959,8 +998,8 @@ class _RecentlySeen(tk.Frame):
 
         # Whole-row tints. A shiny row is the one thing worth spotting
         # from across the room, so it keeps its warm gold treatment.
-        self._tree.tag_configure("shiny", background="#2a230a",
-                                 foreground="#ffd86b")
+        self._tree.tag_configure("shiny", background=_SHINY_BG,
+                                 foreground=_SHINY)
         self._tree.tag_configure("normal", background=_PANEL2,
                                  foreground=_TEXT)
 
@@ -971,11 +1010,14 @@ class _RecentlySeen(tk.Frame):
         #: species key -> rows waiting on that species' fetch
         self._pending: dict = {}
         self._iids: list = []
-        self._placeholder = self._tree.insert(
-            "", "end", text="",
-            values=("", "", "", "No encounters yet — start a hunt.",
-                    "", "", "", ""),
-            tags=("normal",))
+        # Empty state laid over the table: as a row, the message was
+        # squeezed into one narrow column and cut off.
+        self._placeholder = tk.Label(
+            holder, bg=_PANEL2, fg=_MUTED, font=(_FONT, 10),
+            justify="center",
+            text="No encounters yet.\nStart a hunt and every Pokémon "
+                 "the bot sees is listed here.")
+        self._placeholder.place(relx=0.5, rely=0.4, anchor="center")
 
     # ---- ttk styling -------------------------------------------------------
 
@@ -993,17 +1035,20 @@ class _RecentlySeen(tk.Frame):
             foreground=_TEXT,
             rowheight=self.ROW_HEIGHT,
             borderwidth=0,
-            font=("Segoe UI", 10),
+            bordercolor=_PANEL2, lightcolor=_PANEL2, darkcolor=_PANEL2,
+            font=(_FONT, 10),
         )
         style.configure(
             "Seen.Treeview.Heading",
-            background=_PANEL,
+            background=_PANEL2,
             foreground=_MUTED,
-            font=("Segoe UI", 9, "bold"),
+            font=(_FONT_SEMI, 9),
             borderwidth=0,
+            bordercolor=_BORDER, lightcolor=_PANEL2, darkcolor=_BORDER,
+            padding=(0, 6),
             relief="flat",
         )
-        style.map("Seen.Treeview.Heading", background=[("active", _PANEL)])
+        style.map("Seen.Treeview.Heading", background=[("active", _PANEL3)])
         # Keep a selected row readable instead of the default blue.
         style.map("Seen.Treeview",
                   background=[("selected", "#33343a")],
@@ -1011,20 +1056,75 @@ class _RecentlySeen(tk.Frame):
 
     # ---- counters ----------------------------------------------------------
 
-    def _counter_text(self) -> str:
+    #: (key, caption) for the small stat tiles, four per row.
+    _METRICS = (("avg", "Avg phase"), ("last", "Last phase"),
+                ("shinies", "Shinies"), ("total", "Total seen"),
+                ("rate", "Per hour"), ("session", "This session"),
+                ("closest", "Closest SV"), ("best_iv", "Best IV sum"))
+    METER_W = 200
+
+    def _build_stats_panel(self) -> None:
+        """The current phase large, with its shiny-chance meter, beside a
+        grid of the smaller numbers."""
+        panel = tk.Frame(self, bg=_PANEL)
+        panel.pack(fill="x", padx=10, pady=(10, 8))
+
+        hero = tk.Frame(panel, bg=_PANEL2, padx=16, pady=10)
+        hero.pack(side="left", fill="y")
+        tk.Label(hero, text="Current phase", bg=_PANEL2, fg=_MUTED,
+                 font=(_FONT, 9), anchor="w").pack(fill="x")
+        self._phase_lbl = tk.Label(hero, bg=_PANEL2, fg=_TEXT,
+                                   font=(_FONT_SEMI, 28), anchor="w")
+        self._phase_lbl.pack(fill="x")
+        self._meter = tk.Canvas(hero, width=self.METER_W, height=6,
+                                bg=_PANEL3, highlightthickness=0, bd=0)
+        self._meter.pack(anchor="w", pady=(4, 5))
+        self._meter_fill = self._meter.create_rectangle(
+            0, 0, 0, 6, fill=_SHINY, width=0)
+        self._chance_lbl = tk.Label(hero, bg=_PANEL2, fg=_MUTED,
+                                    font=(_FONT, 9), anchor="w")
+        self._chance_lbl.pack(fill="x")
+
+        grid = tk.Frame(panel, bg=_PANEL)
+        grid.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        self._metric_lbls: dict = {}
+        for i, (key, caption) in enumerate(self._METRICS):
+            row, col = divmod(i, 4)
+            cell = tk.Frame(grid, bg=_PANEL2, padx=12, pady=7)
+            cell.grid(row=row, column=col, sticky="nsew",
+                      padx=(0 if col == 0 else 6, 0),
+                      pady=(0 if row == 0 else 6, 0))
+            tk.Label(cell, text=caption, bg=_PANEL2, fg=_MUTED,
+                     font=(_FONT, 9), anchor="w").pack(fill="x")
+            lbl = tk.Label(cell, bg=_PANEL2, fg=_TEXT,
+                           font=(_FONT_SEMI, 14), anchor="w")
+            lbl.pack(fill="x")
+            self._metric_lbls[key] = lbl
+        for col in range(4):
+            grid.grid_columnconfigure(col, weight=1, uniform="metric")
+        for row in range(2):
+            grid.grid_rowconfigure(row, weight=1)
+
+    def _refresh_stats(self) -> None:
         s = self._stats
-        bsv = s["phase_best_sv"]
-        biv = s["phase_best_iv"]
-        el = time.time() - getattr(self, "_sess_start", time.time())
-        n = getattr(self, "_sess_n", 0)
-        if el >= 45 and n > 0:               # avoid wild early numbers
-            rate = f"{round(n / (el / 3600.0))}/hr"
-        else:
-            rate = "…/hr"
-        return (f"Phase {s['phase']}  ·  Total {s['total']}  ·  "
-                f"★ Shinies {s.get('shinies', 0)}  ·  "
-                f"Closest {bsv if bsv is not None else '—'}  ·  "
-                f"Best IV {biv if biv is not None else '—'}  ·  {rate}")
+        m = _phase_metrics(s)
+        self._phase_lbl.config(text=f"{s['phase']:,}")
+        self._meter.coords(self._meter_fill, 0, 0,
+                           round(self.METER_W * m["chance"]), 6)
+        self._chance_lbl.config(
+            text=f"{m['chance']:.1%} chance of a shiny by now  ·  "
+                 f"50% at {_HALF_ODDS_AT:,}")
+        el = time.time() - self._sess_start
+        values = {"avg": m["avg_phase"], "last": s.get("last_phase"),
+                  "shinies": s.get("shinies", 0), "total": s["total"],
+                  "closest": s["phase_best_sv"], "best_iv": s["phase_best_iv"],
+                  "session": self._sess_n,
+                  # no rate until 45 s in: early numbers swing wildly
+                  "rate": (round(self._sess_n / (el / 3600.0))
+                           if el >= 45 and self._sess_n else None)}
+        for key, value in values.items():
+            self._metric_lbls[key].config(
+                text="—" if value is None else f"{value:,}")
 
     def reload_stats(self) -> None:
         """Re-read the counters after the stats scope changed.
@@ -1036,8 +1136,7 @@ class _RecentlySeen(tk.Frame):
         self._stats = _load_stats()
         self._sess_start = time.time()
         self._sess_n = 0
-        self._counter_lbl.config(text=self._counter_text(),
-                                 fg=_MUTED, font=("Segoe UI", 9))
+        self._refresh_stats()
 
     @staticmethod
     def _evt_psv(evt: dict):
@@ -1078,6 +1177,7 @@ class _RecentlySeen(tk.Frame):
         # target_hit only CLOSES the phase (reset phase + per-phase
         # bests), no double count.
         if evt.get("type") == "target_hit":
+            self._stats["last_phase"] = self._stats["phase"]
             self._stats["phase"] = 0
             self._stats["phase_best_sv"] = None
             self._stats["phase_best_iv"] = None
@@ -1099,15 +1199,10 @@ class _RecentlySeen(tk.Frame):
                 self._stats["phase_best_iv"] = (
                     ivs if cur is None else max(cur, ivs))
         _save_stats(self._stats)
-        self._counter_lbl.config(
-            text=self._counter_text(),
-            fg=_ACCENT, font=("Segoe UI", 9, "bold"))
+        self._refresh_stats()
 
         if self._placeholder is not None:
-            try:
-                self._tree.delete(self._placeholder)
-            except tk.TclError:
-                pass
+            self._placeholder.destroy()
             self._placeholder = None
 
         generation = int(evt.get("generation") or 6)
@@ -1358,6 +1453,7 @@ class _App(tk.Tk):
         self._last_detected_game: str | None = None
 
         self._build()
+        self._dark_title_bar()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._pump_bot_lines()
         self._pump_bot_exit()
@@ -1373,25 +1469,69 @@ class _App(tk.Tk):
     # ---- Layout -----------------------------------------------------------
 
     def _tweak_ttk_theme(self):
-        """Restyle ttk Combobox to fit the dark palette."""
+        """Dark ttk widgets. clam draws every widget edge with light
+        border/light/dark colours, which showed as white frames."""
         s = ttk.Style()
+        edges = dict(bordercolor=_BORDER, lightcolor=_PANEL3, darkcolor=_PANEL3)
         s.configure("Dark.TCombobox",
-                    fieldbackground=_PANEL2, background=_PANEL2,
-                    foreground=_TEXT, arrowcolor=_TEXT,
-                    bordercolor=_BORDER, lightcolor=_BORDER,
-                    darkcolor=_BORDER, selectbackground=_PANEL2,
-                    selectforeground=_TEXT, padding=4)
+                    fieldbackground=_PANEL3, background=_PANEL3,
+                    foreground=_TEXT, arrowcolor=_MUTED,
+                    selectbackground=_PANEL3, selectforeground=_TEXT,
+                    padding=(8, 5), **edges)
         s.map("Dark.TCombobox",
-              fieldbackground=[("readonly", _PANEL2)],
+              fieldbackground=[("readonly", _PANEL3)],
               foreground=[("readonly", _TEXT)],
-              selectbackground=[("readonly", _PANEL2)],
-              selectforeground=[("readonly", _TEXT)])
+              selectbackground=[("readonly", _PANEL3)],
+              selectforeground=[("readonly", _TEXT)],
+              arrowcolor=[("active", _TEXT)],
+              bordercolor=[("focus", _MUTED)])
         # Combobox dropdown listbox uses option-db, not Style.
-        self.option_add("*TCombobox*Listbox.background", _PANEL2)
+        self.option_add("*TCombobox*Listbox.background", _PANEL3)
         self.option_add("*TCombobox*Listbox.foreground", _TEXT)
         self.option_add("*TCombobox*Listbox.selectBackground", _ACCENT)
         self.option_add("*TCombobox*Listbox.selectForeground", "white")
         self.option_add("*TCombobox*Listbox.borderWidth", 0)
+
+        flat = dict(bordercolor=_PANEL, lightcolor=_PANEL, darkcolor=_PANEL)
+        s.configure("Dark.TNotebook", background=_PANEL, borderwidth=0,
+                    tabmargins=(8, 6, 8, 0), **flat)
+        s.configure("Dark.TNotebook.Tab", background=_PANEL,
+                    foreground=_MUTED, padding=(16, 7), borderwidth=0,
+                    font=(_FONT_SEMI, 10), **flat)
+        s.map("Dark.TNotebook.Tab",
+              background=[("selected", _PANEL2), ("active", _PANEL3)],
+              foreground=[("selected", _TEXT), ("active", _TEXT)],
+              bordercolor=[("selected", _PANEL2), ("!selected", _PANEL)],
+              lightcolor=[("selected", _PANEL2), ("!selected", _PANEL)])
+        # clam's tab layout includes a focus ring, drawn as a light outline
+        s.layout("Dark.TNotebook.Tab", [("Notebook.tab", {
+            "sticky": "nswe", "children": [("Notebook.padding", {
+                "side": "top", "sticky": "nswe", "children": [
+                    ("Notebook.label", {"side": "top", "sticky": ""})]})]})])
+        s.configure("Vertical.TScrollbar", background=_PANEL3,
+                    troughcolor=_PANEL2, arrowcolor=_MUTED,
+                    gripcount=0, **edges)
+        s.map("Vertical.TScrollbar", background=[("active", _BORDER)])
+
+    def _dark_title_bar(self) -> None:
+        """Windows draws a light title bar unless asked (Win10 1809+);
+        Win11 also takes a caption colour, matched to the header."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            self.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            dwm = ctypes.windll.dwmapi.DwmSetWindowAttribute
+            on = ctypes.c_int(1)
+            for attr in (20, 19):          # USE_IMMERSIVE_DARK_MODE, pre-20H1 id
+                if dwm(hwnd, attr, ctypes.byref(on), ctypes.sizeof(on)) == 0:
+                    break
+            r, g, b = _hex_to_rgb(_PANEL)
+            caption = ctypes.c_int(r | g << 8 | b << 16)   # COLORREF
+            dwm(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
+        except Exception:
+            pass
 
     def _build(self):
         # ── Header ──────────────────────────────────────────────────────────
@@ -1410,10 +1550,10 @@ class _App(tk.Tk):
             _draw_pokeball(logo, 40)
         # Wordmark
         tk.Label(hdr, text="pokebot-3ds", bg=_PANEL, fg=_TEXT,
-                 font=("Segoe UI", 16, "bold")).pack(side="left")
+                 font=(_FONT_SEMI, 16)).pack(side="left")
         tk.Label(hdr, text="3DS Gen 6/7 automation",
                  bg=_PANEL, fg=_MUTED,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(10, 0), pady=(6, 0))
+                 font=(_FONT, 9)).pack(side="left", padx=(10, 0), pady=(6, 0))
         # Right-aligned: bot run status pill
         tk.Frame(hdr, bg=_PANEL).pack(side="left", fill="x", expand=True)
         pill = tk.Frame(hdr, bg=_PANEL2, padx=10, pady=4)
@@ -1423,16 +1563,16 @@ class _App(tk.Tk):
         self._dot.pack(side="left", padx=(0, 4))
         self._status_lbl = tk.Label(pill, text="stopped",
                                     bg=_PANEL2, fg=_MUTED,
-                                    font=("Segoe UI", 10, "bold"))
+                                    font=(_FONT_SEMI, 10))
         self._status_lbl.pack(side="left")
         tk.Label(hdr,
                  text=f"Python {sys.version.split()[0]}",
                  bg=_PANEL, fg=_MUTED, font=("Segoe UI", 9)).pack(side="right",
                                                                   padx=(0, 12))
 
-        # Thin red accent stripe under the header — ties the brand colour
-        # into the chrome instead of leaving it only on the Start button.
-        self._stripe = tk.Frame(self, bg=_ACCENT, height=2)
+        # Hairline, not a red stripe: the accent is kept for the one
+        # action that matters, so it still stands out there.
+        self._stripe = tk.Frame(self, bg=_BORDER, height=1)
         self._stripe.pack(fill="x")
 
         # Update notice. Built now, shown only if a newer build exists,
@@ -1479,8 +1619,8 @@ class _App(tk.Tk):
         self._build_log(right)
 
     def _lbl(self, parent, text):
-        tk.Label(parent, text=text.upper(), bg=parent.cget("bg"), fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
+        tk.Label(parent, text=text, bg=parent.cget("bg"), fg=_MUTED,
+                 font=(_FONT_SEMI, 9),
                  anchor="w").pack(fill="x", padx=4, pady=(0, 6))
 
     def _sep(self, parent):
@@ -1493,16 +1633,10 @@ class _App(tk.Tk):
         if title:
             title_row = tk.Frame(wrap, bg=_PANEL)
             title_row.pack(fill="x", padx=4, pady=(0, 6))
-            # 8px red square, then the title in red — gives every section
-            # a brand-coloured anchor on the left edge.
-            tk.Frame(title_row, bg=_ACCENT, width=3, height=12).pack(
-                side="left", padx=(0, 8))
-            tk.Label(title_row, text=title.upper(), bg=_PANEL, fg=_ACCENT,
-                     font=("Segoe UI", 9, "bold"),
+            tk.Label(title_row, text=title, bg=_PANEL, fg=_MUTED,
+                     font=(_FONT_SEMI, 10),
                      anchor="w").pack(side="left")
-        card = tk.Frame(wrap, bg=_PANEL2, padx=14, pady=12,
-                        highlightthickness=1,
-                        highlightbackground=_BORDER)
+        card = tk.Frame(wrap, bg=_PANEL2, padx=14, pady=12)
         card.pack(fill="x")
         return card
 
@@ -1520,7 +1654,7 @@ class _App(tk.Tk):
         self._game_display_lbl = tk.Label(
             status_card, text="Waiting for Azahar…",
             bg=_PANEL2, fg=_MUTED,
-            font=("Segoe UI", 13, "bold"), anchor="w",
+            font=(_FONT_SEMI, 14), anchor="w",
             wraplength=235, justify="left")
         self._game_display_lbl.pack(fill="x", pady=(0, 2))
         self._game_detect_lbl = tk.Label(
@@ -1541,8 +1675,8 @@ class _App(tk.Tk):
             fill="x", pady=(8, 6))
         hdr = tk.Frame(status_card, bg=_PANEL2)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="EMULATOR WINDOW", bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 8, "bold"), anchor="w").pack(side="left")
+        tk.Label(hdr, text="Emulator window", bg=_PANEL2, fg=_MUTED,
+                 font=(_FONT_SEMI, 9), anchor="w").pack(side="left")
         tk.Button(hdr, text="⟳", command=self._refresh_windows,
                   bg=_PANEL2, fg=_MUTED, bd=0, relief="flat",
                   activebackground=_PANEL2, activeforeground=_TEXT,
@@ -1552,7 +1686,7 @@ class _App(tk.Tk):
         self._window_menu = ttk.Combobox(
             status_card, textvariable=self._window_var,
             state="readonly", values=[_AUTO_WINDOW],
-            font=("Segoe UI", 9))
+            font=(_FONT, 9), style="Dark.TCombobox")
         self._window_menu.pack(fill="x", pady=(3, 0))
         self._window_choices: dict = {}
         self._window_hint = tk.Label(
@@ -1569,7 +1703,7 @@ class _App(tk.Tk):
 
         # METHOD
         tk.Label(hunt_card, text="Method", bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
+                 font=(_FONT_SEMI, 9),
                  anchor="w").pack(fill="x", pady=(0, 4))
         self._method_var = tk.StringVar(value="")
         self._method_cb = ttk.Combobox(hunt_card, textvariable=self._method_var,
@@ -1600,7 +1734,7 @@ class _App(tk.Tk):
         # target to pick -- it evaluates whatever the dialog hands over.
         self._sr_target_lbl = tk.Label(
             self._starter_frame, text="Soft-reset target",
-            bg=_PANEL2, fg=_MUTED, font=("Segoe UI", 9, "bold"),
+            bg=_PANEL2, fg=_MUTED, font=(_FONT_SEMI, 9),
             anchor="w")
         self._sr_target_lbl.pack(fill="x", pady=(0, 4))
         self._sr_target_var = tk.StringVar(value="Starters")
@@ -1634,7 +1768,7 @@ class _App(tk.Tk):
         _seed = (_load_config().get("soft_reset", {}) or {})
         tk.Label(self._sr_rest_frame, text="Trainer name (OT)",
                  bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
+                 font=(_FONT_SEMI, 9),
                  anchor="w").pack(fill="x")
         self._trainer_var = tk.StringVar(value=str(
             _seed.get("trainer_name", "")))
@@ -1656,14 +1790,14 @@ class _App(tk.Tk):
         ps_head.pack(fill="x")
         tk.Label(ps_head, text="Press speed",
                  bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
+                 font=(_FONT_SEMI, 9),
                  anchor="w").pack(side="left")
         self._press_var = tk.DoubleVar(value=float(
             _seed.get("press_hold", 0.03)))
         self._press_val_lbl = tk.Label(
             ps_head, text=_press_rate_label(self._press_var.get()),
             bg=_PANEL2, fg=_ACCENT,
-            font=("Segoe UI", 9, "bold"))
+            font=(_FONT_SEMI, 9))
         self._press_val_lbl.pack(side="right")
         tk.Scale(self._sr_rest_frame, from_=0.01, to=0.20,
                  resolution=0.01, orient="horizontal",
@@ -1688,7 +1822,7 @@ class _App(tk.Tk):
             fill="x", pady=(10, 8))
         tk.Label(self._movement_frame, text="Movement",
                  bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
+                 font=(_FONT_SEMI, 9),
                  anchor="w").pack(fill="x", pady=(0, 4))
         self._movement_choices = ["Horizontal (← →)", "Vertical (↑ ↓)"]
         self._movement_var = tk.StringVar(value=self._movement_choices[0])
@@ -1716,7 +1850,7 @@ class _App(tk.Tk):
             fill="x", pady=(10, 8))
         tk.Label(self._noibat_frame, text="Shaking spot direction",
                  bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
+                 font=(_FONT_SEMI, 9),
                  anchor="w").pack(fill="x", pady=(0, 4))
         self._noibat_dirs = ["Up (↑)", "Right (→)",
                              "Down (↓)", "Left (←)"]
@@ -1742,12 +1876,12 @@ class _App(tk.Tk):
         fd_head = tk.Frame(self._movement_frame, bg=_PANEL2)
         fd_head.pack(fill="x")
         tk.Label(fd_head, text="Battle wait before flee",
-                 bg=_PANEL2, fg=_MUTED, font=("Segoe UI", 9, "bold"),
+                 bg=_PANEL2, fg=_MUTED, font=(_FONT_SEMI, 9),
                  anchor="w").pack(side="left")
         self._flee_var = tk.DoubleVar(value=5.0)
         self._flee_val_lbl = tk.Label(
             fd_head, text="5.0 s", bg=_PANEL2, fg=_ACCENT,
-            font=("Segoe UI", 9, "bold"))
+            font=(_FONT_SEMI, 9))
         self._flee_val_lbl.pack(side="right")
         tk.Scale(self._movement_frame, from_=0.5, to=12.0,
                  resolution=0.5, orient="horizontal",
@@ -1773,7 +1907,7 @@ class _App(tk.Tk):
             fill="x", pady=(10, 8))
         tk.Label(self._fishing_frame, text="Fishing",
                  bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
+                 font=(_FONT_SEMI, 9),
                  anchor="w").pack(fill="x", pady=(0, 6))
         # Battle wait before flee — analogous to the encounter slider
         # but separate because the fishing intro (rod-reel + leap +
@@ -1781,12 +1915,12 @@ class _App(tk.Tk):
         ff_head = tk.Frame(self._fishing_frame, bg=_PANEL2)
         ff_head.pack(fill="x")
         tk.Label(ff_head, text="Battle wait before flee",
-                 bg=_PANEL2, fg=_MUTED, font=("Segoe UI", 9, "bold"),
+                 bg=_PANEL2, fg=_MUTED, font=(_FONT_SEMI, 9),
                  anchor="w").pack(side="left")
         self._fish_flee_var = tk.DoubleVar(value=9.0)
         self._fish_flee_lbl = tk.Label(
             ff_head, text="9.0 s", bg=_PANEL2, fg=_ACCENT,
-            font=("Segoe UI", 9, "bold"))
+            font=(_FONT_SEMI, 9))
         self._fish_flee_lbl.pack(side="right")
         tk.Scale(self._fishing_frame, from_=3.0, to=12.0,
                  resolution=0.5, orient="horizontal",
@@ -1814,7 +1948,7 @@ class _App(tk.Tk):
         self._target_divider.pack(fill="x", pady=(10, 8))
         tk.Label(hunt_card, text="Target filter",
                  bg=_PANEL2, fg=_MUTED,
-                 font=("Segoe UI", 9, "bold"),
+                 font=(_FONT_SEMI, 9),
                  anchor="w").pack(fill="x", pady=(0, 4))
         self._target_choices = [
             "Shiny only",
@@ -1851,17 +1985,19 @@ class _App(tk.Tk):
         self._start_btn = tk.Button(
             bar, text="▶  Start Bot", command=self._start_bot,
             bg=_ACCENT, fg="white", relief="flat", bd=0,
-            font=("Segoe UI", 12, "bold"), cursor="hand2",
+            font=(_FONT_SEMI, 12), cursor="hand2",
             activebackground=_ACCENT, activeforeground="white",
-            padx=10, pady=12, highlightthickness=0)
+            padx=10, pady=11, highlightthickness=0)
         self._start_btn.pack(fill="x")
+        _hover(self._start_btn)
         self._stop_btn = tk.Button(
             bar, text="■  Stop Bot", command=self._stop_bot,
             bg=_PANEL3, fg=_MUTED, relief="flat", bd=0,
-            font=("Segoe UI", 10), cursor="hand2", state="disabled",
+            font=(_FONT, 10), cursor="hand2", state="disabled",
             activebackground=_PANEL3, activeforeground=_MUTED,
             padx=10, pady=8, highlightthickness=0)
         self._stop_btn.pack(fill="x", pady=(8, 0))
+        _hover(self._stop_btn)
         # Hairline divider between sticky bar and scrollable area.
         tk.Frame(parent, bg=_BORDER, height=1).pack(side="top", fill="x")
 
@@ -1875,6 +2011,7 @@ class _App(tk.Tk):
                       padx=10, pady=7, bd=0, state=state,
                       highlightthickness=0)
         b.pack(fill="x", padx=12, pady=3)
+        _hover(b)
         return b
 
     # ---- Updates ----------------------------------------------------------
@@ -1889,7 +2026,7 @@ class _App(tk.Tk):
         self._update_btn = tk.Button(
             self._update_bar, text="Update now", command=self._apply_update,
             bg=_ACCENT, fg="white", relief="flat", bd=0,
-            font=("Segoe UI", 9, "bold"), cursor="hand2",
+            font=(_FONT_SEMI, 9), cursor="hand2",
             activebackground=_ACCENT, activeforeground="white",
             padx=12, pady=4, highlightthickness=0)
         self._update_btn.pack(side="right", padx=(10, 0))
@@ -1995,25 +2132,12 @@ class _App(tk.Tk):
 
     def _build_log(self, parent):
         # Two-tab Notebook: "Recently Seen" (sprite encounter table) + "Log".
-        nb = ttk.Notebook(parent)
-        nb.pack(fill="both", expand=True, padx=6, pady=6)
-        try:
-            s = ttk.Style()
-            s.configure("Dark.TNotebook", background=_PANEL, borderwidth=0)
-            s.configure("Dark.TNotebook.Tab",
-                        background=_PANEL, foreground=_MUTED,
-                        padding=(14, 8), borderwidth=0,
-                        font=("Segoe UI", 10, "bold"))
-            s.map("Dark.TNotebook.Tab",
-                  background=[("selected", _PANEL2)],
-                  foreground=[("selected", _ACCENT)])
-            nb.configure(style="Dark.TNotebook")
-        except Exception:
-            pass
+        nb = ttk.Notebook(parent, style="Dark.TNotebook")
+        nb.pack(fill="both", expand=True, padx=6, pady=(4, 6))
 
         # ── Recently Seen tab ───────────────────────────────────────────────
         seen_tab = tk.Frame(nb, bg=_PANEL)
-        nb.add(seen_tab, text="Recently Seen")
+        nb.add(seen_tab, text="Recently seen")
         self._seen = _RecentlySeen(seen_tab)
 
         # ── Log tab ─────────────────────────────────────────────────────────
@@ -2021,10 +2145,13 @@ class _App(tk.Tk):
         nb.add(log_tab, text="Log")
         log_hdr = tk.Frame(log_tab, bg=_PANEL)
         log_hdr.pack(fill="x", padx=10, pady=(8, 2))
-        tk.Button(log_hdr, text="Clear", command=self._clear_log,
-                  bg=_BORDER, fg=_TEXT, relief="flat",
-                  font=("Segoe UI", 8), cursor="hand2",
-                  padx=5, pady=2).pack(side="right")
+        clear = tk.Button(log_hdr, text="Clear", command=self._clear_log,
+                          bg=_PANEL3, fg=_TEXT, relief="flat", bd=0,
+                          font=(_FONT, 9), cursor="hand2",
+                          activebackground=_PANEL3, activeforeground=_TEXT,
+                          padx=10, pady=3, highlightthickness=0)
+        clear.pack(side="right")
+        _hover(clear)
 
         self._log_box = scrolledtext.ScrolledText(
             log_tab, bg=_PANEL2, fg=_TEXT,

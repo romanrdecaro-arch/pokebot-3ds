@@ -262,6 +262,49 @@ def test_v2_stats_are_kept(launcher_mod, tmp_path) -> None:
     assert launcher_mod._load_stats()["phase_best_sv"] == 42
 
 
+def test_average_phase_counts_only_finished_phases(launcher_mod) -> None:
+    m = launcher_mod._phase_metrics(
+        {"total": 627375, "phase": 175, "shinies": 483})
+    assert m["avg_phase"] == round((627375 - 175) / 483)
+    assert launcher_mod._phase_metrics(
+        {"total": 900, "phase": 900, "shinies": 0})["avg_phase"] is None
+
+
+def test_shiny_chance_by_encounter(launcher_mod) -> None:
+    chance = lambda n: launcher_mod._phase_metrics(
+        {"total": n, "phase": n, "shinies": 0})["chance"]
+    assert chance(0) == 0
+    assert chance(1) == pytest.approx(1 / 4096)
+    half = launcher_mod._HALF_ODDS_AT
+    assert chance(half - 1) < 0.5 <= chance(half)
+    assert half == 2839
+
+
+def test_last_phase_loads_and_old_files_default_to_none(
+        launcher_mod, tmp_path) -> None:
+    import json
+    path = tmp_path / "stats.json"
+    path.write_text(json.dumps({"version": 2, "total": 10, "phase": 5,
+                                "shinies": 1}))
+    assert launcher_mod._load_stats()["last_phase"] is None
+    path.write_text(json.dumps({"version": 2, "total": 10, "phase": 5,
+                                "shinies": 1, "last_phase": 1234}))
+    assert launcher_mod._load_stats()["last_phase"] == 1234
+
+
+def test_a_hit_closes_the_phase_into_last_phase(
+        tk_root, launcher_mod, monkeypatch) -> None:
+    monkeypatch.delenv("POKEBOT_STATS_RO", raising=False)  # stats are in tmp
+    table = launcher_mod._RecentlySeen(tk_root)
+    for i in range(3):
+        table.add_pokemon(dict(ENCOUNTER, pid=0x2000 + i))
+    table.add_pokemon({"type": "target_hit"})
+    assert table._stats["last_phase"] == 3
+    assert table._stats["phase"] == 0
+    assert table._metric_lbls["last"].cget("text") == "3"
+    assert launcher_mod._load_stats()["last_phase"] == 3
+
+
 def test_slug_is_filesystem_safe(launcher_mod) -> None:
     slug = launcher_mod._slug('Azahar | "X" <v2>/beta')
     assert not set(slug) & set('<>:"/\\|?* ')
@@ -318,6 +361,9 @@ def test_table_caps_rows_and_widget_count_stays_flat(
     def widget_count(w):
         return 1 + sum(widget_count(c) for c in w.winfo_children())
 
+    # baseline after the first row: it removes the empty-state label
+    table.add_pokemon(dict(ENCOUNTER, pid=0x0FFF))
+    tk_root.update()
     before = widget_count(tk_root)
     for i in range(table.MAX_ROWS * 2):
         table.add_pokemon(dict(ENCOUNTER, pid=0x1000 + i,
@@ -403,8 +449,9 @@ def test_failed_sprite_fetch_clears_pending(
 def test_placeholder_clears_on_first_encounter(tk_root, launcher_mod) -> None:
     table = launcher_mod._RecentlySeen(tk_root)
     tk_root.update()
-    assert len(table._tree.get_children("")) == 1     # the placeholder
+    assert table._placeholder.winfo_manager() == "place"  # empty-state message
+    assert len(table._tree.get_children("")) == 0
     table.add_pokemon(dict(ENCOUNTER))
     tk_root.update()
-    assert len(table._tree.get_children("")) == 1     # replaced, not added
+    assert len(table._tree.get_children("")) == 1
     assert table._placeholder is None
