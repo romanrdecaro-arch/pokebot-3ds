@@ -55,6 +55,9 @@ config.local.yaml
 *.cci
 *.cxi
 *.nds
+# ...except the test fixture of two live MT19937 states (5 KB of RNG
+# state read from memory, no game or save data)
+!tests/data/xy_mt_snapshots.bin
 
 # Offset-finder dumps
 offsets_*.txt
