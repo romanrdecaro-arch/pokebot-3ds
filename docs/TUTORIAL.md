@@ -35,36 +35,18 @@ Open Azahar and verify:
 
 Boot your game once to the title screen so Azahar registers it.
 
-## Step 2 — Find your offsets (one-time per ROM)
+## Step 2 — Offsets: nothing to do
 
-> **Recommended on first setup:** use **PKHeX-Plugins LiveHeX** instead
-> of the bot's auto-discovery scan. See
-> [LIVEHEX_SETUP.md](LIVEHEX_SETUP.md) for full step-by-step. Once you
-> have the address from LiveHeX, paste it into `config.yaml` and skip
-> the rest of this section.
+The RAM addresses the bot reads ship with it for every supported game
+(X/Y, OR/AS, S/M, US/UM), so there is nothing to find. You do **not**
+need PKHeX, PKHeX-Plugins or LiveHeX to hunt. Open the launcher, check
+that the sidebar's `AZAHAR STATUS` line is green and names your game
+(*"Detected: X (USA)"* or similar), and go on to Step 3.
 
-### Auto-discovery (alternative, can be heavy on Azahar)
-
-The bot needs to know where in the game's RAM to find the party.
-Those addresses change per game / region / patch, so we discover them
-once with the offset finder:
-
-1. Open the launcher. The sidebar's `AZAHAR STATUS` line should turn
-   green and say *"Detected: X (USA)"* (or whatever game is loaded).
-2. Click **🔍 Find Offsets (scan RAM)**. With your party loaded and
-   the game on the overworld, this scans memory for buffers that
-   decrypt to valid PK7 records. Takes 1–3 minutes.
-3. When the scan finishes, the launcher log prints something like:
-
-   ```
-   party_base   :  0x330D8B58
-   foe_base     :  0x330D93D8
-   in_battle_flag: 0x330D9438
-   ```
-4. Click **⚙ Edit config.yaml** and paste those addresses into the
-   `offsets:` block, replacing the `0x0` placeholders. Save the file.
-
-You only have to do this once per ROM.
+> PKHeX + LiveHeX is an optional extra for viewing and editing your
+> boxes and trainer data while the game runs. Nothing in this tutorial
+> needs it; if you want it anyway, see
+> [LIVEHEX_SETUP.md](LIVEHEX_SETUP.md).
 
 ## Step 3 — Save in the right spot
 
@@ -128,23 +110,31 @@ What you'll see:
 - A shiny hit gets a gold border around the row, a one-line
   `TARGET!` log entry, and the bot stops automatically.
 
-The bot does this on every iteration:
+The bot does this on every attempt (X / Y):
 
-1. Press **DpadLeft** once to face the table.
-2. Mash **A** (~30 presses, 0.4s gap) until the starter selection
-   menu opens.
-3. Move the cursor to the chosen starter:
-   - Chespin: 2× **DpadLeft** then 2× **A**
-   - Fennekin: 2× **A** (cursor already on it)
-   - Froakie: 2× **DpadRight** then 2× **A**
-4. Mash **A** until the new Pokémon is in your party.
-5. Read party slot 0, decrypt, evaluate against the filter.
-6. If it matches: stop and let you take over. Otherwise: send
-   **L+R+Start** (soft reset), wait 4 seconds, and repeat.
+1. Hold **DpadLeft** for the whole attempt and press **A** fast
+   (~33 presses a second).
+2. Check the party every 0.15 s, and stop pressing the moment a starter
+   lands in it.
+3. Decrypt it and check it against the filter.
+4. If it matches: stop and let you take over. Otherwise: send
+   **L+R+Start** (soft reset) and keep pressing A straight through the
+   boot into the next attempt.
 
-> **Keep Azahar focused while the bot runs.** Inputs are sent as
-> OS-level keystrokes through pynput; if Azahar isn't the active
-> window, the keys go nowhere.
+Nothing is timed or counted, so a cutscene that runs longer or shorter
+(a different region, say) only means a few more or fewer presses.
+
+Because Left is held, you get the starter at the **left end** of the row
+(Chespin in X / Y). To get a different one, set `soft_reset.hold_button`
+in `config.yaml`: `DpadRight` for the right end (Froakie), or `""` for
+no hold, which takes the one under the starting cursor (Fennekin). The
+**STARTER** picker only checks what arrived.
+
+> **You can keep using your PC.** Keys are posted straight to Azahar's
+> window, so it does not have to be in front. Two things do block
+> them, and the bot's log says so if either applies: an Azahar input
+> profile mapped to a controller instead of the keyboard, and Azahar
+> running as administrator when the bot is not.
 
 ## Step 6 — When the bot stops
 
