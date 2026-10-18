@@ -376,7 +376,7 @@ def test_gen6_targets_stay_pk6():
 def test_gen7_offers_manual_mode_and_no_gen6_hunt(key):
     modes = [m.mode for m in games.methods_for(key)]
     assert modes[0] == "observe"
-    assert set(modes) <= {"observe", "usum_starters"}
+    assert set(modes) <= {"observe", "gen7_encounter", "usum_starters"}
 
 
 def test_gen6_menus_are_unchanged():

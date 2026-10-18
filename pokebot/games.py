@@ -448,6 +448,12 @@ def methods_for(game_key: str) -> list[Method]:
                          "allies as they appear and flags any shiny. "
                          "Gen 7 addresses are not yet confirmed on "
                          "Azahar: if nothing shows up, paste the log."),
+            Method("Random encounters (wiggle in place)", "gen7_encounter",
+                   notes="Stand in tall grass. Quick, equal Left/Right "
+                         "Circle Pad pushes keep you on the spot while "
+                         "encounters roll. A SHINY STOPS ALL INPUT with "
+                         "the battle on screen for you to catch; anything "
+                         "else is run from (D-pad Down to RUN, then A)."),
         ]
         if game_key in _USUM_GAMES:
             methods.append(Method(

@@ -229,6 +229,7 @@ Fennekin / Froakie).
 | `gifts`      | ANY gift Pokémon — reset, mash A, evaluate whatever joins the party|
 | `noibat`     | Shaking-spot soft reset; stops ONLY on a shiny Noibat             |
 | `livehex`    | Bridges Azahar to PKHeX for live box / trainer editing             |
+| `gen7_encounter` | Sun/Moon/USUM: wiggles in place in grass; stops on a shiny, runs from the rest |
 
 ## Auto-catching
 

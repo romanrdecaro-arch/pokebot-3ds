@@ -642,8 +642,9 @@ def test_the_received_slot_is_the_one_found_live():
 
 def test_usum_offers_the_starter_hunt_and_sm_does_not():
     assert [m.mode for m in games.methods_for(KEY)] == [
-        "observe", "usum_starters"]
-    assert [m.mode for m in games.methods_for("SM-USA-1.2")] == ["observe"]
+        "observe", "gen7_encounter", "usum_starters"]
+    assert [m.mode for m in games.methods_for("SM-USA-1.2")] == [
+        "observe", "gen7_encounter"]
 
 
 def test_the_mode_is_registered():

@@ -345,6 +345,12 @@ celebi_hunt:
 
 # Random-encounter shiny hunt tuning.
 random_encounters:
+  # --- Sun / Moon / Ultra Sun / Ultra Moon (mode: gen7_encounter) ---
+  # Stand in tall grass. Equal Circle Pad Left/Right pushes of this many
+  # seconds wiggle you in place; a shiny stops all input, anything else
+  # is run from (D-pad Down to RUN, then A). 0.02-0.5.
+  gen7_wiggle_hold: 0.08
+  #
   # --- Pokémon Crystal (Virtual Console) ---------------------------
   # How the opponent's shininess is judged. The in-battle structure's
   # DV offset is not confirmed yet, and reading the wrong byte would
