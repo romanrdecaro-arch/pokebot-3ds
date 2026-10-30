@@ -141,6 +141,7 @@ def run_world(monkeypatch, wilds, generation=7):
     world = World(ctx, wilds)
     monkeypatch.setattr(g7.Modules, "names", lambda self: world.names())
     monkeypatch.setattr(g7, "scan_windows", world.scan)
+    monkeypatch.setattr(g7, "read_xz", lambda rpc, route: None)   # no anchor
     monkeypatch.setattr(g7, "ensure_targets_dir", lambda: None)
     monkeypatch.setattr(g7, "_focus_if_needed", lambda ctx: None)
     reported = []
@@ -205,3 +206,115 @@ def test_flee_gives_up_at_the_timeout(monkeypatch):
 @pytest.mark.parametrize("hold,expect", [(0.08, 0.08), (5, 0.5), (0, 0.02), ("x", 0.08)])
 def test_wiggle_hold_is_clamped(hold, expect):
     assert g7.WigglePlan.from_config({"gen7_wiggle_hold": hold}).hold == expect
+
+
+# --------------------------------------------------------------------
+# Holding the spot (Ultra Sun / Ultra Moon)
+# --------------------------------------------------------------------
+
+def test_read_xz_follows_the_route():
+    mem = Memory()
+    root, parent, player = 0x0062143C, 0x30007078, 0x33F81E20
+    mem.u32(root, parent)
+    mem.u32(parent + 0x88, player)
+    mem.u32(player, 0x0064A4F0)
+    mem.put(player + 0x3B0, struct.pack("<3f", 731.5, 3.9, 1668.5))
+    route = g7._PLAYER_ROUTE["USUM-USA-1.2"]
+    assert g7.read_xz(mem, route) == (731.5, 1668.5)
+    mem.u32(parent + 0x88, 0)                 # null during a battle
+    assert g7.read_xz(mem, route) is None
+    mem.u32(parent + 0x88, player)
+    mem.u32(player, 0x1234)                   # not the player object
+    assert g7.read_xz(mem, route) is None
+
+
+class DriftWorld:
+    """The measured behaviour: a push moves `speed` units per second
+    along its axis, and every Left/Right reversal adds `drift` south."""
+
+    def __init__(self, speed=1800.0, drift=2.0):
+        self.x = self.z = 0.0
+        self.speed, self.drift, self.facing = speed, drift, None
+        self.events = []
+
+    def tap(self, button, hold_s=0.05):
+        self.events.append((button, hold_s))
+        step = self.speed * hold_s
+        if button in ("CircleLeft", "CircleRight"):
+            if self.facing and self.facing != button and \
+                    {self.facing, button} == {"CircleLeft", "CircleRight"}:
+                self.z += self.drift          # the swing through facing down
+            self.x += step if button == "CircleRight" else -step
+        elif button == "CircleUp":
+            self.z -= step
+        elif button == "CircleDown":
+            self.z += step
+        self.facing = button
+
+
+def run_anchor(world, cycles, anchored=True, hold=0.08):
+    ctx = Ctx()
+    ctx.input = world
+    anchor = g7.Anchor(None, None, (0.0, 0.0))
+    anchor.sample = lambda: anchor.samples.append((world.x, world.z))
+    g7_read = g7.read_xz
+    g7.read_xz = lambda rpc, route: (world.x, world.z)
+    try:
+        for _ in range(cycles):
+            for button in ("CircleLeft", "CircleRight"):
+                world.tap(button, hold)
+                anchor.sample()
+            if anchored:
+                anchor.correct(ctx, hold)
+            else:
+                anchor.samples.clear()
+    finally:
+        g7.read_xz = g7_read
+    return anchor
+
+
+def test_unanchored_the_measured_drift_builds_up():
+    world = DriftWorld()
+    run_anchor(world, 200, anchored=False)
+    assert world.z > 300                      # ~2 units a cycle, south
+
+
+def test_the_anchor_holds_the_spot_over_a_long_run():
+    world = DriftWorld()
+    run_anchor(world, 200)
+    assert abs(world.z) <= g7._ANCHOR_TOL + 1
+    assert abs(world.x) <= g7._ANCHOR_TOL + 1   # where each pair comes to rest
+
+
+class LopsidedWorld(DriftWorld):
+    """Live, the two pushes did not travel equally far: the reversal eats
+    part of each push, and not the same part both ways."""
+
+    def tap(self, button, hold_s=0.05):
+        if button == "CircleLeft" and self.facing == "CircleRight":
+            hold_s *= 1.6                     # Left goes further than Right
+        super().tap(button, hold_s)
+
+
+def test_unequal_pushes_still_come_back_to_home():
+    world = LopsidedWorld()
+    run_anchor(world, 200)
+    assert abs(world.x) <= g7._ANCHOR_TOL + 1
+    assert abs(world.z) <= g7._ANCHOR_TOL + 1
+
+
+def test_corrections_push_toward_home():
+    world = DriftWorld()
+    world.z = 100.0                           # well south of home
+    anchor = run_anchor(world, 1)
+    ups = [h for b, h in world.events if b == "CircleUp"]
+    assert ups and not any(b == "CircleDown" for b, _ in world.events)
+    assert 0.02 <= ups[0] <= 0.25
+
+
+def test_the_anchor_learns_a_slower_emulator():
+    fast, slow = DriftWorld(speed=1800.0), DriftWorld(speed=180.0)   # ~10x vs 1x
+    a, b = run_anchor(fast, 5), run_anchor(slow, 5)
+    assert a.speed[0] == pytest.approx(10 * b.speed[0], rel=0.05)
+    run_anchor(slow, 200)
+    assert abs(slow.z) <= g7._ANCHOR_TOL + 1

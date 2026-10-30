@@ -22,6 +22,9 @@ What the game does, found by driving it live (Ultra Sun, 2026-10-18):
 * From the command menu D-pad Down selects RUN, and A runs. The D-pad
   does nothing in the overworld, so a press that lands late is harmless
   there (a touch would open the Rotom Dex).
+* Equal Left / Right pushes still drift (about 2 units south a cycle,
+  measured live in Ultra Sun), so on Ultra Sun / Ultra Moon an Anchor
+  reads the player's position and pushes back to the starting spot.
 """
 from __future__ import annotations
 
@@ -40,6 +43,18 @@ log = logging.getLogger(__name__)
 #: Where RO maps modules; the static CRS page is the one with CRO0 at +0x80.
 _RO_LO, _RO_HI = 0x00600000, 0x04000000
 _MAX_MODULES = 64
+
+#: Where the player stands, per game: (root global, slot, vtable). Found
+#: for Ultra Sun / Ultra Moon from code.bin's RTTI and checked live
+#: (2026-10-30): *(0x0062143C) is a field object whose +0x88 is the
+#: Field::MoveModel::FieldMoveModelPlayer (vtable 0x0064A4F0; null during
+#: a battle), and its +0x3B0 holds x, y, z (+x east, +z south, toward the
+#: camera). Sun / Moon have their own addresses, not found yet.
+_PLAYER_ROUTE = {"USUM-USA-1.2": (0x0062143C, 0x88, 0x0064A4F0)}
+_POS_OFF = 0x3B0
+#: How far (world units) the wiggle may wander from home before a push
+#: brings it back. One 0.08 s push at ~10x emulation is ~150 units.
+_ANCHOR_TOL = 30.0
 
 
 @dataclass(frozen=True)
@@ -92,6 +107,67 @@ class Modules:
         return out
 
 
+def read_xz(rpc, route) -> tuple[float, float] | None:
+    """The player's (x, z), or None outside the overworld."""
+    root, slot, vtable = route
+    parent = rpc.read_u32(root)
+    player = rpc.read_u32(parent + slot) if parent else 0
+    if not player or rpc.read_u32(player) != vtable:
+        return None
+    x, _, z = struct.unpack("<3f", rpc.read(player + _POS_OFF, 12))
+    return x, z
+
+
+class Anchor:
+    """Keeps the wiggle on its starting spot.
+
+    Equal Left / Right pushes do not cancel in Gen 7: each reversal
+    swings the player through facing the camera, and a measured run crept
+    ~2 units south per cycle. After every pair, where the pair ended (the
+    spot the player rests on between pairs) is compared with home; an
+    axis off by more than ``tol`` gets one push back, sized from the push
+    speed learned live (it scales with emulator speed, so it cannot be a
+    constant). The pair's end, not the sway's midpoint, is the reference:
+    the two pushes do not travel equally far, and live the midpoint sat
+    ~250 units off while the corrections fought it."""
+
+    def __init__(self, rpc, route, home, tol: float = _ANCHOR_TOL):
+        self.rpc, self.route, self.home, self.tol = rpc, route, home, tol
+        self.samples: list = []         # positions after this pair's pushes
+        self.speed: dict = {}           # axis -> units per second of push
+
+    def sample(self) -> None:
+        xz = read_xz(self.rpc, self.route)
+        if xz is not None:
+            self.samples.append(xz)
+
+    def _learn(self, axis: int, moved: float, held: float) -> None:
+        if moved > 1e-3 and held > 0:
+            v = moved / held
+            old = self.speed.get(axis)
+            self.speed[axis] = v if old is None else 0.7 * old + 0.3 * v
+
+    def correct(self, ctx, hold: float) -> None:
+        """Called after a Left, Right pair in the overworld."""
+        samples, self.samples = self.samples, []
+        if len(samples) < 2:
+            return
+        (xl, zl), (xr, zr) = samples[-2], samples[-1]
+        self._learn(0, abs(xr - xl), hold)          # the Right push
+        for axis, err, toward_minus, toward_plus in (
+                (0, xr - self.home[0], "CircleRight", "CircleLeft"),
+                (1, zr - self.home[1], "CircleDown", "CircleUp")):
+            speed = self.speed.get(axis) or self.speed.get(0)
+            if abs(err) <= self.tol or not speed:
+                continue
+            held = min(max(abs(err) / speed, 0.02), 0.25)
+            before = read_xz(self.rpc, self.route)
+            ctx.input.tap(toward_plus if err > 0 else toward_minus, hold_s=held)
+            after = read_xz(self.rpc, self.route)
+            if before and after:
+                self._learn(axis, abs(after[axis] - before[axis]), held)
+
+
 def find_wild(ctx, windows, seen: set, timeout: float) -> list:
     """New un-owned PK7s, waiting for the record to be written."""
     end = time.monotonic() + timeout
@@ -127,6 +203,18 @@ def flee(ctx, mods: Modules, timeout: float) -> bool:
     return False
 
 
+def _make_anchor(rpc, game):
+    route = _PLAYER_ROUTE.get(getattr(game, "key", ""))
+    home = read_xz(rpc, route) if route else None
+    if home is None:
+        log.info("  no player position for this game yet: the wiggle runs "
+                 "uncorrected and can drift slowly.")
+        return None
+    log.info(f"  holding the spot at x={home[0]:.0f} z={home[1]:.0f} "
+             f"(+-{_ANCHOR_TOL:.0f})")
+    return Anchor(rpc, route, home)
+
+
 def _is_hit(ctx, pkm) -> bool:
     return bool(pkm.shiny or (ctx.target and ctx.target.rules
                               and ctx.target.matches(pkm)))
@@ -152,16 +240,23 @@ def run(ctx) -> None:
     seen = {p.encryption_key for _, p in scan_windows(ctx, windows, set())}
     log.info(f"  wiggling {plan.hold * 1000:.0f} ms Left / Right in place; "
              f"{len(seen)} old record(s) ignored. A shiny stops every input.")
+    anchor = _make_anchor(ctx.rpc, game)
     encounters = 0
     while not ctx.should_stop():
         for button in ("CircleLeft", "CircleRight"):
             ctx.input.tap(button, hold_s=plan.hold)
+            if anchor:
+                anchor.sample()
         try:
             in_battle = "Battle" in mods.names()
         except (RPCError, OSError):
             continue
         if not in_battle:
+            if anchor:
+                anchor.correct(ctx, plan.hold)
             continue
+        if anchor:
+            anchor.samples.clear()
 
         wilds = find_wild(ctx, windows, seen, plan.find_timeout)
         seen.update(p.encryption_key for _, p in wilds)
