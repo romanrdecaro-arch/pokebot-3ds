@@ -109,6 +109,17 @@ def test_a_party_member_is_never_a_wild(monkeypatch):
     assert w.check() is False
 
 
+def test_an_owned_record_is_never_a_wild_even_outside_the_party_keys(monkeypatch):
+    """Gen 7 keeps the player's battle copies in the foe window; if the
+    party read missed one, its OT still says it is not a wild."""
+    w, rec = make(monkeypatch)
+    owned = FakeMon(0xC0DE)
+    owned.ot_name = "Roman"
+    rec.at[SLOT] = owned
+
+    assert w.check() is False
+
+
 def test_the_hot_slot_turning_over_is_caught_by_one_read(monkeypatch):
     """A fresh wild in the same buffer is the common case."""
     seen = set()

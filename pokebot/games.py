@@ -457,6 +457,13 @@ def methods_for(game_key: str) -> list[Method]:
         ]
         if game_key in _USUM_GAMES:
             methods.append(Method(
+                "Static encounter (soft reset)", "static_encounter",
+                notes="Save standing in front of the Pokémon, facing "
+                      "it. Spams A until the battle starts; not shiny "
+                      "soft-resets (L+R+Start) and goes straight back to "
+                      "spamming A. A SHINY STOPS ALL INPUT with the "
+                      "battle left on screen for you to catch."))
+            methods.append(Method(
                 "Starters (soft reset)", "usum_starters",
                 notes="Save in Route 1's tall grass before the "
                       "starters appear, with an empty party. Spams A and "

@@ -1,5 +1,7 @@
 """
-Static encounter soft reset (built for Omega Ruby / Alpha Sapphire).
+Static encounter soft reset (built for Omega Ruby / Alpha Sapphire;
+offered for Ultra Sun / Ultra Moon too, whose wild sits in the same
+kind of foe window and whose L+R+Start the starter hunt already uses).
 
 The loop, as asked for:
 

@@ -47,7 +47,11 @@ class FoeWatch:
         self.full_scans = 0
 
     def _is_new(self, pkm) -> bool:
+        # A wild has no OT until it is caught. Gen 7 keeps the player's
+        # battle copies in the same window, so an owned record must
+        # never count even if the party read missed it.
         return bool(pkm is not None
+                    and not (getattr(pkm, "ot_name", "") or "")
                     and pkm.encryption_key not in self.party_keys
                     and pkm.encryption_key not in self.seen)
 
