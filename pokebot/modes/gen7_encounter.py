@@ -5,8 +5,10 @@ The loop, as asked for:
 
     quick, equal Left / Right pushes so the player wiggles in the grass
       without leaving the starting spot
-    a wild appears  -> shiny (or the target filter matches): STOP every
-                       input, battle left on screen
+    a wild appears  -> shiny (or the target filter matches): catch it
+                       (Y for the quick Poke Ball, A, A, then B out of the
+                       battle) and go back to wiggling; with
+                       on_target: stop, STOP every input instead
                     -> anything else: run, and go back to wiggling
 
 What the game does, found by driving it live (Ultra Sun, 2026-10-18):
@@ -64,8 +66,18 @@ class WigglePlan:
     hold: float = 0.08
     #: Seconds to keep looking for the wild once a battle has started.
     find_timeout: float = 8.0
-    #: Seconds a flee may take before the hunt stops instead.
+    #: Seconds a flee (or a catch) may take before the hunt stops instead.
     flee_timeout: float = 60.0
+    #: Catch a shiny / target (random_encounters.on_target: catch, the
+    #: default) rather than stop with it on screen (on_target: stop).
+    catch: bool = True
+    #: Balls thrown before the hunt stops with the battle up.
+    catch_tries: int = 3
+    #: Seconds between Y, A, A (the quick-ball menu has to open), and
+    #: between the 15 B presses that clear Gotcha!, the Pokedex and the
+    #: nickname prompt.
+    throw_gap: float = 0.5
+    dismiss_gap: float = 0.4
 
     @classmethod
     def from_config(cls, cfg: dict | None) -> "WigglePlan":
@@ -74,7 +86,8 @@ class WigglePlan:
             hold = float(cfg.get("gen7_wiggle_hold", d.hold))
         except (TypeError, ValueError):
             hold = d.hold
-        return cls(hold=min(max(hold, 0.02), 0.5))
+        return cls(hold=min(max(hold, 0.02), 0.5),
+                   catch=str(cfg.get("on_target", "catch")).lower() != "stop")
 
 
 class Modules:
@@ -203,6 +216,41 @@ def flee(ctx, mods: Modules, timeout: float) -> bool:
     return False
 
 
+def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
+    """Y (the quick Poke Ball), A, A to throw, then 15 B out of the
+    battle. A ball that breaks hands the command menu back, so it is
+    thrown again, up to ``plan.catch_tries`` balls. True once the
+    overworld is back.
+
+    shortcut: "the battle ended" is taken as "caught"; a wild that
+    teleports away (Abra) would read the same. Confirm from the party /
+    PC box if that ever matters."""
+    throws = 0
+    end = time.monotonic() + plan.flee_timeout
+    while not ctx.should_stop() and time.monotonic() < end:
+        try:
+            names = mods.names()
+        except (RPCError, OSError):
+            names = {"Battle"}              # one dropped read: still in it
+        if "Battle" not in names:
+            return True
+        if "Bag" not in names:              # text still running
+            ctx.input.tap("B", hold_s=0.06)
+            ctx._stop_evt.wait(0.2)
+            continue
+        if throws == plan.catch_tries:
+            return False
+        throws += 1
+        log.info(f"  throwing ball {throws} of {plan.catch_tries}")
+        for button in ("Y", "A", "A"):
+            ctx.input.tap(button, hold_s=0.06)
+            ctx._stop_evt.wait(plan.throw_gap)
+        for _ in range(15):
+            ctx.input.tap("B", hold_s=0.06)
+            ctx._stop_evt.wait(plan.dismiss_gap)
+    return False
+
+
 def _make_anchor(rpc, game):
     route = _PLAYER_ROUTE.get(getattr(game, "key", ""))
     home = read_xz(rpc, route) if route else None
@@ -239,9 +287,10 @@ def run(ctx) -> None:
         return
     seen = {p.encryption_key for _, p in scan_windows(ctx, windows, set())}
     log.info(f"  wiggling {plan.hold * 1000:.0f} ms Left / Right in place; "
-             f"{len(seen)} old record(s) ignored. A shiny stops every input.")
+             f"{len(seen)} old record(s) ignored. A shiny is "
+             f"{'caught' if plan.catch else 'left on screen, all input stopped'}.")
     anchor = _make_anchor(ctx.rpc, game)
-    encounters = 0
+    encounters = caught = 0
     while not ctx.should_stop():
         for button in ("CircleLeft", "CircleRight"):
             ctx.input.tap(button, hold_s=plan.hold)
@@ -269,6 +318,24 @@ def run(ctx) -> None:
             _report_encounter(ctx, pkm, addr, encounters, "gen7 wiggle")
             if _is_hit(ctx, pkm) and hit is None:
                 hit = pkm
+        if hit is not None and plan.catch:
+            what = "SHINY" if hit.shiny else "TARGET"
+            log.info(f"  {what} #{hit.species}: catching it")
+            if not catch(ctx, mods, plan):
+                if ctx.should_stop():
+                    return
+                log.error(f"  {what} still in battle after "
+                          f"{plan.catch_tries} ball(s); Bot STOPPED with the "
+                          f"battle on screen. Catch it yourself.")
+                ctx.request_stop("catch failed")
+                return
+            caught += 1
+            log.info(f"  CAUGHT #{caught}: {what} #{hit.species} after "
+                     f"{encounters} encounter(s); wiggling again")
+            ctx.dashboard.broadcast("target_caught", species=hit.species,
+                                    shiny=bool(hit.shiny), count=encounters,
+                                    caught=caught)
+            continue
         if hit is not None:
             ctx.request_stop("shiny" if hit.shiny else "target")
             bar = "*" * 30

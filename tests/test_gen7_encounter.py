@@ -73,8 +73,11 @@ class FakeInput:
 
 
 class FakeDashboard:
-    def broadcast(self, *a, **k):
-        pass
+    def __init__(self):
+        self.sent = []
+
+    def broadcast(self, event, **k):
+        self.sent.append((event, k))
 
 
 class FakeGame:
@@ -87,6 +90,13 @@ class FakeGame:
         foe_extra = ((0x30028000, 0x18000),)
 
 
+class InstantEvent(threading.Event):
+    """The press gaps are real seconds; the fakes need none of them."""
+
+    def wait(self, timeout=None):
+        return self.is_set()
+
+
 class Ctx:
     def __init__(self, generation=7):
         self.game = FakeGame()
@@ -96,7 +106,7 @@ class Ctx:
         self.target = None
         self.config = {}
         self.rpc = None
-        self._stop_evt = threading.Event()
+        self._stop_evt = InstantEvent()
         self.stop_reason = None
 
     def should_stop(self):
@@ -114,31 +124,48 @@ class Pk:
 
 
 class World:
-    """Battles start after a few wiggles and end when RUN is taken."""
+    """Battles start after a few wiggles. From the command menu Down, A
+    runs; Y, A, A throws a ball, and 15 B later the battle is over -- or
+    the menu is back, if the ball broke (``breaks`` times). The hunt is
+    stopped when a battle would start with no wilds left."""
 
-    def __init__(self, ctx, wilds, wiggles_per_battle=3):
+    def __init__(self, ctx, wilds, wiggles_per_battle=3, breaks=0):
         self.ctx, self.wilds = ctx, list(wilds)
-        self.per = wiggles_per_battle
+        self.per, self.breaks = wiggles_per_battle, breaks
         self.state, self.records = "field", [Pk(1, ot="Roman")]
-        self.wiggles = 0
+        self.wiggles = self.read = self.bs = 0
 
     def names(self):
         ev = self.ctx.input.events
+        for i in range(self.read, len(ev)):
+            if self.state == "menu" and ev[i - 1:i + 1] == ["DpadDown", "A"]:
+                self.state = "field"
+            elif self.state == "menu" and ev[i - 2:i + 1] == ["Y", "A", "A"]:
+                self.state, self.bs = "throw", 0
+            elif self.state == "throw" and ev[i] == "B":
+                self.bs += 1
+                if self.bs == 15:
+                    self.state = "menu" if self.breaks else "field"
+                    self.breaks -= bool(self.breaks)
+        self.read = len(ev)
         if self.state == "field" and ev.count("CircleRight") >= self.per * (self.wiggles + 1):
             self.wiggles += 1
-            self.state = "menu"
-            self.records.append(self.wilds.pop(0))
-        if self.state == "menu" and ev[-1:] == ["A"]:
-            self.state = "field"
-        return {"field": {"FieldRo"}, "menu": {"Battle", "Bag"}}[self.state]
+            if not self.wilds:
+                self.ctx.request_stop("out of wilds")
+            else:
+                self.state = "menu"
+                self.records.append(self.wilds.pop(0))
+        return {"field": {"FieldRo"}, "menu": {"Battle", "Bag"},
+                "throw": {"Battle"}}[self.state]
 
     def scan(self, ctx, windows, keys):
         return [(0x3002F9A0 + i, p) for i, p in enumerate(self.records)]
 
 
-def run_world(monkeypatch, wilds, generation=7):
+def run_world(monkeypatch, wilds, generation=7, config=None, breaks=0):
     ctx = Ctx(generation)
-    world = World(ctx, wilds)
+    ctx.config = config or {}
+    world = World(ctx, wilds, breaks=breaks)
     monkeypatch.setattr(g7.Modules, "names", lambda self: world.names())
     monkeypatch.setattr(g7, "scan_windows", world.scan)
     monkeypatch.setattr(g7, "read_xz", lambda rpc, route: None)   # no anchor
@@ -151,14 +178,51 @@ def run_world(monkeypatch, wilds, generation=7):
     return ctx, reported
 
 
-def test_a_shiny_stops_with_no_input_after_it(monkeypatch):
-    ctx, reported = run_world(monkeypatch, [Pk(10), Pk(11, shiny=True)])
+STOP = {"random_encounters": {"on_target": "stop"}}
+
+
+def test_on_target_stop_leaves_the_shiny_with_no_input_after_it(monkeypatch):
+    ctx, reported = run_world(monkeypatch, [Pk(10), Pk(11, shiny=True)],
+                              config=STOP)
     assert reported == [10, 11]
     assert ctx.stop_reason == "shiny"
     after = ctx.input.events[ctx.input.events.index("A") + 1:]
     # after fleeing the first, only wiggles until the shiny -- then nothing
     assert set(after) <= {"CircleLeft", "CircleRight"}
     assert after[-1] == "CircleRight"
+
+
+def test_a_shiny_is_caught_then_the_wiggle_goes_on(monkeypatch):
+    ctx, reported = run_world(monkeypatch, [Pk(10), Pk(11, shiny=True), Pk(12)])
+    ev = ctx.input.events
+    assert reported == [10, 11, 12]
+    assert ctx.stop_reason == "out of wilds"
+    i = ev.index("Y")
+    assert ev[i:i + 18] == ["Y", "A", "A"] + ["B"] * 15
+    assert ev[i + 18] == "CircleLeft"         # straight back to wiggling
+    assert ev.count("Y") == 1
+    assert ctx.dashboard.sent == [("target_caught", dict(
+        species=731, shiny=True, count=2, caught=1))]
+
+
+def test_a_ball_that_breaks_is_thrown_again(monkeypatch):
+    ctx, _ = run_world(monkeypatch, [Pk(11, shiny=True)], breaks=1)
+    assert ctx.input.events.count("Y") == 2
+    assert [e for e, _ in ctx.dashboard.sent] == ["target_caught"]
+
+
+def test_three_broken_balls_stop_with_the_battle_up(monkeypatch):
+    ctx, _ = run_world(monkeypatch, [Pk(11, shiny=True)], breaks=9)
+    ev = ctx.input.events
+    assert ev.count("Y") == 3
+    assert ctx.stop_reason == "catch failed"
+    assert "DpadDown" not in ev               # never ran from it
+    assert ctx.dashboard.sent == []
+
+
+def test_on_target_reads_catch_by_default():
+    assert g7.WigglePlan.from_config({}).catch is True
+    assert g7.WigglePlan.from_config({"on_target": "STOP"}).catch is False
 
 
 def test_a_non_shiny_is_run_from_with_down_then_a(monkeypatch):
