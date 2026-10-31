@@ -198,6 +198,7 @@ def test_a_shiny_is_caught_then_the_wiggle_goes_on(monkeypatch):
     assert reported == [10, 11, 12]
     assert ctx.stop_reason == "out of wilds"
     i = ev.index("Y")
+    assert ev[i - 8:i] == ["B"] * 8           # text cleared before Y
     assert ev[i:i + 18] == ["Y", "A", "A"] + ["B"] * 15
     assert ev[i + 18] == "CircleLeft"         # straight back to wiggling
     assert ev.count("Y") == 1
@@ -211,13 +212,22 @@ def test_a_ball_that_breaks_is_thrown_again(monkeypatch):
     assert [e for e, _ in ctx.dashboard.sent] == ["target_caught"]
 
 
-def test_three_broken_balls_stop_with_the_battle_up(monkeypatch):
-    ctx, _ = run_world(monkeypatch, [Pk(11, shiny=True)], breaks=9)
+def test_ten_broken_balls_stop_with_the_battle_up(monkeypatch):
+    ctx, _ = run_world(monkeypatch, [Pk(11, shiny=True)], breaks=99)
     ev = ctx.input.events
-    assert ev.count("Y") == 3
+    assert ev.count("Y") == 10
     assert ctx.stop_reason == "catch failed"
     assert "DpadDown" not in ev               # never ran from it
     assert ctx.dashboard.sent == []
+
+
+def test_no_ball_is_thrown_once_the_battle_ends_during_the_settle(monkeypatch):
+    """A slow Gotcha! can still have Bag loaded; Y must not reach the field."""
+    ctx = Ctx()
+    monkeypatch.setattr(g7.Modules, "names", lambda self: (
+        {"Battle", "Bag"} if ctx.input.events.count("B") < 3 else {"FieldRo"}))
+    assert g7.catch(ctx, g7.Modules(None), g7.WigglePlan()) is True
+    assert "Y" not in ctx.input.events and "A" not in ctx.input.events
 
 
 def test_on_target_reads_catch_by_default():

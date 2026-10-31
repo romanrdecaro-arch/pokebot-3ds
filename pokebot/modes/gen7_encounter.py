@@ -72,7 +72,10 @@ class WigglePlan:
     #: default) rather than stop with it on screen (on_target: stop).
     catch: bool = True
     #: Balls thrown before the hunt stops with the battle up.
-    catch_tries: int = 3
+    catch_tries: int = 10
+    #: B taps (dismiss_gap apart, ~3 s) before each throw, so Y lands on
+    #: the command menu and not on battle text.
+    settle_taps: int = 8
     #: Seconds between Y, A, A (the quick-ball menu has to open), and
     #: between the 15 B presses that clear Gotcha!, the Pokedex and the
     #: nickname prompt.
@@ -222,24 +225,37 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
     thrown again, up to ``plan.catch_tries`` balls. True once the
     overworld is back.
 
+    Bag stays loaded through the ball panel and the throw (seen live), so
+    it does not prove the menu is up. A Y lost to battle text would let
+    A, A pick FIGHT and a move, so each throw waits behind a run of B
+    taps, which clear text and do nothing on the menu.
+
     shortcut: "the battle ended" is taken as "caught"; a wild that
     teleports away (Abra) would read the same. Confirm from the party /
     PC box if that ever matters."""
+    def names():
+        try:
+            return mods.names()
+        except (RPCError, OSError):
+            return {"Battle"}               # one dropped read: still in it
+
     throws = 0
     end = time.monotonic() + plan.flee_timeout
     while not ctx.should_stop() and time.monotonic() < end:
-        try:
-            names = mods.names()
-        except (RPCError, OSError):
-            names = {"Battle"}              # one dropped read: still in it
-        if "Battle" not in names:
+        now = names()
+        if "Battle" not in now:
             return True
-        if "Bag" not in names:              # text still running
+        if "Bag" not in now:                # text still running
             ctx.input.tap("B", hold_s=0.06)
             ctx._stop_evt.wait(0.2)
             continue
         if throws == plan.catch_tries:
             return False
+        for _ in range(plan.settle_taps):
+            ctx.input.tap("B", hold_s=0.06)
+            ctx._stop_evt.wait(plan.dismiss_gap)
+        if "Battle" not in names():         # a slow Gotcha! just finished
+            return True
         throws += 1
         log.info(f"  throwing ball {throws} of {plan.catch_tries}")
         for button in ("Y", "A", "A"):
@@ -248,6 +264,7 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
         for _ in range(15):
             ctx.input.tap("B", hold_s=0.06)
             ctx._stop_evt.wait(plan.dismiss_gap)
+        end = time.monotonic() + plan.flee_timeout   # per ball, not per catch
     return False
 
 
