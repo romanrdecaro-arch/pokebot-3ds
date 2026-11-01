@@ -129,10 +129,14 @@ class World:
     the menu is back, if the ball broke (``breaks`` times). The hunt is
     stopped when a battle would start with no wilds left."""
 
-    def __init__(self, ctx, wilds, wiggles_per_battle=3, breaks=0):
+    def __init__(self, ctx, wilds, wiggles_per_battle=3, breaks=0,
+                 leftover=None):
         self.ctx, self.wilds = ctx, list(wilds)
         self.per, self.breaks = wiggles_per_battle, breaks
         self.state, self.records = "field", [Pk(1, ot="Roman")]
+        if leftover is not None:                 # started inside its battle
+            self.state = "menu"
+            self.records.append(leftover)
         self.wiggles = self.read = self.bs = 0
 
     def names(self):
@@ -162,10 +166,11 @@ class World:
         return [(0x3002F9A0 + i, p) for i, p in enumerate(self.records)]
 
 
-def run_world(monkeypatch, wilds, generation=7, config=None, breaks=0):
+def run_world(monkeypatch, wilds, generation=7, config=None, breaks=0,
+              leftover=None):
     ctx = Ctx(generation)
     ctx.config = config or {}
-    world = World(ctx, wilds, breaks=breaks)
+    world = World(ctx, wilds, breaks=breaks, leftover=leftover)
     monkeypatch.setattr(g7.Modules, "names", lambda self: world.names())
     monkeypatch.setattr(g7, "scan_windows", world.scan)
     monkeypatch.setattr(g7, "read_xz", lambda rpc, route: None)   # no anchor
@@ -260,14 +265,25 @@ def test_not_a_gen7_game_stops_at_once(monkeypatch):
     assert ctx.input.events == []
 
 
-def test_starting_inside_a_battle_is_refused(monkeypatch):
+@pytest.mark.parametrize("records", [[], [Pk(5), Pk(6, shiny=True)]],
+                         ids=["no wild readable", "a shiny record"])
+def test_a_battle_on_screen_that_may_be_a_shiny_is_left_alone(monkeypatch, records):
     ctx = Ctx()
     monkeypatch.setattr(g7.Modules, "names", lambda self: {"Battle", "Bag"})
+    monkeypatch.setattr(g7, "scan_windows", lambda c, w, k: list(enumerate(records)))
     monkeypatch.setattr(g7, "ensure_targets_dir", lambda: None)
     monkeypatch.setattr(g7, "_focus_if_needed", lambda ctx: None)
     g7.run(ctx)
     assert ctx.stop_reason == "started in a battle"
     assert ctx.input.events == []
+
+
+def test_a_leftover_battle_without_a_hit_is_run_from_then_the_hunt_goes_on(monkeypatch):
+    ctx, reported = run_world(monkeypatch, [Pk(11, shiny=True)], leftover=Pk(9))
+    ev = ctx.input.events
+    assert ev[:3] == ["B", "DpadDown", "A"]   # ran from the leftover first
+    assert 9 not in reported                  # never judged as a new wild
+    assert reported == [11] and "Y" in ev
 
 
 def test_flee_gives_up_at_the_timeout(monkeypatch):

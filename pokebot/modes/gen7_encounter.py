@@ -285,6 +285,28 @@ def _is_hit(ctx, pkm) -> bool:
                               and ctx.target.matches(pkm)))
 
 
+def _leave_leftover_battle(ctx, mods, windows, plan) -> bool:
+    """A restart can land inside a battle. Run from it only when no
+    un-owned record in the windows is a shiny / target: any of them could
+    be this battle's wild, so then it is left on screen. True once the
+    overworld is back."""
+    wilds = [p for _, p in scan_windows(ctx, windows, set()) if not p.ot_name]
+    if not wilds or any(_is_hit(ctx, p) for p in wilds):
+        log.error("  a battle is already on screen and it may be a shiny / "
+                  "target (or no wild record could be read); finish it and "
+                  "start again from the grass.")
+        ctx.request_stop("started in a battle")
+        return False
+    log.info(f"  started inside a battle; none of the {len(wilds)} wild "
+             f"record(s) is a shiny / target, so running from it first")
+    if flee(ctx, mods, plan.flee_timeout):
+        return True
+    if not ctx.should_stop():
+        log.error("  could not run from it; stopping with the battle on screen.")
+        ctx.request_stop("flee failed")
+    return False
+
+
 def run(ctx) -> None:
     log.info("Mode: Gen 7 random encounters (wiggle in place)")
     game = ctx.game
@@ -297,10 +319,8 @@ def run(ctx) -> None:
     _focus_if_needed(ctx)
     windows = foe_windows(game.offsets)
     mods = Modules(ctx.rpc)
-    if "Battle" in mods.names():
-        log.error("  a battle is already on screen; finish it and start "
-                  "again from the grass.")
-        ctx.request_stop("started in a battle")
+    if "Battle" in mods.names() and not _leave_leftover_battle(
+            ctx, mods, windows, plan):
         return
     seen = {p.encryption_key for _, p in scan_windows(ctx, windows, set())}
     log.info(f"  wiggling {plan.hold * 1000:.0f} ms Left / Right in place; "
