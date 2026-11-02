@@ -38,12 +38,12 @@ MAX_RESTARTS, WINDOW_S = 5, 3600
 #: left on screen: a catch logs nothing until it is over (25 balls run
 #: ~5 min).
 CATCH_S = 900
-#: Stop reasons a restart cannot fix (the bot logs "stop requested: ...").
+#: Stop reasons a restart cannot fix, from the bot's session_end event.
 #: The breeding ones too: after "decline failed" a restart would take
-#: another egg.
+#: another egg. "dashboard" / "interrupted" are someone stopping it.
 LEAVE = ("started in a battle", "not a Gen 7 game", "decline failed",
          "egg not shiny", "shiny egg declined", "no Masuda", "nursery",
-         "not Ultra Sun", "no shiny egg ahead")
+         "not Ultra Sun", "no shiny egg ahead", "dashboard", "interrupted")
 
 
 def log(msg: str) -> None:
@@ -86,9 +86,12 @@ def catching(events: list[dict], alive: bool, now: float) -> bool:
     return alive and bool(events) and now - events[-1].get("ts", 0) < CATCH_S
 
 
-def last_stop_reason(text: str) -> str | None:
-    found = re.findall(r"stop requested: (.+)", text)
-    return found[-1].strip() if found else None
+def end_reason(events: list[dict], since: float) -> str | None:
+    """Why the last hunt ended, when that is the newest event and came
+    after ``since``; any bot, the launcher's included."""
+    if events and events[-1].get("type") == "session_end"             and events[-1].get("ts", 0) > since:
+        return str(events[-1].get("reason", ""))
+    return None
 
 
 def bots() -> dict[int, str] | None:
@@ -137,7 +140,7 @@ def main(args: list[str]) -> int:
     log(f"watching: run.py {' '.join(args)}")
     mine = mode_of(" ".join(args))
     restarts: list[float] = []
-    started_at, log_at = 0.0, 0
+    started_at, watching_since = 0.0, time.time()
     while True:
         time.sleep(POLL_S)
         running = bots()
@@ -157,14 +160,11 @@ def main(args: list[str]) -> int:
             log("a shiny / target is waiting in battle: leaving it for you. "
                 "Watchdog stopped.")
             return 0
-        if started_at and not pids and BOT_LOG.exists():
-            with BOT_LOG.open("rb") as f:
-                f.seek(log_at)
-                reason = last_stop_reason(f.read().decode("utf-8", "replace"))
-            if reason and reason.startswith(LEAVE):
-                log(f"the bot stopped with '{reason}', which a restart cannot "
-                    f"fix. Watchdog stopped.")
-                return 1
+        reason = None if pids else end_reason(events, watching_since)
+        if reason and reason.startswith(LEAVE):
+            log(f"the bot stopped with '{reason}', which a restart should "
+                f"not undo. Watchdog stopped.")
+            return 1
         now = time.time()
         last = max(events[-1].get("ts", 0) if events else 0, started_at)
         if pids and now - last < STALL_S:
@@ -179,7 +179,6 @@ def main(args: list[str]) -> int:
         for pid in pids:
             kill(pid)
         log(f"{why}: restarting ({len(restarts) + 1} this hour)")
-        log_at = BOT_LOG.stat().st_size if BOT_LOG.exists() else 0
         start(args)
         started_at = time.time()
         restarts.append(started_at)

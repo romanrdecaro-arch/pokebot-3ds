@@ -62,9 +62,13 @@ _ANCHOR_TOL = 30.0
 
 @dataclass(frozen=True)
 class WigglePlan:
-    #: Seconds each Circle Pad push is held; Left and Right are equal so
-    #: they cancel out.
+    #: Seconds each Circle Pad push is held; the two are equal so they
+    #: cancel out.
     hold: float = 0.08
+    #: The pair pushed in turn: Left / Right, or Up / Down
+    #: (random_encounters.movement: vertical) for grass that runs
+    #: north-south, where a sideways step leaves it.
+    pair: tuple = ("CircleLeft", "CircleRight")
     #: Seconds to keep looking for the wild once a battle has started.
     find_timeout: float = 8.0
     #: Seconds a flee (or a catch) may take before the hunt stops instead.
@@ -93,8 +97,15 @@ class WigglePlan:
             hold = float(cfg.get("gen7_wiggle_hold", d.hold))
         except (TypeError, ValueError):
             hold = d.hold
+        vertical = str(cfg.get("movement", "")).lower() == "vertical"
         return cls(hold=min(max(hold, 0.02), 0.5),
+                   pair=("CircleUp", "CircleDown") if vertical else d.pair,
                    catch=str(cfg.get("on_target", "catch")).lower() != "stop")
+
+    @property
+    def axis(self) -> int:
+        """0 when the wiggle runs along x (east-west), 1 along z."""
+        return 1 if self.pair[0] == "CircleUp" else 0
 
 
 class Modules:
@@ -151,8 +162,10 @@ class Anchor:
     the two pushes do not travel equally far, and live the midpoint sat
     ~250 units off while the corrections fought it."""
 
-    def __init__(self, rpc, route, home, tol: float = _ANCHOR_TOL):
+    def __init__(self, rpc, route, home, tol: float = _ANCHOR_TOL,
+                 axis: int = 0):
         self.rpc, self.route, self.home, self.tol = rpc, route, home, tol
+        self.axis = axis                # the one the wiggle runs along
         self.samples: list = []         # positions after this pair's pushes
         self.speed: dict = {}           # axis -> units per second of push
 
@@ -168,16 +181,16 @@ class Anchor:
             self.speed[axis] = v if old is None else 0.7 * old + 0.3 * v
 
     def correct(self, ctx, hold: float) -> None:
-        """Called after a Left, Right pair in the overworld."""
+        """Called after a wiggle pair in the overworld."""
         samples, self.samples = self.samples, []
         if len(samples) < 2:
             return
-        (xl, zl), (xr, zr) = samples[-2], samples[-1]
-        self._learn(0, abs(xr - xl), hold)          # the Right push
+        first, end = samples[-2], samples[-1]
+        self._learn(self.axis, abs(end[self.axis] - first[self.axis]), hold)
         for axis, err, toward_minus, toward_plus in (
-                (0, xr - self.home[0], "CircleRight", "CircleLeft"),
-                (1, zr - self.home[1], "CircleDown", "CircleUp")):
-            speed = self.speed.get(axis) or self.speed.get(0)
+                (0, end[0] - self.home[0], "CircleRight", "CircleLeft"),
+                (1, end[1] - self.home[1], "CircleDown", "CircleUp")):
+            speed = self.speed.get(axis) or self.speed.get(self.axis)
             if abs(err) <= self.tol or not speed:
                 continue
             held = min(max(abs(err) / speed, 0.02), 0.25)
@@ -286,7 +299,7 @@ def _balls_left(ctx) -> int | None:
     return None if bag is None else sum(n for i, n in bag.items() if i in BALLS)
 
 
-def _make_anchor(rpc, game):
+def _make_anchor(rpc, game, axis: int = 0):
     route = _PLAYER_ROUTE.get(getattr(game, "key", ""))
     home = read_xz(rpc, route) if route else None
     if home is None:
@@ -295,7 +308,7 @@ def _make_anchor(rpc, game):
         return None
     log.info(f"  holding the spot at x={home[0]:.0f} z={home[1]:.0f} "
              f"(+-{_ANCHOR_TOL:.0f})")
-    return Anchor(rpc, route, home)
+    return Anchor(rpc, route, home, axis=axis)
 
 
 def _is_hit(ctx, pkm) -> bool:
@@ -341,17 +354,18 @@ def run(ctx) -> None:
             ctx, mods, windows, plan):
         return
     seen = {p.encryption_key for _, p in scan_windows(ctx, windows, set())}
-    log.info(f"  wiggling {plan.hold * 1000:.0f} ms Left / Right in place; "
+    log.info(f"  wiggling {plan.hold * 1000:.0f} ms "
+             f"{' / '.join(b[6:] for b in plan.pair)} in place; "
              f"{len(seen)} old record(s) ignored. A shiny is "
              f"{'caught' if plan.catch else 'left on screen, all input stopped'}.")
     if plan.catch:
         balls = _balls_left(ctx)
         log.info(f"  {balls} Poke Ball(s) in the bag" if balls is not None
                  else "  the bag could not be read: balls are not counted")
-    anchor = _make_anchor(ctx.rpc, game)
+    anchor = _make_anchor(ctx.rpc, game, plan.axis)
     encounters = caught = 0
     while not ctx.should_stop():
-        for button in ("CircleLeft", "CircleRight"):
+        for button in plan.pair:
             ctx.input.tap(button, hold_s=plan.hold)
             if anchor:
                 anchor.sample()

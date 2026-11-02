@@ -38,6 +38,8 @@ class BotContext:
     target:     Optional[Target]
     config:     dict
     _stop_evt:  threading.Event
+    #: The first reason given, kept for the session_end event.
+    stop_reason: str = ""
 
     def should_stop(self) -> bool:
         return self._stop_evt.is_set()
@@ -45,6 +47,7 @@ class BotContext:
     def request_stop(self, reason: str = "") -> None:
         if reason:
             log.info(f"stop requested: {reason}")
+            self.stop_reason = self.stop_reason or reason
         self._stop_evt.set()
 
 
@@ -57,6 +60,7 @@ class Bot:
         self.input: InputDriver | None = None
         self.game: games_mod.Game | None = None
         self.target: Target | None = None
+        self._ctx: BotContext | None = None
 
     # ------------------------------------------------------------------
     # Setup
@@ -219,6 +223,7 @@ class Bot:
             config=self.config,
             _stop_evt=self._stop_evt,
         )
+        self._ctx = ctx
 
         # background thread: process inbound dashboard commands
         threading.Thread(target=self._dashboard_command_loop,
@@ -252,9 +257,18 @@ class Bot:
         )
 
         log.info(f"Starting mode: {mode_name}")
+        ended = "finished"
         try:
             MODES[mode_name](ctx)
+        except BaseException as exc:
+            ended = ("interrupted" if isinstance(exc, KeyboardInterrupt)
+                     else f"crashed: {type(exc).__name__}: {exc}")
+            raise
         finally:
+            # Why the hunt ended, in the durable log: the watchdog reads
+            # it, and so does anyone asking why a hunt stopped overnight.
+            self.dashboard.broadcast("session_end", mode=mode_name,
+                                     reason=ctx.stop_reason or ended)
             self._cleanup()
 
     def _refuse_to_press(self, mode_name: str) -> bool:
@@ -292,6 +306,8 @@ class Bot:
     def _install_signal_handlers(self) -> None:
         def _handler(sig, frame):
             log.info("Caught signal -- stopping.")
+            if self._ctx is not None:
+                self._ctx.request_stop("interrupted")
             self._stop_evt.set()
         try:
             signal.signal(signal.SIGINT, _handler)

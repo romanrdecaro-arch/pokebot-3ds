@@ -52,11 +52,17 @@ def test_the_mode_is_read_from_a_command_line():
     assert watchdog.mode_of("run.py") is None
 
 
-def test_the_last_stop_reason_is_read():
-    text = ("10:00 INFO stop requested: flee failed\n"
-            "10:05 INFO stop requested: started in a battle\n")
-    assert watchdog.last_stop_reason(text) == "started in a battle"
-    assert watchdog.last_stop_reason("nothing here") is None
+def test_the_stop_reason_is_read_from_the_last_session_end():
+    end = {"type": "session_end", "ts": 200.0, "reason": "started in a battle"}
+    assert watchdog.end_reason([enc(), end], since=100.0) == "started in a battle"
+    assert watchdog.end_reason([end, enc()], since=100.0) is None  # hunt went on
+    assert watchdog.end_reason([end], since=300.0) is None  # before the watch
+
+
+def test_someone_stopping_the_bot_is_not_undone():
+    assert "dashboard".startswith(watchdog.LEAVE)
+    assert "interrupted".startswith(watchdog.LEAVE)
+    assert not "crashed: RPCError: timed out".startswith(watchdog.LEAVE)
 
 
 def test_breeding_stops_a_restart_would_make_worse_are_left():

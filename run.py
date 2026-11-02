@@ -31,6 +31,34 @@ def _target_preset(name: str) -> dict:
     return _TARGET_PRESETS[name]
 
 
+_file_log: logging.Handler | None = None
+
+
+def _keep_log(path: Path, max_bytes: int = 5 * 1024 * 1024) -> None:
+    """Copy the log to a file as well. The launcher's Log tab is gone
+    once it closes, and an unattended hunt that stopped overnight left
+    nothing to say why (2026-11-01: a shiny with no catch, 6 h silent)."""
+    global _file_log
+    if _file_log is not None:           # main() run twice in one process
+        logging.getLogger().removeHandler(_file_log)
+        _file_log.close()
+        _file_log = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > max_bytes:
+            path.replace(path.with_suffix(".log.1"))
+    except OSError:
+        pass                            # another process has it open: append
+    try:
+        _file_log = logging.FileHandler(path, encoding="utf-8")
+    except OSError as exc:
+        logging.warning(f"the log is not being kept in a file ({exc})")
+        return
+    _file_log.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s", "%m-%d %H:%M:%S"))
+    logging.getLogger().addHandler(_file_log)
+
+
 def _run_update(do_apply: bool) -> int:
     """Handle --check-update / --update, then exit.
 
@@ -256,6 +284,8 @@ def main(argv=None):
                                  {"window_pid": args.window_pid})
     else:
         event_log.configure(enabled=False)
+    _keep_log(event_log.current_path().parent /
+              (event_log.current_path().stem.replace("events", "bot") + ".log"))
 
     # Click delivery. Default "post" keeps the physical pointer where
     # the user left it, so a hunt can run for hours without stealing

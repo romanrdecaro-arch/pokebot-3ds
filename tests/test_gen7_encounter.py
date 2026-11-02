@@ -130,8 +130,8 @@ class World:
     stopped when a battle would start with no wilds left."""
 
     def __init__(self, ctx, wilds, wiggles_per_battle=3, breaks=0,
-                 leftover=None):
-        self.ctx, self.wilds = ctx, list(wilds)
+                 leftover=None, trigger="CircleRight"):
+        self.ctx, self.wilds, self.trigger = ctx, list(wilds), trigger
         self.per, self.breaks = wiggles_per_battle, breaks
         self.state, self.records = "field", [Pk(1, ot="Roman")]
         if leftover is not None:                 # started inside its battle
@@ -152,7 +152,7 @@ class World:
                     self.state = "menu" if self.breaks else "field"
                     self.breaks -= bool(self.breaks)
         self.read = len(ev)
-        if self.state == "field" and ev.count("CircleRight") >= self.per * (self.wiggles + 1):
+        if self.state == "field" and ev.count(self.trigger) >= self.per * (self.wiggles + 1):
             self.wiggles += 1
             if not self.wilds:
                 self.ctx.request_stop("out of wilds")
@@ -170,7 +170,9 @@ def run_world(monkeypatch, wilds, generation=7, config=None, breaks=0,
               leftover=None, balls=None):
     ctx = Ctx(generation)
     ctx.config = config or {}
-    world = World(ctx, wilds, breaks=breaks, leftover=leftover)
+    vertical = (ctx.config.get("random_encounters") or {}).get("movement") == "vertical"
+    world = World(ctx, wilds, breaks=breaks, leftover=leftover,
+                  trigger="CircleDown" if vertical else "CircleRight")
     monkeypatch.setattr(g7, "_balls_left", lambda ctx: balls)  # None: unread
     monkeypatch.setattr(g7.Modules, "names", lambda self: world.names())
     monkeypatch.setattr(g7, "scan_windows", world.scan)
@@ -270,6 +272,21 @@ def test_the_wiggle_is_equal_left_and_right(monkeypatch):
     assert all(a != b for a, b in zip(moves, moves[1:]))
 
 
+def test_vertical_movement_wiggles_up_and_down(monkeypatch):
+    ctx, reported = run_world(monkeypatch, [Pk(10)],
+                              config={"random_encounters": {"movement": "vertical"}})
+    moves = [e for e in ctx.input.events if e.startswith("Circle")]
+    assert reported == [10]
+    assert set(moves) == {"CircleUp", "CircleDown"}
+    assert moves.count("CircleUp") == moves.count("CircleDown")
+
+
+def test_movement_defaults_to_left_and_right():
+    assert g7.WigglePlan.from_config({}).pair == ("CircleLeft", "CircleRight")
+    assert g7.WigglePlan.from_config({"movement": "horizontal"}).axis == 0
+    assert g7.WigglePlan.from_config({"movement": "Vertical"}).axis == 1
+
+
 def test_the_players_own_records_are_never_judged(monkeypatch):
     ctx, reported = run_world(monkeypatch, [Pk(11, shiny=True)])
     assert 1 not in reported                  # OT 'Roman', present at start
@@ -358,16 +375,18 @@ class DriftWorld:
         self.facing = button
 
 
-def run_anchor(world, cycles, anchored=True, hold=0.08):
+def run_anchor(world, cycles, anchored=True, hold=0.08,
+               pair=("CircleLeft", "CircleRight")):
     ctx = Ctx()
     ctx.input = world
-    anchor = g7.Anchor(None, None, (0.0, 0.0))
+    anchor = g7.Anchor(None, None, (0.0, 0.0),
+                       axis=1 if pair[0] == "CircleUp" else 0)
     anchor.sample = lambda: anchor.samples.append((world.x, world.z))
     g7_read = g7.read_xz
     g7.read_xz = lambda rpc, route: (world.x, world.z)
     try:
         for _ in range(cycles):
-            for button in ("CircleLeft", "CircleRight"):
+            for button in pair:
                 world.tap(button, hold)
                 anchor.sample()
             if anchored:
@@ -416,6 +435,24 @@ def test_corrections_push_toward_home():
     ups = [h for b, h in world.events if b == "CircleUp"]
     assert ups and not any(b == "CircleDown" for b, _ in world.events)
     assert 0.02 <= ups[0] <= 0.25
+
+
+class SidewaysDriftWorld(DriftWorld):
+    """An Up / Down wiggle, assumed to creep sideways the way Left /
+    Right creeps south (not measured live)."""
+
+    def tap(self, button, hold_s=0.05):
+        if {self.facing, button} == {"CircleUp", "CircleDown"}:
+            self.x += self.drift
+        super().tap(button, hold_s)
+
+
+def test_the_anchor_holds_a_vertical_wiggle_too():
+    world = SidewaysDriftWorld()
+    anchor = run_anchor(world, 200, pair=("CircleUp", "CircleDown"))
+    assert abs(world.x) <= g7._ANCHOR_TOL + 1
+    assert abs(world.z) <= g7._ANCHOR_TOL + 1
+    assert anchor.speed[1] == pytest.approx(1800.0, rel=0.05)
 
 
 def test_the_anchor_learns_a_slower_emulator():
