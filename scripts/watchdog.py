@@ -35,7 +35,11 @@ BOT_LOG = REPO / "logs" / "watchdog-bot.log"
 POLL_S, STALL_S = 30, 300
 MAX_RESTARTS, WINDOW_S = 5, 3600
 #: Stop reasons a restart cannot fix (the bot logs "stop requested: ...").
-LEAVE = ("started in a battle", "not a Gen 7 game")
+#: The breeding ones too: after "decline failed" a restart would take
+#: another egg.
+LEAVE = ("started in a battle", "not a Gen 7 game", "decline failed",
+         "egg not shiny", "shiny egg declined", "no Masuda", "nursery",
+         "not Ultra Sun", "no shiny egg ahead")
 
 
 def log(msg: str) -> None:

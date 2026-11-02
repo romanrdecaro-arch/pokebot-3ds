@@ -348,11 +348,12 @@ celebi_hunt:
 # egg is shiny; every other egg is declined and the shiny one accepted,
 # then the bot stops for you to save. It needs the Masuda method
 # (parents from games of different languages, read from the Nursery)
-# and/or the Shiny Charm. Set this true only if the Shiny Charm is in the
-# bag: true without it makes it accept the wrong egg, while false with it
-# is still right, just slower.
+# and/or the Shiny Charm. auto looks for the Shiny Charm in the bag (and
+# goes without it if the bag cannot be read); true / false overrides
+# that. true without the Charm makes it accept the wrong egg, while
+# false with it is still right, just slower.
 breeding:
-  shiny_charm: false
+  shiny_charm: auto
 
 # Random-encounter shiny hunt tuning.
 random_encounters:

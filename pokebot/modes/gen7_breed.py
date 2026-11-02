@@ -3,7 +3,8 @@ Gen 7 shiny breeding by egg seed (Ultra Sun / Ultra Moon).
 
 Leave two Pokemon that make eggs in the Nursery (Paniola Ranch) -- from
 games of different languages (the Masuda method), or with the Shiny
-Charm in the bag and breeding.shiny_charm: true, or both -- keep a party
+Charm in the bag (found there, or breeding.shiny_charm: true), or both --
+keep a party
 slot free (or set Party/Box to Automatic in Options, so a full party
 sends the egg to the PC without asking), and stand facing the Nursery
 lady outside it. The loop:
@@ -57,6 +58,12 @@ log = logging.getLogger(__name__)
 
 #: The Nursery block (PKMN-NTR's USUM egg flag 0x3307B1E8, less 0x1D8).
 _NURSERY = {"USUM-USA-1.2": 0x3307B010}
+#: The bag (PKMN-NTR's USUM ItemsOffset). PKHeX's MyItem block is 0xE28
+#: bytes: 906 one-word entries, item ID in bits 0-9 and count in bits
+#: 10-19 (InventoryItem7).
+_BAG = {"USUM-USA-1.2": 0x33011934}
+_BAG_LEN = 0xE28
+_SHINY_CHARM = 632
 _SLOTS = ((0x000, 0x001), (0x0E9, 0x0EA))      # (in use, PK7)
 _FLAG, _SEED, _LEN = 0x1D8, 0x1DC, 0x1EC
 _LIVE_STRIDE = 484
@@ -87,6 +94,35 @@ def read_nursery(rpc, base: int) -> Nursery | None:
         parents.append(pkm)
     return Nursery(tuple(parents), raw[_FLAG] == 1,
                    struct.unpack_from("<4I", raw, _SEED))
+
+
+def bag_has(rpc, base: int, item: int) -> bool | None:
+    """Whether the bag holds ``item``, or None if the block does not read
+    as a bag."""
+    raw = bytes(rpc.read(base, _BAG_LEN))
+    entries = [(w & 0x3FF, (w >> 10) & 0x3FF)
+               for w in struct.unpack(f"<{_BAG_LEN // 4}I", raw) if w]
+    ids = [i for i, n in entries if 0 < i <= 959 and n <= 999]
+    if len(ids) < 5 or len(ids) != len(entries):
+        return None
+    return item in ids
+
+
+def _shiny_charm(ctx, setting) -> bool:
+    """breeding.shiny_charm: true / false as set, else (auto) the bag's
+    say. Unsure means no: that is slower when wrong, never wrong."""
+    if isinstance(setting, bool):
+        return setting
+    try:
+        found = bag_has(ctx.rpc, _BAG[ctx.game.key], _SHINY_CHARM)
+    except (RPCError, OSError):
+        found = None
+    if found is None:
+        log.warning("  could not read the bag; going without the Shiny "
+                    "Charm (set breeding.shiny_charm: true if you have it)")
+        return False
+    log.info(f"  Shiny Charm: {'in' if found else 'not in'} the bag")
+    return found
 
 
 def _tsv(ctx) -> int | None:
@@ -167,8 +203,8 @@ def run(ctx) -> None:
         ctx.request_stop("nursery not found")
         return
     cfg = ctx.config.get("breeding") or {}
-    parents = Parents.from_nursery(*nursery.parents,
-                                   bool(cfg.get("shiny_charm", False)))
+    parents = Parents.from_nursery(
+        *nursery.parents, _shiny_charm(ctx, cfg.get("shiny_charm", "auto")))
     a, b = nursery.parents
     log.info(f"  Nursery: #{a.species} {a.gender} (item {a.held_item}) + "
              f"#{b.species} {b.gender} (item {b.held_item}); Masuda "
@@ -187,6 +223,10 @@ def run(ctx) -> None:
         ctx.request_stop("no shiny egg ahead")
         return
     log.info(f"  the first shiny egg is {ahead} decline(s) away")
+    # Every decline is checked to be one step, so the count is exact. The
+    # status events also show the watchdog this hunt is alive.
+    ctx.dashboard.broadcast("status", mode="gen7_breed", declined=0,
+                            eggs_left=ahead)
     _focus_if_needed(ctx)
     declined = misses = 0
     started = time.monotonic()
@@ -224,11 +264,13 @@ def run(ctx) -> None:
                 ctx.request_stop("shiny egg declined")
                 return
             declined += 1
+            left = ahead - declined
+            ctx.dashboard.broadcast("status", mode="gen7_breed",
+                                    declined=declined, eggs_left=left)
             if declined % _PROGRESS == 0:
-                left = eggs_until_shiny(new, parents, tsv, _LIMIT)
                 per = (time.monotonic() - started) / declined
                 log.info(f"  {declined} declined; shiny egg in {left} "
-                         f"(~{(left or 0) * per / 60:.0f} min)")
+                         f"(~{left * per / 60:.0f} min)")
             continue
         if not egg.shiny:
             # Neither video shows a decline; if B ever takes the egg, every

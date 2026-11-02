@@ -22,6 +22,7 @@ from test_gen7_encounter import FakeDashboard, InstantEvent  # noqa: E402
 from test_xy_starter_screen import Memory  # noqa: E402
 
 BASE = 0x3307B010
+BAG = 0x33011934
 TB = 0x33012818
 LIVE = 0x33F7FA44
 SEED = (305419896, 2271560481, 3735928559, 3237998016)
@@ -61,8 +62,10 @@ class World(Memory):
 
     def __init__(self, ctx, tsv, game_parents=MASUDA, langs=(2, 1),
                  occupied=True, answers=True, party_full=False,
-                 b_takes_it=False):
+                 b_takes_it=False, bag=()):
         super().__init__()
+        for i, (item, count) in enumerate(bag):     # InventoryItem7 words
+            self.put(BAG + 4 * i, struct.pack("<I", item | count << 10))
         self.ctx, self.tsv, self.game = ctx, tsv, game_parents
         self.answers, self.talk, self.b_takes_it = answers, None, b_takes_it
         self.declined = self.accepted = self.flag_writes = 0
@@ -165,6 +168,8 @@ def test_declines_until_the_shiny_egg_then_takes_it_and_stops(monkeypatch):
     assert ((pid >> 16) ^ (pid & 0xFFFF)) >> 4 == tsv
     assert ctx.dashboard.sent[-1][0] == "target_hit"
     assert "party slot 2" in ctx.dashboard.sent[-1][1]["reason"]
+    left = [k["eggs_left"] for t, k in ctx.dashboard.sent if t == "status"]
+    assert left == list(range(n, -1, -1))           # exact, counting down
 
 
 def test_a_full_party_sends_it_to_the_pc_and_the_seed_vouches(monkeypatch):
@@ -179,7 +184,8 @@ def test_a_shiny_charm_set_but_not_owned_is_caught(monkeypatch):
     tsv, n = tsv_with_shiny_within(charm, 0, 60, game=MASUDA)
     ctx, w = run(monkeypatch, tsv, config={"breeding": {"shiny_charm": True}})
     assert ctx.stop_reason == "egg not shiny"
-    assert w.accepted == 1 and not ctx.dashboard.sent
+    assert w.accepted == 1
+    assert "target_hit" not in [t for t, _ in ctx.dashboard.sent]
 
 
 def test_a_decline_that_takes_the_egg_stops_at_once(monkeypatch):
@@ -187,6 +193,29 @@ def test_a_decline_that_takes_the_egg_stops_at_once(monkeypatch):
     ctx, w = run(monkeypatch, tsv, b_takes_it=True)
     assert ctx.stop_reason == "decline failed"
     assert (w.declined, w.accepted) == (0, 1)
+
+
+ITEMS = [(1, 30), (4, 99), (17, 5), (28, 1), (50, 3), (213, 1)]
+CHARM_ONLY = e.Parents(0, 0, True, False, False, True)
+
+
+def test_a_shiny_charm_in_the_bag_is_found_and_used(monkeypatch):
+    tsv, n = tsv_with_shiny_within(CHARM_ONLY, 0, 3000)
+    ctx, w = run(monkeypatch, tsv, langs=(2, 2), game_parents=CHARM_ONLY,
+                 bag=ITEMS + [(gb._SHINY_CHARM, 1)])
+    assert ctx.stop_reason == "shiny egg"
+    assert (w.declined, w.accepted) == (n, 1)
+
+
+def test_a_bag_without_the_charm_means_none(monkeypatch):
+    ctx, w = run(monkeypatch, 5, langs=(2, 2), bag=ITEMS)
+    assert ctx.stop_reason == "no Masuda / Shiny Charm"
+
+
+def test_a_bag_that_does_not_read_as_one_is_not_trusted():
+    w = World(Ctx(), 5, bag=ITEMS + [(gb._SHINY_CHARM, 1), (1000, 1)])
+    assert gb.bag_has(w, BAG, gb._SHINY_CHARM) is None   # no item 1000
+    assert gb.bag_has(World(Ctx(), 5), BAG, gb._SHINY_CHARM) is None  # empty
 
 
 def test_without_masuda_or_the_charm_nothing_is_touched(monkeypatch):

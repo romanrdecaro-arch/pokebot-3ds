@@ -42,3 +42,10 @@ def test_the_last_stop_reason_is_read():
             "10:05 INFO stop requested: started in a battle\n")
     assert watchdog.last_stop_reason(text) == "started in a battle"
     assert watchdog.last_stop_reason("nothing here") is None
+
+
+def test_breeding_stops_a_restart_would_make_worse_are_left():
+    for reason in ("decline failed", "nursery lady not answering",
+                   "egg not shiny"):
+        assert reason.startswith(watchdog.LEAVE)
+    assert not "catch failed".startswith(watchdog.LEAVE)
