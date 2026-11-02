@@ -47,6 +47,7 @@ import struct
 import time
 from dataclasses import dataclass
 
+from ..bag7 import BAG, SHINY_CHARM, read_bag
 from ..citra_rpc import RPCError
 from ..egg7 import Parents, Stream, advance, eggs_until_shiny, generate
 from ..games import LIVEHEX_REFERENCES
@@ -58,12 +59,6 @@ log = logging.getLogger(__name__)
 
 #: The Nursery block (PKMN-NTR's USUM egg flag 0x3307B1E8, less 0x1D8).
 _NURSERY = {"USUM-USA-1.2": 0x3307B010}
-#: The bag (PKMN-NTR's USUM ItemsOffset). PKHeX's MyItem block is 0xE28
-#: bytes: 906 one-word entries, item ID in bits 0-9 and count in bits
-#: 10-19 (InventoryItem7).
-_BAG = {"USUM-USA-1.2": 0x33011934}
-_BAG_LEN = 0xE28
-_SHINY_CHARM = 632
 _SLOTS = ((0x000, 0x001), (0x0E9, 0x0EA))      # (in use, PK7)
 _FLAG, _SEED, _LEN = 0x1D8, 0x1DC, 0x1EC
 _LIVE_STRIDE = 484
@@ -96,27 +91,16 @@ def read_nursery(rpc, base: int) -> Nursery | None:
                    struct.unpack_from("<4I", raw, _SEED))
 
 
-def bag_has(rpc, base: int, item: int) -> bool | None:
-    """Whether the bag holds ``item``, or None if the block does not read
-    as a bag."""
-    raw = bytes(rpc.read(base, _BAG_LEN))
-    entries = [(w & 0x3FF, (w >> 10) & 0x3FF)
-               for w in struct.unpack(f"<{_BAG_LEN // 4}I", raw) if w]
-    ids = [i for i, n in entries if 0 < i <= 959 and n <= 999]
-    if len(ids) < 5 or len(ids) != len(entries):
-        return None
-    return item in ids
-
-
 def _shiny_charm(ctx, setting) -> bool:
     """breeding.shiny_charm: true / false as set, else (auto) the bag's
     say. Unsure means no: that is slower when wrong, never wrong."""
     if isinstance(setting, bool):
         return setting
     try:
-        found = bag_has(ctx.rpc, _BAG[ctx.game.key], _SHINY_CHARM)
+        bag = read_bag(ctx.rpc, BAG[ctx.game.key])
     except (RPCError, OSError):
-        found = None
+        bag = None
+    found = None if bag is None else SHINY_CHARM in bag
     if found is None:
         log.warning("  could not read the bag; going without the Shiny "
                     "Charm (set breeding.shiny_charm: true if you have it)")

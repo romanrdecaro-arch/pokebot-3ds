@@ -35,6 +35,7 @@ import struct
 import time
 from dataclasses import dataclass
 
+from ..bag7 import BAG, BALLS, read_bag
 from ..citra_rpc import RPCError
 from ..pk6_export import ensure_targets_dir
 from .observe import _report_encounter, foe_windows, scan_windows
@@ -71,8 +72,11 @@ class WigglePlan:
     #: Catch a shiny / target (random_encounters.on_target: catch, the
     #: default) rather than stop with it on screen (on_target: stop).
     catch: bool = True
-    #: Balls thrown before the hunt stops with the battle up.
-    catch_tries: int = 10
+    #: Balls thrown before the hunt stops with the battle up. A full-HP
+    #: Oricorio (catch rate 45) shrugs off 10 Poke Balls ~28% of the
+    #: time and 25 ~4%; on 2026-11-01 one took about 10 and the next
+    #: got away from 10.
+    catch_tries: int = 25
     #: B taps (dismiss_gap apart, ~3 s) before each throw, so Y lands on
     #: the command menu and not on battle text.
     settle_taps: int = 8
@@ -256,6 +260,10 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
             ctx._stop_evt.wait(plan.dismiss_gap)
         if "Battle" not in names():         # a slow Gotcha! just finished
             return True
+        if _balls_left(ctx) == 0:
+            log.error("  no Poke Balls left in the bag: not throwing (Y "
+                      "would do nothing and A, A would pick FIGHT)")
+            return False
         throws += 1
         log.info(f"  throwing ball {throws} of {plan.catch_tries}")
         for button in ("Y", "A", "A"):
@@ -266,6 +274,16 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
             ctx._stop_evt.wait(plan.dismiss_gap)
         end = time.monotonic() + plan.flee_timeout   # per ball, not per catch
     return False
+
+
+def _balls_left(ctx) -> int | None:
+    """Poke Balls in the bag, or None when the bag cannot be read."""
+    base = BAG.get(getattr(ctx.game, "key", ""))
+    try:
+        bag = read_bag(ctx.rpc, base) if base else None
+    except (RPCError, OSError):
+        return None
+    return None if bag is None else sum(n for i, n in bag.items() if i in BALLS)
 
 
 def _make_anchor(rpc, game):
@@ -326,6 +344,10 @@ def run(ctx) -> None:
     log.info(f"  wiggling {plan.hold * 1000:.0f} ms Left / Right in place; "
              f"{len(seen)} old record(s) ignored. A shiny is "
              f"{'caught' if plan.catch else 'left on screen, all input stopped'}.")
+    if plan.catch:
+        balls = _balls_left(ctx)
+        log.info(f"  {balls} Poke Ball(s) in the bag" if balls is not None
+                 else "  the bag could not be read: balls are not counted")
     anchor = _make_anchor(ctx.rpc, game)
     encounters = caught = 0
     while not ctx.should_stop():

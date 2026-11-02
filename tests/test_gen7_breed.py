@@ -15,7 +15,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from pokebot import egg7 as e  # noqa: E402
+from pokebot import bag7, egg7 as e  # noqa: E402
 from pokebot.modes import gen7_breed as gb  # noqa: E402
 from pokebot.parser import calc_checksum  # noqa: E402
 from test_gen7_encounter import FakeDashboard, InstantEvent  # noqa: E402
@@ -207,7 +207,7 @@ CHARM_ONLY = e.Parents(0, 0, True, False, False, True)
 def test_a_shiny_charm_in_the_bag_is_found_and_used(monkeypatch):
     tsv, n = tsv_with_shiny_within(CHARM_ONLY, 0, 3000)
     ctx, w = run(monkeypatch, tsv, langs=(2, 2), game_parents=CHARM_ONLY,
-                 bag=ITEMS + [(gb._SHINY_CHARM, 1)])
+                 bag=ITEMS + [(bag7.SHINY_CHARM, 1)])
     assert ctx.stop_reason == "shiny egg"
     assert (w.declined, w.accepted) == (n, 1)
 
@@ -218,9 +218,10 @@ def test_a_bag_without_the_charm_means_none(monkeypatch):
 
 
 def test_a_bag_that_does_not_read_as_one_is_not_trusted():
-    w = World(Ctx(), 5, bag=ITEMS + [(gb._SHINY_CHARM, 1), (1000, 1)])
-    assert gb.bag_has(w, BAG, gb._SHINY_CHARM) is None   # no item 1000
-    assert gb.bag_has(World(Ctx(), 5), BAG, gb._SHINY_CHARM) is None  # empty
+    w = World(Ctx(), 5, bag=ITEMS + [(bag7.SHINY_CHARM, 1), (1000, 1)])
+    assert bag7.read_bag(w, BAG) is None                 # no item 1000
+    assert bag7.read_bag(World(Ctx(), 5), BAG) is None   # empty
+    assert bag7.read_bag(World(Ctx(), 5, bag=ITEMS), BAG)[4] == 99
 
 
 def test_without_masuda_or_the_charm_nothing_is_touched(monkeypatch):

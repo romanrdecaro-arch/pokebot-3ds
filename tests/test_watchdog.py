@@ -37,6 +37,14 @@ def test_an_old_uncaught_shiny_is_not_pending_once_the_hunt_went_on():
     assert not watchdog.shiny_pending([enc(True), {"type": "target_hit"}, enc()])
 
 
+def test_a_live_bot_just_after_a_shiny_is_catching_it():
+    hit = [enc(True), {"type": "target_hit", "ts": 1000.0}]
+    assert watchdog.catching(hit, alive=True, now=1030.0)     # 30 s in
+    assert not watchdog.catching(hit, alive=False, now=1030.0)  # bot gone
+    assert not watchdog.catching(hit, alive=True,
+                                 now=1000.0 + watchdog.CATCH_S + 1)
+
+
 def test_the_last_stop_reason_is_read():
     text = ("10:00 INFO stop requested: flee failed\n"
             "10:05 INFO stop requested: started in a battle\n")

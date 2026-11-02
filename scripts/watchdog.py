@@ -34,6 +34,10 @@ LOG = REPO / "logs" / "watchdog.log"
 BOT_LOG = REPO / "logs" / "watchdog-bot.log"
 POLL_S, STALL_S = 30, 300
 MAX_RESTARTS, WINDOW_S = 5, 3600
+#: How long a live bot may stay quiet after a shiny before it counts as
+#: left on screen: a catch logs nothing until it is over (25 balls run
+#: ~5 min).
+CATCH_S = 900
 #: Stop reasons a restart cannot fix (the bot logs "stop requested: ...").
 #: The breeding ones too: after "decline failed" a restart would take
 #: another egg.
@@ -75,6 +79,11 @@ def shiny_pending(events: list[dict]) -> bool:
         if kind in ("target_hit", "target_caught"):
             return kind == "target_hit"
     return False
+
+
+def catching(events: list[dict], alive: bool, now: float) -> bool:
+    """A shiny is pending, but its catch may still be under way."""
+    return alive and bool(events) and now - events[-1].get("ts", 0) < CATCH_S
 
 
 def last_stop_reason(text: str) -> str | None:
@@ -125,6 +134,8 @@ def main(args: list[str]) -> int:
             continue
         events = tail_events()
         if shiny_pending(events):
+            if catching(events, bool(pids), time.time()):
+                continue
             log("a shiny / target is waiting in battle: leaving it for you. "
                 "Watchdog stopped.")
             return 0

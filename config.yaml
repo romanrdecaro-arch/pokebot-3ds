@@ -362,10 +362,12 @@ random_encounters:
   # seconds wiggle you in place; anything that is not a shiny / target
   # is run from (D-pad Down to RUN, then A). A shiny follows on_target
   # (below): catch taps B ~3 s to clear battle text, throws the quick
-  # Poke Ball (Y, A, A, then 15 B out of the battle), up to 10 balls, and
+  # Poke Ball (Y, A, A, then 15 B out of the battle), up to 25 balls, and
   # keeps hunting; stop halts all input.
   # Keep Poke Balls in the bag: with none, Y does nothing and the A, A
-  # would pick FIGHT and the first move. 0.02-0.5.
+  # would pick FIGHT and the first move. The bag is checked before each
+  # throw and the hunt stops with the battle up when it is out of balls
+  # (if the bag can be read). 0.02-0.5.
   gen7_wiggle_hold: 0.08
   #
   # --- Pokémon Crystal (Virtual Console) ---------------------------

@@ -167,10 +167,11 @@ class World:
 
 
 def run_world(monkeypatch, wilds, generation=7, config=None, breaks=0,
-              leftover=None):
+              leftover=None, balls=None):
     ctx = Ctx(generation)
     ctx.config = config or {}
     world = World(ctx, wilds, breaks=breaks, leftover=leftover)
+    monkeypatch.setattr(g7, "_balls_left", lambda ctx: balls)  # None: unread
     monkeypatch.setattr(g7.Modules, "names", lambda self: world.names())
     monkeypatch.setattr(g7, "scan_windows", world.scan)
     monkeypatch.setattr(g7, "read_xz", lambda rpc, route: None)   # no anchor
@@ -217,13 +218,28 @@ def test_a_ball_that_breaks_is_thrown_again(monkeypatch):
     assert [e for e, _ in ctx.dashboard.sent] == ["target_caught"]
 
 
-def test_ten_broken_balls_stop_with_the_battle_up(monkeypatch):
+def test_twenty_five_broken_balls_stop_with_the_battle_up(monkeypatch):
     ctx, _ = run_world(monkeypatch, [Pk(11, shiny=True)], breaks=99)
     ev = ctx.input.events
-    assert ev.count("Y") == 10
+    assert ev.count("Y") == 25
     assert ctx.stop_reason == "catch failed"
     assert "DpadDown" not in ev               # never ran from it
     assert ctx.dashboard.sent == []
+
+
+def test_an_empty_bag_throws_nothing(monkeypatch):
+    """No balls: Y would do nothing and A, A would attack the shiny."""
+    ctx, _ = run_world(monkeypatch, [Pk(11, shiny=True)], balls=0)
+    assert ctx.stop_reason == "catch failed"
+    assert not {"Y", "A"} & set(ctx.input.events)
+
+
+def test_balls_are_counted_from_the_bag(monkeypatch):
+    bag = {4: 60, 2: 5, 17: 3, 576: 1}       # Poke, Ultra, a Potion, Dream
+    monkeypatch.setattr(g7, "read_bag", lambda rpc, base: bag)
+    assert g7._balls_left(Ctx()) == 66
+    monkeypatch.setattr(g7, "read_bag", lambda rpc, base: None)
+    assert g7._balls_left(Ctx()) is None
 
 
 def test_no_ball_is_thrown_once_the_battle_ends_during_the_settle(monkeypatch):
