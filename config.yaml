@@ -156,6 +156,12 @@ soft_reset:
   # idles A for about half a second: fewer sweeps press faster, more
   # find a wild that turned up somewhere new sooner.
   static_full_every: 20
+  # A battle that starts on a step, not on A (USUM's Ultra Space Wilds
+  # legendaries and Ultra Beasts; the launcher's "Ultra Space legendary /
+  # Ultra Beast" entry): once the field is back after a reset, every
+  # other press is this Circle Pad push. up | down | left | right, or
+  # empty for A only. Save one step short of the encounter, facing it.
+  static_step: ""
 
   # --- USUM starters (mode: usum_starters) ---------------------------
   #
@@ -354,6 +360,21 @@ celebi_hunt:
 # false with it is still right, just slower.
 breeding:
   shiny_charm: auto
+
+# Ultra Warp Ride shiny hunt (Ultra Sun / Ultra Moon, mode gen7_wormhole).
+# Start on the Altar of the Sunne / Moone, at its warp hole and facing
+# it, with the ride set to the Circle Pad (Aether employee, Game Freak
+# office, Heahea City). The bot cannot see the ride: it holds a corner
+# for fly_seconds (~35 light-years a second; 5,000 is the top shiny
+# bracket), then lets go and takes the first hole that pulls it in.
+ultra_wormhole:
+  fly_seconds: 150
+  # down_left | down_right | up_left | up_right
+  corner: down_left
+  # catch - throw the quick ball at a shiny world Pokemon (default)
+  # stop  - leave it on screen. A shiny legendary / Ultra Beast is
+  #         always left on screen.
+  on_target: catch
 
 # Random-encounter shiny hunt tuning.
 random_encounters:

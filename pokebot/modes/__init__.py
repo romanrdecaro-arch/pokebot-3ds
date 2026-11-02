@@ -9,9 +9,11 @@ from .soft_reset import run as run_soft_reset
 from .gifts import run as run_gifts
 from .noibat import run as run_noibat
 from .static_encounter import run as run_static_encounter
+from .static_encounter import run_step as run_static_step
 from .usum_starters import run as run_usum_starters
 from .gen7_encounter import run as run_gen7_encounter
 from .gen7_breed import run as run_gen7_breed
+from .gen7_wormhole import run as run_gen7_wormhole
 from .debug import run as run_debug
 from .livehex import run as run_livehex
 from .crystal_observe import run as run_crystal_observe
@@ -31,9 +33,11 @@ MODES = {
     "gifts":       run_gifts,
     "noibat":      run_noibat,
     "static_encounter": run_static_encounter,
+    "static_step": run_static_step,
     "usum_starters": run_usum_starters,
     "gen7_encounter": run_gen7_encounter,
     "gen7_breed": run_gen7_breed,
+    "gen7_wormhole": run_gen7_wormhole,
     "debug":       run_debug,
     "livehex":     run_livehex,
     # Gen 2 (Virtual Console)

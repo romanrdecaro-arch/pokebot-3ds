@@ -489,6 +489,26 @@ def methods_for(game_key: str) -> list[Method]:
                       "every egg until the shiny one, accepts it and "
                       "STOPS: save the game yourself. Not yet tried "
                       "live."))
+            methods.append(Method(
+                "Ultra Wormhole (Ultra Warp Ride)", "gen7_wormhole",
+                notes="Stand on the Altar at its warp hole, facing it, "
+                      "with the ride set to the Circle Pad (Aether "
+                      "employee, Game Freak office, Heahea City). Rides, "
+                      "holds a corner (ultra_wormhole.fly_seconds), takes "
+                      "the first hole that pulls, finds the world's one "
+                      "Pokémon and catches a shiny of the 20 boosted "
+                      "species with the quick ball (make your last ball "
+                      "a Quick or Ultra Ball; bring a strong lead). A "
+                      "shiny legendary / Ultra Beast stops all input. Not "
+                      "yet tried live."))
+            methods.append(Method(
+                "Ultra Space legendary / Ultra Beast (soft reset)",
+                "static_step",
+                notes="Save in the Ultra Space Wilds one step short of the "
+                      "legendary or Ultra Beast, facing it. Spams A through "
+                      "the reset, then steps Up (soft_reset.static_step) "
+                      "until the battle; not shiny soft-resets. A SHINY "
+                      "STOPS ALL INPUT with the battle on screen."))
         return methods
     if game is not None and game.generation == 2:
         # Gen 2 gets its own manual mode. The Gen 6/7 methods below all

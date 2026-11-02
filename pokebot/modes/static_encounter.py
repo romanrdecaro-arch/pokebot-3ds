@@ -43,11 +43,13 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..games import DEFAULT_OT_NAME
+from ..citra_rpc import RPCError
 from ..pk6_export import ensure_targets_dir
 from .foe_watch import FoeWatch
+from .gen7_encounter import _PLAYER_ROUTE, read_xz
 from .observe import (_report_encounter, broadcast_party, get_party,
                       pick_opponent, read_pk6_at, scan_nonparty)
 from .soft_reset import (_PRE_RESET_QUIET_S, _PRESS_HOLD_FLOOR,
@@ -89,6 +91,11 @@ class StaticPlan:
     pre_reset_quiet: float = _PRE_RESET_QUIET_S
     reload_grace: float = _RELOAD_READ_GRACE_S
     reset_cooldown: float = _RESET_COOLDOWN_S
+    #: A Circle Pad push put between the A presses once the player is
+    #: back on the field (soft_reset.static_step: up/down/left/right),
+    #: for a battle that starts on a step, not on A: the Ultra Space
+    #: Wilds legendaries and Ultra Beasts. "" for none.
+    step: str = ""
 
     @classmethod
     def from_config(cls, cfg: dict | None) -> "StaticPlan":
@@ -116,7 +123,12 @@ class StaticPlan:
                              num("reload_read_grace", d.reload_grace)),
             reset_cooldown=max(0.0, num("reset_cooldown",
                                         d.reset_cooldown)),
+            step=_STEPS.get(str(cfg.get("static_step", "")).lower(), ""),
         )
+
+
+_STEPS = {"up": "CircleUp", "down": "CircleDown", "left": "CircleLeft",
+          "right": "CircleRight"}
 
 
 @dataclass(frozen=True)
@@ -132,6 +144,8 @@ class Hunt:
     #: counting as the next encounter.
     seen: set
     watch: FoeWatch
+    #: Where the player's position is read, for ``StaticPlan.step``.
+    route: tuple | None = None
 
 
 @dataclass(frozen=True)
@@ -147,21 +161,32 @@ class Mash:
 
 
 def mash_until_wild(ctx, plan: StaticPlan, watch: FoeWatch,
-                    reads_from: float) -> Mash:
+                    reads_from: float, route=None) -> Mash:
     """Press A until the foe window holds a wild the hunt has not seen.
 
     Presses never wait. Reads wait for ``reads_from`` -- the end of the
     reload grace -- and from then on the window is checked before every
     press, so no press follows a check that saw a battle.
+
+    With ``plan.step``, every other press becomes that push once the
+    player stands on the field again -- never before: on the title and
+    Continue screens a push would move the cursor off Continue.
     """
     deadline = max(time.monotonic(), reads_from) + plan.encounter_timeout
     presses = reads = 0
+    on_field = False
     while not ctx.should_stop() and time.monotonic() < deadline:
         if time.monotonic() >= reads_from:
             reads += 1
             if watch.check():
                 return Mash(True, presses, time.monotonic(), reads == 1)
-        _note_path(ctx, ctx.input.tap("A", hold_s=plan.press_hold))
+            if plan.step and route and not on_field and reads % 5 == 1:
+                try:
+                    on_field = read_xz(ctx.rpc, route) is not None
+                except (RPCError, OSError):
+                    pass
+        button = plan.step if on_field and presses % 2 else "A"
+        _note_path(ctx, ctx.input.tap(button, hold_s=plan.press_hold))
         presses += 1
     return Mash(False, presses)
 
@@ -211,9 +236,19 @@ def reset(ctx, plan: StaticPlan, last_reset_at: float):
     return reset_at, time.monotonic() + plan.reload_grace
 
 
-def run(ctx) -> None:
+def run_step(ctx) -> None:
+    """The same hunt for a Pokemon whose battle starts on a step toward
+    it: the Ultra Space Wilds legendaries and Ultra Beasts. Save one step
+    short of it, facing it; soft_reset.static_step picks the push
+    (default up)."""
+    run(ctx, default_step="CircleUp")
+
+
+def run(ctx, default_step: str = "") -> None:
     cfg = ctx.config.get("soft_reset", {}) or {}
     plan = StaticPlan.from_config(cfg)
+    if default_step and not plan.step:
+        plan = replace(plan, step=default_step)
 
     ensure_targets_dir()
     # broadcast_party suppresses identical signatures, so a stale one
@@ -231,6 +266,15 @@ def run(ctx) -> None:
     hunt = _start(ctx, cfg, plan)
     if hunt is None:
         return
+    if plan.step:
+        if hunt.route is None:
+            log.error("  stepping needs the player's position, known only "
+                      "for Ultra Sun / Ultra Moon so far.")
+            ctx.request_stop("no player position for stepping")
+            return
+        log.info(f"  Once the field is back after a reset, every other "
+                 f"press is {plan.step[6:]} on the Circle Pad: a step onto "
+                 f"the encounter.")
 
     attempt = 0
     reset_at = 0.0
@@ -277,13 +321,14 @@ def _start(ctx, cfg: dict, plan: StaticPlan) -> Hunt | None:
         watch.hot = stale[0]
     log.info(f"  {len(seen)} record(s) already in the foe window — "
              f"ignored.")
-    return Hunt(o.foe_base, foe_len, party_keys, seen, watch)
+    return Hunt(o.foe_base, foe_len, party_keys, seen, watch,
+                _PLAYER_ROUTE.get(getattr(ctx.game, "key", "")))
 
 
 def _attempt(ctx, plan: StaticPlan, hunt: Hunt, attempt: int,
              reset_at: float, reads_from: float) -> bool:
     """One encounter. True means the hunt is over: a hit, or stopped."""
-    mash = mash_until_wild(ctx, plan, hunt.watch, reads_from)
+    mash = mash_until_wild(ctx, plan, hunt.watch, reads_from, hunt.route)
     if ctx.should_stop():
         return True
     wild = None

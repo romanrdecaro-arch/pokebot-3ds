@@ -558,3 +558,61 @@ def launcher_modes_given_the_trainer_name() -> set[str]:
 def test_the_launcher_passes_the_trainer_name():
     """The party's own keys are excluded from wild detection by OT."""
     assert "static_encounter" in launcher_modes_given_the_trainer_name()
+
+
+# ----------------------------------------------------------------------
+# Stepping onto the encounter (Ultra Space Wilds legendaries / UBs)
+# ----------------------------------------------------------------------
+class _StepWorld:
+    """The title and Continue screens (no player), then the field; the
+    battle starts after enough pushes."""
+
+    def __init__(self, menu_reads=6, pushes_to_battle=3):
+        self.events, self.reads = [], 0
+        self.menu_reads, self.need = menu_reads, pushes_to_battle
+
+    def tap(self, button, hold_s=0.05):
+        self.events.append(button)
+        return "postmessage"
+
+    def pos(self, rpc, route):
+        self.reads += 1
+        return None if self.reads <= self.menu_reads else (0.0, 0.0)
+
+    def check(self):
+        return self.events.count("CircleUp") >= self.need
+
+
+def _step_ctx(world):
+    import threading
+    from types import SimpleNamespace
+    return SimpleNamespace(input=world, rpc=None, _stop_evt=threading.Event(),
+                           should_stop=lambda: False)
+
+
+def test_the_step_waits_for_the_field_then_goes_between_the_a_presses(monkeypatch):
+    world = _StepWorld()
+    monkeypatch.setattr(se, "read_xz", world.pos)
+    monkeypatch.setattr(se, "_note_path", lambda ctx, path: None)
+    plan = se.StaticPlan(step="CircleUp", press_hold=0.0)
+    mash = se.mash_until_wild(_step_ctx(world), plan, world, 0.0, route=(1, 2, 3))
+    assert mash.found
+    first = world.events.index("CircleUp")
+    # every press before the field came back was A (Continue stays picked)
+    assert set(world.events[:first]) == {"A"} and first >= 25
+    assert world.events[first:] == ["CircleUp", "A", "CircleUp", "A", "CircleUp"]
+
+
+def test_without_a_step_it_is_only_a(monkeypatch):
+    world = _StepWorld(menu_reads=0, pushes_to_battle=99)
+    monkeypatch.setattr(se, "read_xz", world.pos)
+    monkeypatch.setattr(se, "_note_path", lambda ctx, path: None)
+    plan = se.StaticPlan(press_hold=0.0, encounter_timeout=0.05)
+    se.mash_until_wild(_step_ctx(world), plan, world, 0.0, route=(1, 2, 3))
+    assert set(world.events) == {"A"}
+
+
+def test_static_step_is_read_from_config():
+    assert se.StaticPlan.from_config({"static_step": "Left"}).step == "CircleLeft"
+    assert se.StaticPlan.from_config({"static_step": "sideways"}).step == ""
+    assert se.StaticPlan.from_config({}).step == ""

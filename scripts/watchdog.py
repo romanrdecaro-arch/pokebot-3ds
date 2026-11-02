@@ -43,7 +43,8 @@ CATCH_S = 900
 #: another egg. "dashboard" / "interrupted" are someone stopping it.
 LEAVE = ("started in a battle", "not a Gen 7 game", "decline failed",
          "egg not shiny", "shiny egg declined", "no Masuda", "nursery",
-         "not Ultra Sun", "no shiny egg ahead", "dashboard", "interrupted")
+         "not Ultra Sun", "no shiny egg ahead", "dashboard", "interrupted",
+         "wormhole:", "no player position")
 
 
 def log(msg: str) -> None:
