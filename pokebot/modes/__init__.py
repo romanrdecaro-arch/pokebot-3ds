@@ -11,6 +11,7 @@ from .noibat import run as run_noibat
 from .static_encounter import run as run_static_encounter
 from .usum_starters import run as run_usum_starters
 from .gen7_encounter import run as run_gen7_encounter
+from .gen7_breed import run as run_gen7_breed
 from .debug import run as run_debug
 from .livehex import run as run_livehex
 from .crystal_observe import run as run_crystal_observe
@@ -32,6 +33,7 @@ MODES = {
     "static_encounter": run_static_encounter,
     "usum_starters": run_usum_starters,
     "gen7_encounter": run_gen7_encounter,
+    "gen7_breed": run_gen7_breed,
     "debug":       run_debug,
     "livehex":     run_livehex,
     # Gen 2 (Virtual Console)

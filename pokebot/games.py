@@ -471,6 +471,16 @@ def methods_for(game_key: str) -> list[Method]:
                       "the nickname question; not shiny soft-resets and "
                       "goes straight back to it. A SHINY STOPS ALL "
                       "INPUT there — answer it yourself, do not reset."))
+            methods.append(Method(
+                "Breeding (egg seed)", "gen7_breed",
+                notes="Two Pokémon in the Paniola Nursery, Masuda "
+                      "parents and/or the Shiny Charm (breeding."
+                      "shiny_charm in config.yaml), a free party slot; "
+                      "stand facing the Nursery lady. Reads the egg seed "
+                      "and declines "
+                      "every egg until the shiny one, accepts it and "
+                      "STOPS: save the game yourself. Not yet tried "
+                      "live."))
         return methods
     if game is not None and game.generation == 2:
         # Gen 2 gets its own manual mode. The Gen 6/7 methods below all

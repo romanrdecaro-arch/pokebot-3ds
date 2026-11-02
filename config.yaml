@@ -343,6 +343,17 @@ celebi_hunt:
   # rather than resetting past shinies on a reading it cannot trust.
   enemy_dv_check: paranoid
 
+# Ultra Sun / Ultra Moon breeding (mode: gen7_breed). Two Pokémon in the
+# Paniola Nursery, you facing the Nursery lady. The egg seed says which
+# egg is shiny; every other egg is declined and the shiny one accepted,
+# then the bot stops for you to save. It needs the Masuda method
+# (parents from games of different languages, read from the Nursery)
+# and/or the Shiny Charm. Set this true only if the Shiny Charm is in the
+# bag: true without it makes it accept the wrong egg, while false with it
+# is still right, just slower.
+breeding:
+  shiny_charm: false
+
 # Random-encounter shiny hunt tuning.
 random_encounters:
   # --- Sun / Moon / Ultra Sun / Ultra Moon (mode: gen7_encounter) ---

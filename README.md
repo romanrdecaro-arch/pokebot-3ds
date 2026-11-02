@@ -230,6 +230,7 @@ Fennekin / Froakie).
 | `noibat`     | Shaking-spot soft reset; stops ONLY on a shiny Noibat             |
 | `livehex`    | Bridges Azahar to PKHeX for live box / trainer editing             |
 | `gen7_encounter` | Sun/Moon/USUM: wiggles in place in grass; catches a shiny (Y, A, A, B×15) or stops (`on_target: stop`), runs from the rest |
+| `gen7_breed` | USUM: facing the Nursery lady, predicts each egg from the egg seed (Masuda and/or Shiny Charm), declines until the shiny one, accepts it and stops for you to save. Not yet tried live |
 
 ## Auto-catching
 
