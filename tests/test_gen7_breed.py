@@ -60,10 +60,11 @@ class World(Memory):
     """The Nursery, the trainer block and the live party, plus the lady."""
 
     def __init__(self, ctx, tsv, game_parents=MASUDA, langs=(2, 1),
-                 occupied=True, answers=True, party_full=False):
+                 occupied=True, answers=True, party_full=False,
+                 b_takes_it=False):
         super().__init__()
         self.ctx, self.tsv, self.game = ctx, tsv, game_parents
-        self.answers, self.talk = answers, None
+        self.answers, self.talk, self.b_takes_it = answers, None, b_takes_it
         self.declined = self.accepted = self.flag_writes = 0
         if occupied:
             self.put(BASE, b"\x01")
@@ -100,7 +101,7 @@ class World(Memory):
         if self.talk < 3:
             return
         seed = self.seed()                          # her question
-        if button == "A":
+        if button == "A" or self.b_takes_it:
             egg = e.generate(e.Stream(seed), 0, self.game, self.tsv)
             seed = e.advance(seed, egg.used)
             self.accepted += 1
@@ -179,6 +180,13 @@ def test_a_shiny_charm_set_but_not_owned_is_caught(monkeypatch):
     ctx, w = run(monkeypatch, tsv, config={"breeding": {"shiny_charm": True}})
     assert ctx.stop_reason == "egg not shiny"
     assert w.accepted == 1 and not ctx.dashboard.sent
+
+
+def test_a_decline_that_takes_the_egg_stops_at_once(monkeypatch):
+    tsv, _ = tsv_with_shiny_within(MASUDA, 3, 12)
+    ctx, w = run(monkeypatch, tsv, b_takes_it=True)
+    assert ctx.stop_reason == "decline failed"
+    assert (w.declined, w.accepted) == (0, 1)
 
 
 def test_without_masuda_or_the_charm_nothing_is_touched(monkeypatch):

@@ -25,6 +25,11 @@ How, from source (2026-11-01; the prediction is pokebot/egg7.py):
 * Instead of walking, the egg-waiting flag is set to 1, as PKMN-NTR's
   bot did: it is what enough steps would set, and the egg is still
   drawn by the game from the seed.
+* Seen in two USUM videos (Blitz Revolt, iStarlyTV): she stands outside,
+  right of the Nursery door beside a Miltank, and is talked to from
+  just below her or from her left. Two to four text boxes lead to her
+  question, whose Yes / No opens on Yes; after Yes come "You received
+  the Egg" and one parting line. Declining was not shown.
 * The seed says what the buttons did: one step means declined, the
   predicted egg's length means accepted. So the dialogue is driven
   loosely (A to talk, then A to accept or B to decline until the seed
@@ -226,9 +231,12 @@ def run(ctx) -> None:
                          f"(~{(left or 0) * per / 60:.0f} min)")
             continue
         if not egg.shiny:
-            log.warning("  an egg was accepted, not declined (it is in your "
-                        "party or PC); judging the next one from the seed")
-            continue
+            # Neither video shows a decline; if B ever takes the egg, every
+            # egg would land in the PC, so one is enough to stop on.
+            log.error("  declining took the egg instead (it is in your party "
+                      "or PC). Bot STOPPED: paste this log.")
+            ctx.request_stop("decline failed")
+            return
         _received(ctx, egg, new == advance(nursery.seed, egg.used), tsv,
                   declined)
         return
