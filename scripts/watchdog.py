@@ -91,12 +91,12 @@ def last_stop_reason(text: str) -> str | None:
     return found[-1].strip() if found else None
 
 
-def bots() -> list[int] | None:
-    """PIDs of running bots (run.py with a --mode), the launcher's included;
-    None when the process list could not be read."""
+def bots() -> dict[int, str] | None:
+    """Running bots (run.py with a --mode), the launcher's included, as
+    PID -> command line; None when the process list could not be read."""
     ps = ("Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
           "Where-Object { $_.CommandLine -match 'run\\.py.*--mode' } | "
-          "ForEach-Object { $_.ProcessId }")
+          "ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }")
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                            capture_output=True, text=True, timeout=60)
@@ -104,7 +104,17 @@ def bots() -> list[int] | None:
         return None
     if r.returncode != 0:
         return None                     # never read "no bots" from a failure
-    return [int(x) for x in r.stdout.split() if x.isdigit()]
+    out = {}
+    for line in r.stdout.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        if pid.isdigit():
+            out[int(pid)] = cmd
+    return out
+
+
+def mode_of(cmd: str) -> str | None:
+    found = re.search(r"--mode\s+(\S+)", cmd)
+    return found.group(1) if found else None
 
 
 def kill(pid: int) -> None:
@@ -125,13 +135,21 @@ def main(args: list[str]) -> int:
         print(__doc__)
         return 2
     log(f"watching: run.py {' '.join(args)}")
+    mine = mode_of(" ".join(args))
     restarts: list[float] = []
     started_at, log_at = 0.0, 0
     while True:
         time.sleep(POLL_S)
-        pids = bots()
-        if pids is None:
+        running = bots()
+        if running is None:
             continue
+        other = {mode_of(c) for c in running.values()} - {mine}
+        if other:
+            # e.g. Manual mode: restarting would start a hunt under the player
+            log(f"another bot is running ({', '.join(sorted(map(str, other)))})"
+                f": leaving it alone. Watchdog stopped.")
+            return 0
+        pids = list(running)
         events = tail_events()
         if shiny_pending(events):
             if catching(events, bool(pids), time.time()):

@@ -45,6 +45,13 @@ def test_a_live_bot_just_after_a_shiny_is_catching_it():
                                  now=1000.0 + watchdog.CATCH_S + 1)
 
 
+def test_the_mode_is_read_from_a_command_line():
+    cmd = r"C:\py\python.exe -u D:\bot\run.py --mode observe --game USUM-USA-1.2"
+    assert watchdog.mode_of(cmd) == "observe"
+    assert watchdog.mode_of("--mode gen7_encounter --target shiny") == "gen7_encounter"
+    assert watchdog.mode_of("run.py") is None
+
+
 def test_the_last_stop_reason_is_read():
     text = ("10:00 INFO stop requested: flee failed\n"
             "10:05 INFO stop requested: started in a battle\n")
