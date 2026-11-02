@@ -156,12 +156,12 @@ soft_reset:
   # idles A for about half a second: fewer sweeps press faster, more
   # find a wild that turned up somewhere new sooner.
   static_full_every: 20
-  # A battle that starts on a step, not on A (USUM's Ultra Space Wilds
-  # legendaries and Ultra Beasts; the launcher's "Ultra Space legendary /
-  # Ultra Beast" entry): once the field is back after a reset, every
-  # other press is this Circle Pad push. up | down | left | right, or
-  # empty for A only. Save one step short of the encounter, facing it.
-  static_step: ""
+  # Only for a battle that starts on a step, not on A (USUM's Ultra
+  # Space Wilds legendaries and Ultra Beasts; the launcher's "Ultra Space
+  # legendary / Ultra Beast" entry, mode static_step): once the field is
+  # back after a reset, every other press is this Circle Pad push.
+  # up | down | left | right. Save one step short of it, facing it.
+  static_step: up
 
   # --- USUM starters (mode: usum_starters) ---------------------------
   #

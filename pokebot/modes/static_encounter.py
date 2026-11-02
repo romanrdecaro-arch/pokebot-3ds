@@ -92,9 +92,9 @@ class StaticPlan:
     reload_grace: float = _RELOAD_READ_GRACE_S
     reset_cooldown: float = _RESET_COOLDOWN_S
     #: A Circle Pad push put between the A presses once the player is
-    #: back on the field (soft_reset.static_step: up/down/left/right),
-    #: for a battle that starts on a step, not on A: the Ultra Space
-    #: Wilds legendaries and Ultra Beasts. "" for none.
+    #: back on the field, for a battle that starts on a step, not on A:
+    #: the Ultra Space Wilds legendaries and Ultra Beasts (mode
+    #: static_step only). "" for none.
     step: str = ""
 
     @classmethod
@@ -123,7 +123,6 @@ class StaticPlan:
                              num("reload_read_grace", d.reload_grace)),
             reset_cooldown=max(0.0, num("reset_cooldown",
                                         d.reset_cooldown)),
-            step=_STEPS.get(str(cfg.get("static_step", "")).lower(), ""),
         )
 
 
@@ -241,14 +240,20 @@ def run_step(ctx) -> None:
     it: the Ultra Space Wilds legendaries and Ultra Beasts. Save one step
     short of it, facing it; soft_reset.static_step picks the push
     (default up)."""
-    run(ctx, default_step="CircleUp")
+    cfg = ctx.config.get("soft_reset", {}) or {}
+    run(ctx, step=step_from(cfg))
 
 
-def run(ctx, default_step: str = "") -> None:
+def step_from(cfg: dict) -> str:
+    """soft_reset.static_step as a Circle Pad button; up when unset."""
+    return _STEPS.get(str(cfg.get("static_step") or "up").lower(), "CircleUp")
+
+
+def run(ctx, step: str = "") -> None:
     cfg = ctx.config.get("soft_reset", {}) or {}
     plan = StaticPlan.from_config(cfg)
-    if default_step and not plan.step:
-        plan = replace(plan, step=default_step)
+    if step:
+        plan = replace(plan, step=step)
 
     ensure_targets_dir()
     # broadcast_party suppresses identical signatures, so a stale one

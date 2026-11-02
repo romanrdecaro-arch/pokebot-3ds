@@ -50,9 +50,12 @@ class Sim:
     """The game, driven only by the bot's presses."""
 
     def __init__(self, ctx, wilds, trips=2, pull_early=False,
-                 hole_blocks=True):
+                 transition=0, pos_always=False):
         self.ctx, self.wilds, self.trips = ctx, list(wilds), trips
-        self.pull_early, self.hole_blocks = pull_early, hole_blocks
+        self.pull_early, self.pos_always = pull_early, pos_always
+        #: Polls the "!" and the battle intro take before Battle loads.
+        self.transition, self.waited = transition, 0
+        self.battle_at = None           # len(events) when Battle loaded
         self.state, self.pos_ = "altar", HOME
         self.facing, self.events, self.bad = "CircleUp", [], []
         self.prompt = self.text = self.polls = 0
@@ -68,10 +71,21 @@ class Sim:
                 self.state, self.pos_, self.text = "world", ARRIVAL, 2
                 self.done = False
             return {wh.RIDE}
+        if self.state == "intro":
+            self.waited += 1
+            if self.waited > self.transition:
+                self._battle()
         return {"battle": {"Battle", "Bag"}}.get(self.state, {"FieldRo"})
 
+    def _battle(self):
+        self.state = "battle"
+        self.records.append(self.wilds.pop(0))
+        self.battle_at = len(self.events)
+
     def pos(self, rpc=None, route=None):
-        return self.pos_ if self.state in ("altar", "world") else None
+        if self.pos_always:
+            return self.pos_
+        return self.pos_ if self.state in ("altar", "world", "intro") else None
 
     def scan(self, ctx, windows, keys):
         return [(0x3002F9A0 + i, p) for i, p in enumerate(self.records)]
@@ -93,7 +107,10 @@ class Sim:
         elif b == "A":
             self._a()
         elif b == "B" and self.state == "world":
-            self.prompt = 0                    # No
+            if self.prompt:
+                self.prompt = 0                # No
+            elif self.text:
+                self.text -= 1                 # B moves text on too
         if self.state == "battle":
             if self.events[-2:] == ["DpadDown", "A"]:
                 self.state, self.text = "world", 1     # ran; an item to pick up
@@ -121,8 +138,11 @@ class Sim:
         if (self.state == "world" and not self.done
                 and abs(self.pos_[0] - SPOT[0]) <= 30
                 and abs(self.pos_[1] - SPOT[1]) <= 30):
-            self.state, self.done = "battle", True
-            self.records.append(self.wilds.pop(0))
+            self.done, self.waited = True, 0
+            if self.transition:
+                self.state = "intro"    # the player frozen under the "!"
+            else:
+                self._battle()
 
     def _at_altar_hole(self):
         return (self.facing == "CircleUp" and abs(self.pos_[0] - 1000) <= 40
@@ -197,10 +217,12 @@ FAST = wh.WormholePlan(
                          dismiss_gap=0.0, throw_gap=0.0))
 
 
-def hunt(monkeypatch, wilds, plan=FAST, **kw):
+def hunt(monkeypatch, wilds, plan=FAST, hide_records=False, **kw):
     ctx = Ctx()
     sim = Sim(ctx, wilds, **kw)
     ctx.input = sim
+    if hide_records:
+        sim.scan = lambda ctx, windows, keys: []
     monkeypatch.setattr(wh.WormholePlan, "from_config",
                         classmethod(lambda cls, cfg: plan))
     monkeypatch.setattr(g7.Modules, "names", lambda self: sim.names())
@@ -266,8 +288,38 @@ def test_a_shiny_legendary_is_left_on_screen(monkeypatch):
     ctx, sim, _ = hunt(monkeypatch, [Pk(1, species=150, shiny=True)], trips=1)
     assert ctx.stop_reason == "wormhole: shiny on screen"
     assert sim.state == "battle"
-    after = sim.events[len(sim.events) - 1]
-    assert after.startswith("Circle")           # nothing pressed after it
+    assert len(sim.events) == sim.battle_at     # nothing pressed after it
+
+
+def test_a_battle_still_loading_when_the_search_gives_up_is_not_pressed_into(
+        monkeypatch, soon):
+    """The search times out under the "!", the battle loads a moment
+    later: it must be read, never walked back from with A, A."""
+    plan = wh.WormholePlan(**{**FAST.__dict__, "walk_timeout": 0.5})
+    ctx, sim, _ = hunt(monkeypatch, [Pk(1, species=150, shiny=True)],
+                       plan=plan, trips=1, transition=60)
+    assert ctx.stop_reason == "wormhole: shiny on screen"
+    assert sim.battle_at is not None
+    assert len(sim.events) == sim.battle_at
+    assert soon == [True]                       # the search had given up
+
+
+@pytest.fixture
+def soon(monkeypatch):
+    calls = []
+    real = wh._battle_soon
+
+    def spy(*a, **k):
+        calls.append(real(*a, **k))
+        return calls[-1]
+    monkeypatch.setattr(wh, "_battle_soon", spy)
+    return calls
+
+
+def test_a_battle_whose_wild_cannot_be_read_is_left_alone(monkeypatch):
+    ctx, sim, reported = hunt(monkeypatch, [Pk(1)], trips=1, hide_records=True)
+    assert ctx.stop_reason == "wormhole: wild not read"
+    assert len(sim.events) == sim.battle_at
 
 
 def test_on_target_stop_leaves_a_shiny_world_pokemon_too(monkeypatch):
@@ -305,7 +357,7 @@ def test_not_ultra_sun_ultra_moon_stops_at_once(monkeypatch):
 def test_starting_inside_a_ride_or_battle_presses_nothing(monkeypatch):
     for state in ("ride", "battle"):
         ctx = Ctx()
-        sim = Sim(ctx, [])
+        sim = Sim(ctx, [], pos_always=True)     # only the modules tell
         sim.state = state
         ctx.input = sim
         monkeypatch.setattr(g7.Modules, "names", lambda self: sim.names())

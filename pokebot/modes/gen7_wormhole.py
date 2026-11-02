@@ -139,9 +139,11 @@ class Walker:
         """One push; how far it moved the player, or None off the field."""
         hold = hold or self.plan.push
         before = self.pos()
+        if before is None:
+            return None             # a battle or a load: press nothing
         self.ctx.input.tap(button, hold_s=hold)
         after = self.pos()
-        if before is None or after is None:
+        if after is None:
             return None
         dx, dz = after[0] - before[0], after[1] - before[1]
         d = math.hypot(dx, dz)
@@ -174,9 +176,9 @@ class Walker:
     def to(self, target, done=lambda: False, clear_text: bool = False,
            most: int = 80) -> bool:
         """Walk to ``target`` (x, z), each push sized from the learned
-        speed. ``clear_text`` presses A when a push goes nowhere (an item
-        found after a battle leaves text up); never used beside a hole,
-        where A asks to leave."""
+        speed. ``clear_text`` presses B when a push goes nowhere (an item
+        found after a battle leaves text up): B moves text on, and beside
+        a hole it answers No where A would ask to leave."""
         tried: set = set()              # pushes that went nowhere from here
         for _ in range(most):
             if self.ctx.should_stop() or done():
@@ -201,7 +203,7 @@ class Walker:
             if d is not None and d <= _STILL:
                 tried.add(button)       # a wall, or a way not learned yet
                 if clear_text:
-                    self.ctx.input.tap("A", hold_s=0.06)
+                    self.ctx.input.tap("B", hold_s=0.06)
             else:
                 tried.clear()
         return False
@@ -253,20 +255,28 @@ def enter_ride(ctx, mods: Modules, plan: WormholePlan) -> bool:
 def ride(ctx, mods: Modules, plan: WormholePlan) -> bool:
     """Hold the corner for ``plan.fly`` s, then let go; True once a hole
     has taken the ride and the field is back."""
-    start = time.monotonic()
+    start = beat = time.monotonic()
     held = [b for b in plan.corner if ctx.input.hold(b)]
+
+    def let_go():
+        for b in held:
+            ctx.input.release(b)
+        held.clear()
     try:
         while not ctx.should_stop():
             now = time.monotonic() - start
             names = _names(mods)
-            if names is not None and RIDE not in names and "FieldRo" in names:
-                log.info(f"  a hole took the ride after {now:.0f}s")
-                return True
-            if held and now >= plan.fly:
-                for b in held:
-                    ctx.input.release(b)
-                held = []
+            if names is not None and RIDE not in names:
+                let_go()                # a held corner would walk the player
+                if "FieldRo" in names:
+                    log.info(f"  a hole took the ride after {now:.0f}s")
+                    return True
+            elif held and now >= plan.fly:
+                let_go()
                 log.info(f"  {now:.0f}s in the corner: letting a hole take it")
+            if time.monotonic() - beat >= 60:
+                beat = time.monotonic()
+                _beat(ctx, "ride", seconds=round(now))
             if now > plan.ride_timeout:
                 return False
             ctx._stop_evt.wait(plan.poll)
@@ -347,6 +357,7 @@ def explore(ctx, mods: Modules, walker: Walker, world: World,
             continue
         if d <= _STILL:
             blocked.add((here, button))
+            ctx.input.tap("B", hold_s=0.06)    # text left up moves on
             continue
         if not size:                    # a cell is one push from here on
             size = max(d, 1.0)
@@ -372,7 +383,10 @@ def battle(ctx, mods: Modules, windows, seen: set, plan: WormholePlan,
     wilds = find_wild(ctx, windows, seen, plan.battle.find_timeout)
     seen.update(p.encryption_key for _, p in wilds)
     if not wilds:
-        log.warning("  battle started but no wild record turned up; running")
+        log.error("  a battle started but its wild could not be read; it "
+                  "could be a shiny, so the bot STOPPED with it on screen.")
+        ctx.request_stop(f"{STOP}wild not read")
+        return False
     hit = None
     for addr, pkm in wilds:
         stats["encounters"] += 1
@@ -423,36 +437,50 @@ def _back_on_altar(walker: Walker, home, before) -> bool:
             and (before is None or math.dist(p, before) > 4 * walker.plan.near))
 
 
-def go_back(ctx, walker: Walker, world: World, home,
-            plan: WormholePlan) -> bool:
-    """Back along the trail, then into the hole: A, and A again for Yes,
-    which the cursor starts on. The hole's push is learned -- first back
-    against the first step out, then the rest. True on the altar."""
+def go_back(ctx, mods: Modules, walker: Walker, world: World, home,
+            plan: WormholePlan) -> str:
+    """Back along the trail, then into the hole: A for it, the question
+    and Yes (the cursor starts on Yes). The hole's push is learned --
+    first back against the first step out, then the rest. "altar" when
+    there, "battle" when the walk stepped on the Pokemon, else "lost"."""
+    def battle_up() -> bool:
+        return "Battle" in (_names(mods) or ())
+
     for wp in reversed(_thin(world.trail, 2 * plan.near)[1:-1]):
-        walker.to(wp, clear_text=True)
+        walker.to(wp, done=battle_up, clear_text=True)
     out = world.out or (0.0, 1.0)
     ways = [world.hole] if world.hole else []
     for vec in ((-out[0], -out[1]), (-out[1], out[0]), (out[1], -out[0]), out):
         ways.append(walker.toward(vec))
     ways += list(_DIRS)
     for way in dict.fromkeys(ways):     # each push once, in that order
-        walker.to(world.arrival)
+        if ctx.should_stop():
+            return "lost"
+        _beat(ctx, "going back")
+        walker.to(world.arrival, done=battle_up)
+        blocked = walker.until_blocked(way, most=6)
+        if battle_up():
+            return "battle"
+        if not blocked:
+            continue                    # open ground: no hole that way
         before = walker.pos()
-        walker.until_blocked(way, most=6)
-        for _ in range(2):              # the hole, then Yes
+        for _ in range(3):              # the hole, its question, Yes
+            if walker.pos() is None or battle_up():
+                break                   # gone (or a battle): press nothing
             ctx.input.tap("A", hold_s=0.06)
             ctx._stop_evt.wait(plan.prompt_gap)
         end = time.monotonic() + plan.return_timeout
         while not ctx.should_stop() and time.monotonic() < end:
             if _back_on_altar(walker, home, before):
                 world.hole = way
-                return True
+                return "altar"
+            if battle_up():
+                return "battle"
             ctx._stop_evt.wait(plan.poll)
-        if ctx.should_stop():
-            return False
-        ctx.input.tap("B", hold_s=0.06)  # a prompt still open: No
-        ctx._stop_evt.wait(plan.prompt_gap / 2)
-    return False
+        if walker.pos() is not None and not battle_up():
+            ctx.input.tap("B", hold_s=0.06)  # a question left open: No
+            ctx._stop_evt.wait(plan.prompt_gap / 2)
+    return "lost"
 
 
 def to_altar_hole(ctx, walker: Walker, home) -> bool:
@@ -460,6 +488,25 @@ def to_altar_hole(ctx, walker: Walker, home) -> bool:
     then Up into the hole so A reaches it."""
     walker.to(home)
     return walker.until_blocked("CircleUp")
+
+
+def _beat(ctx, phase: str, **extra) -> None:
+    """A sign of life for the watchdog (it restarts a bot quiet for 5 min,
+    which with a corner held would leave the key down in Azahar)."""
+    ctx.dashboard.broadcast("status", mode="gen7_wormhole", phase=phase,
+                            **extra)
+
+
+def _battle_soon(ctx, mods: Modules, plan: WormholePlan,
+                 seconds: float = 3.0) -> bool:
+    """A battle whose transition was still running, or hidden by a
+    dropped read, when the search gave up."""
+    end = time.monotonic() + seconds
+    while not ctx.should_stop() and time.monotonic() < end:
+        if "Battle" in (_names(mods) or ()):
+            return True
+        ctx._stop_evt.wait(plan.poll)
+    return False
 
 
 def _status(ctx, stats: dict, phase: str) -> None:
@@ -539,7 +586,9 @@ def run(ctx) -> None:
         _status(ctx, stats, "world")
         log.info(f"  landed at x={arrival[0]:.0f} z={arrival[1]:.0f} "
                  f"({'a world seen before' if world.path else 'a new world'})")
-        if explore(ctx, mods, walker, world, plan):
+        found = (explore(ctx, mods, walker, world, plan)
+                 or _battle_soon(ctx, mods, plan))
+        if found:
             if not battle(ctx, mods, windows, seen, plan, stats):
                 break
         elif not ctx.should_stop():
@@ -547,10 +596,16 @@ def run(ctx) -> None:
                         f"going back without one")
         if ctx.should_stop():
             break
-        if not go_back(ctx, walker, world, home, plan):
+        back = go_back(ctx, mods, walker, world, home, plan)
+        if back == "battle" and not found:     # walking back stepped on it
+            if not battle(ctx, mods, windows, seen, plan, stats):
+                break
+            back = go_back(ctx, mods, walker, world, home, plan)
+        if back != "altar":
             if not ctx.should_stop():
-                log.error("  could not get back through the hole to the "
-                          "altar; stopping in the world.")
+                why = ("a second battle in one world"
+                       if back == "battle" else "the hole back to the altar")
+                log.error(f"  stopping in the world: {why} -- see the screen.")
                 ctx.request_stop(f"{STOP}could not get back")
             break
         walker.reset()

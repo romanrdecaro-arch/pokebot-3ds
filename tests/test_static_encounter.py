@@ -612,7 +612,9 @@ def test_without_a_step_it_is_only_a(monkeypatch):
     assert set(world.events) == {"A"}
 
 
-def test_static_step_is_read_from_config():
-    assert se.StaticPlan.from_config({"static_step": "Left"}).step == "CircleLeft"
-    assert se.StaticPlan.from_config({"static_step": "sideways"}).step == ""
-    assert se.StaticPlan.from_config({}).step == ""
+def test_static_step_is_read_only_by_the_step_mode():
+    assert se.step_from({"static_step": "Left"}) == "CircleLeft"
+    assert se.step_from({}) == "CircleUp"
+    assert se.step_from({"static_step": "sideways"}) == "CircleUp"
+    # a plain static hunt (X/Y, ORAS, USUM on A) never pushes
+    assert se.StaticPlan.from_config({"static_step": "left"}).step == ""
