@@ -87,6 +87,12 @@ class Parents:
     same_species: bool      # the ball then comes from either parent: a draw
     masuda: bool
     shiny_charm: bool
+    #: IVs in HP, Atk, Def, SpA, SpD, Spe order (3DSRNGTool's, also the
+    #: Power items'), and the passing parent's ability slot (0, 1, 2 =
+    #: hidden): only what the egg looks like depends on them.
+    male_ivs: tuple = (0,) * 6
+    female_ivs: tuple = (0,) * 6
+    inherit_ability: int = 0
 
     @property
     def pid_rolls(self) -> int:
@@ -103,12 +109,19 @@ class Parents:
         else:
             male, female = (a, b) if b.gender == "F" else (b, a)
             mother = female
+
+        def ivs(p):
+            v = p.ivs
+            return (v["HP"], v["Atk"], v["Def"], v["SpA"], v["SpD"], v["Spe"])
+
         return cls(male_item=_ITEM_INDEX.get(male.held_item, 0),
                    female_item=_ITEM_INDEX.get(female.held_item, 0),
                    random_gender=mother.species not in FIXED_GENDER,
                    same_species=a.species == b.species,
                    masuda=a.ot_language != b.ot_language,
-                   shiny_charm=shiny_charm)
+                   shiny_charm=shiny_charm,
+                   male_ivs=ivs(male), female_ivs=ivs(female),
+                   inherit_ability={1: 0, 2: 1, 4: 2}.get(mother.ability_num, 0))
 
 
 @dataclass(frozen=True)
@@ -118,6 +131,15 @@ class Egg:
     pid: int | None         # None without Masuda / Shiny Charm
     shiny: bool
     used: int               # steps accepting it moves the seed
+    ability: int = 0        # slot 1, 2 or 3 (hidden)
+    ivs: tuple = ()         # HP, Atk, Def, SpA, SpD, Spe
+
+
+def _ability(inherit: int, v: int) -> int:
+    """EggRNG.getRandomAbility: v is a draw % 100."""
+    if inherit == 2:
+        return 1 if v < 20 else 2 if v < 40 else 3
+    return 1 if v < (80 if inherit == 0 else 20) else 2
 
 
 def generate(rand: Stream, start: int, p: Parents, tsv: int) -> Egg:
@@ -135,21 +157,29 @@ def generate(rand: Stream, start: int, p: Parents, tsv: int) -> Egg:
     nature = r() % 25
     if p.male_item == p.female_item == 1:       # whose Everstone
         r()
-    r()                                         # ability
+    ability = _ability(p.inherit_ability, r() % 100)
     mp, fp = p.male_item - 3, p.female_item - 3  # >= 0: a Power item's stat
-    fixed: set = set()
+    from_male: dict = {}                        # inherited stat -> male's?
     if mp >= 0 and fp >= 0:
-        fixed.add(mp if r() & 1 == 0 else fp)
-    elif max(mp, fp) >= 0:
-        fixed.add(max(mp, fp))
-    while len(fixed) < (5 if 2 in (p.male_item, p.female_item) else 3):
+        if r() & 1 == 0:
+            from_male[mp] = True
+        else:
+            from_male[fp] = False
+    elif mp >= 0:
+        from_male[mp] = True
+    elif fp >= 0:
+        from_male[fp] = False
+    while len(from_male) < (5 if 2 in (p.male_item, p.female_item) else 3):
         stat = r() % 6
-        while stat in fixed:
+        while stat in from_male:
             stat = r() % 6
-        fixed.add(stat)
-        r()                                     # from which parent
-    for _ in range(6):                          # IVs
-        r()
+        from_male[stat] = r() & 1 == 0
+    ivs = []
+    for j in range(6):
+        iv = r() & 0x1F
+        if j in from_male:
+            iv = (p.male_ivs if from_male[j] else p.female_ivs)[j]
+        ivs.append(iv)
     ec = r()
     pid, shiny = None, False
     for _ in range(p.pid_rolls):
@@ -159,7 +189,8 @@ def generate(rand: Stream, start: int, p: Parents, tsv: int) -> Egg:
             break
     if p.same_species:                          # whose ball
         r()
-    return Egg(nature, ec, pid, shiny, i - start + 2)   # + adopt, clear
+    return Egg(nature, ec, pid, shiny, i - start + 2,   # + adopt, clear
+               ability, tuple(ivs))
 
 
 def eggs_until_shiny(state, p: Parents, tsv: int,

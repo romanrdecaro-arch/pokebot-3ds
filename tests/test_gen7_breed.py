@@ -30,16 +30,19 @@ MASUDA = e.Parents(0, 0, True, False, True, False)
 
 
 def pk7(*, key, species, pid, gender="M", item=0, lang=2, party=False,
-        egg=False) -> bytes:
+        egg=False, nature=0, ivs=(0,) * 6) -> bytes:
+    """``ivs`` in HP, Atk, Def, SpA, SpD, Spe order."""
     d = bytearray(260 if party else 232)
     struct.pack_into("<I", d, 0x00, key)
     struct.pack_into("<H", d, 0x08, species)
     struct.pack_into("<H", d, 0x0A, item)
     struct.pack_into("<I", d, 0x18, pid)
+    d[0x1C] = nature
     d[0x1D] = {"M": 0, "F": 2, "G": 4}[gender]
     d[0xE3] = lang
-    if egg:
-        struct.pack_into("<I", d, 0x74, 1 << 30)
+    hp, atk, de, spa, spd, spe = ivs                # the PK7 keeps Spe 4th
+    word = hp | atk << 5 | de << 10 | spe << 15 | spa << 20 | spd << 25
+    struct.pack_into("<I", d, 0x74, word | egg << 30)
     if party:
         d[0xEC] = 1
     struct.pack_into("<H", d, 0x06, calc_checksum(bytes(d)))
@@ -112,7 +115,7 @@ class World(Memory):
                 if self.read(LIVE + slot * 484, 4) == b"\0\0\0\0":
                     self.put(LIVE + slot * 484, pk7(
                         key=egg.ec, species=25, pid=egg.pid, party=True,
-                        egg=True))
+                        egg=True, nature=egg.nature, ivs=egg.ivs))
                     break
         else:
             seed = e.advance(seed, 1)
@@ -157,10 +160,12 @@ def run(monkeypatch, tsv, config=None, **world):
     return ctx, ctx.rpc
 
 
-def test_declines_until_the_shiny_egg_then_takes_it_and_stops(monkeypatch):
+def test_declines_until_the_shiny_egg_then_takes_it_and_stops(monkeypatch,
+                                                               caplog):
     tsv, n = tsv_with_shiny_within(MASUDA, 3, 12)
-    ctx, w = run(monkeypatch, tsv)
+    ctx, w = run(monkeypatch, tsv, bag=ITEMS)
     assert ctx.stop_reason == "shiny egg"
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
     assert (w.declined, w.accepted) == (n, 1)
     assert w.flag_writes == n + 1                   # no walking: the flag
     got = w.read(LIVE + 484, 260)

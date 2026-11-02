@@ -154,6 +154,12 @@ def _answer(ctx, base: int, seed: tuple, accept: bool) -> tuple | None:
     return None
 
 
+def describe(egg) -> str:
+    ability = "hidden ability" if egg.ability == 3 else f"ability {egg.ability}"
+    return (f"{NATURES[egg.nature]}, {ability}, IVs "
+            f"{'/'.join(map(str, egg.ivs))} (HP/Atk/Def/SpA/SpD/Spe)")
+
+
 def _received(ctx, egg, as_predicted: bool, tsv: int, declined: int) -> None:
     """The shiny egg was accepted: find it and say so, then stop."""
     live = ctx.game.offsets.party_live
@@ -170,6 +176,12 @@ def _received(ctx, egg, as_predicted: bool, tsv: int, declined: int) -> None:
                   f"shiny one. Is breeding.shiny_charm right? Bot STOPPED.")
         ctx.request_stop("egg not shiny")
         return
+    if got is not None:
+        v = got.ivs
+        if (got.nature_id, (v["HP"], v["Atk"], v["Def"], v["SpA"], v["SpD"],
+                            v["Spe"])) != (egg.nature, egg.ivs):
+            log.warning("  it is shiny, but its nature / IVs differ from the "
+                        "prediction: paste this log")
     nature = NATURES[egg.nature]
     bar = "*" * 30
     for line in (bar,
@@ -222,7 +234,8 @@ def run(ctx) -> None:
         log.error(f"  no shiny egg in the next {_LIMIT}; stopping.")
         ctx.request_stop("no shiny egg ahead")
         return
-    log.info(f"  the first shiny egg is {ahead} decline(s) away")
+    log.info(f"  the first shiny egg is {ahead} decline(s) away: "
+             f"{describe(generate(Stream(nursery.seed), ahead, parents, tsv))}")
     # Every decline is checked to be one step, so the count is exact. The
     # status events also show the watchdog this hunt is alive.
     ctx.dashboard.broadcast("status", mode="gen7_breed", declined=0,
@@ -239,8 +252,8 @@ def run(ctx) -> None:
         if nursery is not None:
             egg = generate(Stream(nursery.seed), 0, parents, tsv)
             if egg.shiny:
-                log.info(f"  the egg on offer is SHINY ({NATURES[egg.nature]}):"
-                         f" accepting it")
+                log.info(f"  the egg on offer is SHINY ({describe(egg)}): "
+                         f"accepting it")
             if not nursery.ready:
                 ctx.rpc.write(base + _FLAG, b"\x01")
             new = _answer(ctx, base, nursery.seed, accept=egg.shiny)

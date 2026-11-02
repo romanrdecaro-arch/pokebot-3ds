@@ -3,8 +3,9 @@ Gen 7 egg prediction (pokebot/egg7.py), a port of 3DSRNGTool's Egg7.
 
 The expected eggs below came from 3DSRNGTool's own Egg7.cs / EggRNG.cs /
 TinyMT.cs, compiled unchanged into a harness (2026-11-01); 45,000 random
-eggs across every item / gender / Masuda / Shiny Charm combination
-matched the port exactly. These few pin it.
+eggs across every item / gender / Masuda / Shiny Charm combination, and
+36,000 more with random parent IVs and abilities, matched the port
+exactly (PID, EC, nature, ability, IVs, steps). These few pin it.
 """
 from __future__ import annotations
 
@@ -70,6 +71,17 @@ def test_charm_with_two_everstones():
         (141351144, 2379118770, 8, False, 22)]
 
 
+def test_ivs_and_ability_with_a_power_item_a_knot_and_a_hidden_ability():
+    p = e.Parents(3, 2, random_gender=True, same_species=False, masuda=True,
+                  shiny_charm=False, male_ivs=(31, 30, 29, 28, 27, 26),
+                  female_ivs=(1, 2, 3, 4, 5, 6), inherit_ability=2)
+    rand = e.Stream(SEED)
+    assert [(x.pid, x.ec, x.used, x.ability, x.ivs)
+            for x in (e.generate(rand, f, p, 1234) for f in range(2))] == [
+        (3063301944, 2647530436, 28, 3, (31, 0, 29, 28, 5, 26)),
+        (134493370, 973706921, 36, 3, (31, 30, 27, 28, 5, 26))]
+
+
 def test_the_first_shiny_egg_is_the_one_3dsrngtool_finds():
     p = e.Parents(0, 2, True, False, True, True)
     n = e.eggs_until_shiny(SEED, p, 1234)
@@ -92,8 +104,10 @@ def test_no_masuda_and_no_charm_draws_no_pid():
     assert egg.pid is None and not egg.shiny and p.pid_rolls == 0
 
 
-def mon(species, gender="M", item=0, lang=2):
-    return NS(species=species, gender=gender, held_item=item, ot_language=lang)
+def mon(species, gender="M", item=0, lang=2, ability_num=1, iv=31):
+    ivs = dict.fromkeys(("HP", "Atk", "Def", "Spe", "SpA", "SpD"), iv)
+    return NS(species=species, gender=gender, held_item=item, ot_language=lang,
+              ability_num=ability_num, ivs=ivs)
 
 
 def test_parents_read_from_the_nursery():
