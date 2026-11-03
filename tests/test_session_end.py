@@ -64,3 +64,52 @@ def test_a_crash_says_what_crashed(monkeypatch):
         run(monkeypatch, mode)
     ends = [f for k, f in dash_ends[0].sent if k == "session_end"]
     assert ends == [{"mode": "fake", "reason": "crashed: RuntimeError: boom"}]
+
+
+def test_a_stop_line_on_stdin_stops_the_hunt_cleanly(monkeypatch):
+    """The launcher's Stop used to kill the bot: no session_end, and a
+    held key left down in Azahar. It now writes "stop" to stdin."""
+    import io
+    monkeypatch.setenv("POKEBOT_STDIN_CONTROL", "1")
+    monkeypatch.setattr(bot_mod.sys, "stdin", io.StringIO("noise\nstop\n"))
+
+    def mode(ctx):
+        ctx._stop_evt.wait(5)               # the hunt, until told to stop
+    ends = run(monkeypatch, mode)
+    assert ends == [{"mode": "fake", "reason": "dashboard"}]
+
+
+def test_the_launcher_asks_before_it_kills(monkeypatch):
+    import io
+    import subprocess
+    import launcher
+
+    class Proc:
+        def __init__(self, exits):
+            self.exits, self.killed = exits, False
+            self.stdin = io.StringIO()
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            if not self.exits:
+                raise subprocess.TimeoutExpired("bot", timeout)
+
+        def terminate(self):
+            self.killed = True
+
+    class NowThread:                      # the grace runs inline
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(launcher.threading, "Thread", NowThread)
+    for exits, killed in ((True, False), (False, True)):
+        bp = launcher._BotProcess(lambda line: None, lambda code: None)
+        bp._proc = proc = Proc(exits)
+        bp.stop()
+        assert proc.stdin.getvalue() == "stop\n"
+        assert proc.killed is killed

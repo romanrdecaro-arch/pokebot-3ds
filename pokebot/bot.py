@@ -13,7 +13,9 @@ Responsibilities:
 from __future__ import annotations
 
 import logging
+import os
 import signal
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Optional
@@ -229,6 +231,10 @@ class Bot:
         threading.Thread(target=self._dashboard_command_loop,
                          args=(ctx,), name="DashCmd",
                          daemon=True).start()
+        if os.environ.get("POKEBOT_STDIN_CONTROL"):
+            threading.Thread(target=self._stdin_command_loop,
+                             args=(ctx, sys.stdin), name="StdinCmd",
+                             daemon=True).start()
 
         mode_name = self.config.get("mode", "observe")
         if mode_name not in MODES:
@@ -302,6 +308,17 @@ class Bot:
                 ctx.request_stop("dashboard")
             elif cmd == "ping":
                 ctx.dashboard.broadcast("pong")
+
+    @staticmethod
+    def _stdin_command_loop(ctx: BotContext, stream) -> None:
+        """The launcher's Stop: a "stop" line on stdin becomes the same
+        command the dashboard sent, so the mode ends and cleanup runs.
+        Only when the launcher set POKEBOT_STDIN_CONTROL: a bot started
+        from a console would otherwise read that console."""
+        for line in stream:
+            if line.strip().lower() == "stop":
+                ctx.dashboard.inbox.put({"cmd": "stop"})
+                return
 
     def _install_signal_handlers(self) -> None:
         def _handler(sig, frame):

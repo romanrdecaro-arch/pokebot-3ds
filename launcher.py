@@ -314,8 +314,10 @@ class _BotProcess:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        env["POKEBOT_STDIN_CONTROL"] = "1"      # Stop arrives on stdin
         self._proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -326,9 +328,30 @@ class _BotProcess:
         )
         threading.Thread(target=self._drain, daemon=True).start()
 
+    #: Seconds a bot gets to stop by itself before it is killed.
+    STOP_GRACE = 5.0
+
     def stop(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
+        """Ask the bot to stop, and kill it only if it has not within
+        STOP_GRACE. A kill skips its cleanup: no session_end saying why
+        it ended, and a key it holds (the wormhole ride's corner) stays
+        down in Azahar."""
+        proc = self._proc
+        if not proc or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.write("stop\n")
+            proc.stdin.flush()
+        except (OSError, ValueError, AttributeError):
+            proc.terminate()
+            return
+
+        def kill_if_stuck():
+            try:
+                proc.wait(timeout=self.STOP_GRACE)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+        threading.Thread(target=kill_if_stuck, daemon=True).start()
 
     def _drain(self) -> None:
         assert self._proc and self._proc.stdout
