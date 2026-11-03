@@ -49,7 +49,7 @@ from ..games import DEFAULT_OT_NAME
 from ..citra_rpc import RPCError
 from ..pk6_export import ensure_targets_dir
 from .foe_watch import FoeWatch
-from .gen7_encounter import _PLAYER_ROUTE, read_xz
+from .gen7_encounter import Modules
 from .observe import (_report_encounter, broadcast_party, get_party,
                       pick_opponent, read_pk6_at, scan_nonparty)
 from .soft_reset import (_PRE_RESET_QUIET_S, _PRESS_HOLD_FLOOR,
@@ -143,8 +143,9 @@ class Hunt:
     #: counting as the next encounter.
     seen: set
     watch: FoeWatch
-    #: Where the player's position is read, for ``StaticPlan.step``.
-    route: tuple | None = None
+    #: Gen 7's loaded-module list, for ``StaticPlan.step``: FieldRo there
+    #: means the player stands on the field again.
+    modules: object = None
 
 
 @dataclass(frozen=True)
@@ -160,16 +161,18 @@ class Mash:
 
 
 def mash_until_wild(ctx, plan: StaticPlan, watch: FoeWatch,
-                    reads_from: float, route=None) -> Mash:
+                    reads_from: float, field=None) -> Mash:
     """Press A until the foe window holds a wild the hunt has not seen.
 
     Presses never wait. Reads wait for ``reads_from`` -- the end of the
     reload grace -- and from then on the window is checked before every
     press, so no press follows a check that saw a battle.
 
-    With ``plan.step``, every other press becomes that push once the
-    player stands on the field again -- never before: on the title and
-    Continue screens a push would move the cursor off Continue.
+    With ``plan.step``, every other press becomes that push once
+    ``field()`` says the player stands on the field again -- never
+    before: on the title and Continue screens a push would move the
+    cursor off Continue. (The player's position cannot say it: the
+    player object exists from boot.)
     """
     deadline = max(time.monotonic(), reads_from) + plan.encounter_timeout
     presses = reads = 0
@@ -179,9 +182,9 @@ def mash_until_wild(ctx, plan: StaticPlan, watch: FoeWatch,
             reads += 1
             if watch.check():
                 return Mash(True, presses, time.monotonic(), reads == 1)
-            if plan.step and route and not on_field and reads % 5 == 1:
+            if plan.step and field and not on_field and reads % 5 == 1:
                 try:
-                    on_field = read_xz(ctx.rpc, route) is not None
+                    on_field = bool(field())
                 except (RPCError, OSError):
                     pass
         button = plan.step if on_field and presses % 2 else "A"
@@ -272,9 +275,9 @@ def run(ctx, step: str = "") -> None:
     if hunt is None:
         return
     if plan.step:
-        if hunt.route is None:
-            log.error("  stepping needs the player's position, known only "
-                      "for Ultra Sun / Ultra Moon so far.")
+        if hunt.modules is None:
+            log.error("  stepping needs Gen 7's module list (Sun / Moon / "
+                      "Ultra Sun / Ultra Moon).")
             ctx.request_stop("no player position for stepping")
             return
         log.info(f"  Once the field is back after a reset, every other "
@@ -327,13 +330,15 @@ def _start(ctx, cfg: dict, plan: StaticPlan) -> Hunt | None:
     log.info(f"  {len(seen)} record(s) already in the foe window — "
              f"ignored.")
     return Hunt(o.foe_base, foe_len, party_keys, seen, watch,
-                _PLAYER_ROUTE.get(getattr(ctx.game, "key", "")))
+                Modules(ctx.rpc)
+                if getattr(ctx.game, "generation", None) == 7 else None)
 
 
 def _attempt(ctx, plan: StaticPlan, hunt: Hunt, attempt: int,
              reset_at: float, reads_from: float) -> bool:
     """One encounter. True means the hunt is over: a hit, or stopped."""
-    mash = mash_until_wild(ctx, plan, hunt.watch, reads_from, hunt.route)
+    field = (lambda: "FieldRo" in hunt.modules.names()) if hunt.modules else None
+    mash = mash_until_wild(ctx, plan, hunt.watch, reads_from, field)
     if ctx.should_stop():
         return True
     wild = None

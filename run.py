@@ -121,6 +121,11 @@ def main(argv=None):
                     choices=["horizontal", "vertical"],
                     help="walking axis for encounter mode "
                          "(horizontal = Left/Right, vertical = Up/Down)")
+    ap.add_argument("--gen7-tick", default=None,
+                    choices=["auto", "off", "up", "down"],
+                    help="Gen 7 grass wiggle drift fix: auto (hold the "
+                         "spot by position), off, or a short up / down "
+                         "push every few pairs")
     ap.add_argument("--flee-delay", type=float, default=None,
                     help="seconds to wait after a wild appears before "
                          "fleeing (encounter mode). Raise for a slower "
@@ -244,6 +249,8 @@ def main(argv=None):
         section("soft_reset")["target"] = args.soft_reset_target
     if args.movement:
         section("random_encounters")["movement"] = args.movement
+    if args.gen7_tick:
+        section("random_encounters")["gen7_tick"] = args.gen7_tick
     if args.flee_delay is not None:
         section("random_encounters")["flee_delay"] = args.flee_delay
     if args.fish_cast_settle is not None:

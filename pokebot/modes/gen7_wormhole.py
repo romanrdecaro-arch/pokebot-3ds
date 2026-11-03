@@ -136,11 +136,14 @@ class Walker:
             return None
 
     def push(self, button: str, hold: float | None = None):
-        """One push; how far it moved the player, or None off the field."""
+        """One push; how far it moved the player, or None when the
+        position cannot be read (then nothing is pressed). Battles are
+        not seen here -- the player object outlives them -- so callers
+        check the module list first."""
         hold = hold or self.plan.push
         before = self.pos()
         if before is None:
-            return None             # a battle or a load: press nothing
+            return None
         self.ctx.input.tap(button, hold_s=hold)
         after = self.pos()
         if after is None:
@@ -159,11 +162,12 @@ class Walker:
         return max(self.dirs, key=lambda b: self.dirs[b][0] * vec[0]
                    + self.dirs[b][1] * vec[1])
 
-    def until_blocked(self, button: str, most: int = 12) -> bool:
+    def until_blocked(self, button: str, most: int = 12,
+                      done=lambda: False) -> bool:
         """Push one way until something stops the player (twice running)."""
         still = 0
         for _ in range(most):
-            if self.ctx.should_stop():
+            if self.ctx.should_stop() or done():
                 return False
             d = self.push(button)
             if d is None:
@@ -286,15 +290,19 @@ def ride(ctx, mods: Modules, plan: WormholePlan) -> bool:
             ctx.input.release(b)
 
 
-def arrive(ctx, walker: Walker, plan: WormholePlan):
+def arrive(ctx, walker: Walker, plan: WormholePlan, home):
     """A through the arrival text (the player faces away from the hole,
-    at nothing) until the player stands still; that spot, or None."""
+    at nothing) until the player stands still in the new world; that
+    spot, or None. The player object lives on through the ride with the
+    altar's coordinates, so a spot near ``home`` is not the world yet."""
     end = time.monotonic() + plan.world_timeout
     last, still = None, 0
     while not ctx.should_stop() and time.monotonic() < end:
         ctx.input.tap("A", hold_s=0.06)
         ctx._stop_evt.wait(plan.poll)
         p = walker.pos()
+        if p is not None and math.dist(p, home) <= 2 * plan.near:
+            p = None                    # still the altar's
         still = still + 1 if (p and last and math.dist(p, last) <= _STILL) else 0
         if still >= 3:
             return p
@@ -458,7 +466,7 @@ def go_back(ctx, mods: Modules, walker: Walker, world: World, home,
             return "lost"
         _beat(ctx, "going back")
         walker.to(world.arrival, done=battle_up)
-        blocked = walker.until_blocked(way, most=6)
+        blocked = walker.until_blocked(way, most=6, done=battle_up)
         if battle_up():
             return "battle"
         if not blocked:
@@ -540,7 +548,7 @@ def run(ctx) -> None:
     names = _names(mods) or set()
     walker = Walker(ctx, route, plan)
     home = walker.pos()
-    if "Battle" in names or RIDE in names or home is None:
+    if "FieldRo" not in names or "Battle" in names or RIDE in names             or home is None:
         log.error("  start on the altar, standing at its warp hole and "
                   "facing it (not in a battle or a ride).")
         ctx.request_stop(f"{STOP}not at the altar")
@@ -576,7 +584,7 @@ def run(ctx) -> None:
                 ctx.request_stop(f"{STOP}ride did not end")
             break
         walker.reset()
-        arrival = arrive(ctx, walker, plan)
+        arrival = arrive(ctx, walker, plan, home)
         if arrival is None:
             if not ctx.should_stop():
                 log.error("  the world never settled after the ride.")

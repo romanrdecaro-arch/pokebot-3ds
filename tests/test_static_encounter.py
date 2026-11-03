@@ -575,9 +575,9 @@ class _StepWorld:
         self.events.append(button)
         return "postmessage"
 
-    def pos(self, rpc, route):
+    def field(self):
         self.reads += 1
-        return None if self.reads <= self.menu_reads else (0.0, 0.0)
+        return self.reads > self.menu_reads
 
     def check(self):
         return self.events.count("CircleUp") >= self.need
@@ -592,10 +592,9 @@ def _step_ctx(world):
 
 def test_the_step_waits_for_the_field_then_goes_between_the_a_presses(monkeypatch):
     world = _StepWorld()
-    monkeypatch.setattr(se, "read_xz", world.pos)
     monkeypatch.setattr(se, "_note_path", lambda ctx, path: None)
     plan = se.StaticPlan(step="CircleUp", press_hold=0.0)
-    mash = se.mash_until_wild(_step_ctx(world), plan, world, 0.0, route=(1, 2, 3))
+    mash = se.mash_until_wild(_step_ctx(world), plan, world, 0.0, field=world.field)
     assert mash.found
     first = world.events.index("CircleUp")
     # every press before the field came back was A (Continue stays picked)
@@ -605,10 +604,9 @@ def test_the_step_waits_for_the_field_then_goes_between_the_a_presses(monkeypatc
 
 def test_without_a_step_it_is_only_a(monkeypatch):
     world = _StepWorld(menu_reads=0, pushes_to_battle=99)
-    monkeypatch.setattr(se, "read_xz", world.pos)
     monkeypatch.setattr(se, "_note_path", lambda ctx, path: None)
     plan = se.StaticPlan(press_hold=0.0, encounter_timeout=0.05)
-    se.mash_until_wild(_step_ctx(world), plan, world, 0.0, route=(1, 2, 3))
+    se.mash_until_wild(_step_ctx(world), plan, world, 0.0, field=world.field)
     assert set(world.events) == {"A"}
 
 

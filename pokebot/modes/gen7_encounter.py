@@ -26,11 +26,19 @@ What the game does, found by driving it live (Ultra Sun, 2026-10-18):
   there (a touch would open the Rotom Dex).
 * Equal Left / Right pushes still drift (about 2 units south a cycle,
   measured live in Ultra Sun), so on Ultra Sun / Ultra Moon an Anchor
-  reads the player's position and pushes back to the starting spot.
+  reads the player's position and pushes back to the starting spot
+  (random_encounters.gen7_tick: auto). Where the wiggle does not drift,
+  gen7_tick: off sends no correction; up / down instead send a short
+  blind push that way every gen7_tick_every pairs.
+* One read of the module list can come back without Battle while the
+  battle's intro loads modules (3 times in 8,274 battles, 2026-11-02:
+  "ran from it in 0.0s"), so a battle only counts as over after three
+  reads in a row agree.
 """
 from __future__ import annotations
 
 import logging
+import math
 import struct
 import time
 from dataclasses import dataclass
@@ -47,14 +55,25 @@ log = logging.getLogger(__name__)
 _RO_LO, _RO_HI = 0x00600000, 0x04000000
 _MAX_MODULES = 64
 
-#: Where the player stands, per game: (root global, slot, vtable). Found
-#: for Ultra Sun / Ultra Moon from code.bin's RTTI and checked live
-#: (2026-10-30): *(0x0062143C) is a field object whose +0x88 is the
-#: Field::MoveModel::FieldMoveModelPlayer (vtable 0x0064A4F0; null during
-#: a battle), and its +0x3B0 holds x, y, z (+x east, +z south, toward the
-#: camera). Sun / Moon have their own addresses, not found yet.
-_PLAYER_ROUTE = {"USUM-USA-1.2": (0x0062143C, 0x88, 0x0064A4F0)}
+#: Where the player stands, per game: (root, pointer offsets, vtable).
+#: Ultra Sun / Ultra Moon, from code.bin (2026-11-03, not yet live): the
+#: GameSys::GameManager singleton's constructor stores it at 0x006A3984;
+#: its +0x24 is the field-resident object built at boot, whose +0xCC is
+#: the Field::MoveModel::FieldMoveModelManager, whose model array starts
+#: at +0x0C with the player (FieldMoveModelPlayer, vtable 0x0064A4F0) in
+#: slot 0; +0x3B0 holds x, y, z (+x east, +z south, toward the camera;
+#: the offset verified live 2026-10-30). The player model exists from
+#: boot, so a position alone does not mean the field is up -- the
+#: module list (FieldRo) says that.
+#:
+#: The first route, *(0x0062143C) +0x88, read a constant: 0x0062143C is
+#: in code.bin's read-only segment (ASCII "xp\0" "0" there makes
+#: 0x30007078), so it found the player through whatever that heap
+#: address held in one session, and read nothing in every session after.
+_PLAYER_ROUTE = {"USUM-USA-1.2": (0x006A3984, (0x24, 0xCC, 0x0C), 0x0064A4F0)}
 _POS_OFF = 0x3B0
+#: Where a pointer on the route may point: the heaps, not code or zero.
+_HEAP = (0x08000000, 0x40000000)
 #: How far (world units) the wiggle may wander from home before a push
 #: brings it back. One 0.08 s push at ~10x emulation is ~150 units.
 _ANCHOR_TOL = 30.0
@@ -90,6 +109,13 @@ class WigglePlan:
     throw_gap: float = 0.5
     dismiss_gap: float = 0.4
 
+    #: The drift fix (random_encounters.gen7_tick): "auto" holds the spot
+    #: by the player's position when it can be read, "off" sends nothing,
+    #: or a Circle Pad button pushed for half a wiggle every
+    #: ``tick_every`` pairs, for a spot that drifts one known way.
+    tick: str = "auto"
+    tick_every: int = 15
+
     @classmethod
     def from_config(cls, cfg: dict | None) -> "WigglePlan":
         cfg, d = cfg or {}, cls()
@@ -97,15 +123,25 @@ class WigglePlan:
             hold = float(cfg.get("gen7_wiggle_hold", d.hold))
         except (TypeError, ValueError):
             hold = d.hold
+        try:
+            every = int(cfg.get("gen7_tick_every", d.tick_every))
+        except (TypeError, ValueError):
+            every = d.tick_every
         vertical = str(cfg.get("movement", "")).lower() == "vertical"
+        tick = _TICKS.get(str(cfg.get("gen7_tick", "auto")).lower(), "auto")
         return cls(hold=min(max(hold, 0.02), 0.5),
                    pair=("CircleUp", "CircleDown") if vertical else d.pair,
-                   catch=str(cfg.get("on_target", "catch")).lower() != "stop")
+                   catch=str(cfg.get("on_target", "catch")).lower() != "stop",
+                   tick=tick, tick_every=max(1, every))
 
     @property
     def axis(self) -> int:
         """0 when the wiggle runs along x (east-west), 1 along z."""
         return 1 if self.pair[0] == "CircleUp" else 0
+
+
+_TICKS = {"auto": "auto", "off": "off", "none": "off", "up": "CircleUp",
+          "down": "CircleDown", "left": "CircleLeft", "right": "CircleRight"}
 
 
 class Modules:
@@ -139,13 +175,20 @@ class Modules:
 
 
 def read_xz(rpc, route) -> tuple[float, float] | None:
-    """The player's (x, z), or None outside the overworld."""
-    root, slot, vtable = route
-    parent = rpc.read_u32(root)
-    player = rpc.read_u32(parent + slot) if parent else 0
-    if not player or rpc.read_u32(player) != vtable:
+    """The player's (x, z), or None when the route does not lead to the
+    player object. Every pointer is checked to point into a heap first,
+    so a bad route reads nothing outside them."""
+    root, offsets, vtable = route
+    p = rpc.read_u32(root)
+    for off in offsets:
+        if not _HEAP[0] <= p < _HEAP[1]:
+            return None
+        p = rpc.read_u32(p + off)
+    if not _HEAP[0] <= p < _HEAP[1] or rpc.read_u32(p) != vtable:
         return None
-    x, _, z = struct.unpack("<3f", rpc.read(player + _POS_OFF, 12))
+    x, _, z = struct.unpack("<3f", rpc.read(p + _POS_OFF, 12))
+    if not (math.isfinite(x) and math.isfinite(z)):
+        return None
     return x, z
 
 
@@ -201,6 +244,21 @@ class Anchor:
                 self._learn(axis, abs(after[axis] - before[axis]), held)
 
 
+def battle_over(ctx, mods: Modules, reads: int = 3, gap: float = 0.15) -> bool:
+    """Battle gone from the module list in ``reads`` reads in a row. One
+    read can miss it while the battle loads modules; a dropped read
+    counts as still in it."""
+    for i in range(reads):
+        try:
+            if "Battle" in mods.names():
+                return False
+        except (RPCError, OSError):
+            return False
+        if i < reads - 1:
+            ctx._stop_evt.wait(gap)
+    return True
+
+
 def find_wild(ctx, windows, seen: set, timeout: float) -> list:
     """New un-owned PK7s, waiting for the record to be written."""
     end = time.monotonic() + timeout
@@ -223,7 +281,7 @@ def flee(ctx, mods: Modules, timeout: float) -> bool:
             names = mods.names()
         except (RPCError, OSError):
             names = {"Battle"}              # one dropped read: still in it
-        if "Battle" not in names:
+        if "Battle" not in names and battle_over(ctx, mods):
             return True
         if "Bag" in names:                  # the command menu is up
             for button in ("B", "DpadDown", "A"):
@@ -260,7 +318,7 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
     end = time.monotonic() + plan.flee_timeout
     while not ctx.should_stop() and time.monotonic() < end:
         now = names()
-        if "Battle" not in now:
+        if "Battle" not in now and battle_over(ctx, mods):
             return True
         if "Bag" not in now:                # text still running
             ctx.input.tap("B", hold_s=0.06)
@@ -271,8 +329,8 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
         for _ in range(plan.settle_taps):
             ctx.input.tap("B", hold_s=0.06)
             ctx._stop_evt.wait(plan.dismiss_gap)
-        if "Battle" not in names():         # a slow Gotcha! just finished
-            return True
+        if "Battle" not in names() and battle_over(ctx, mods):
+            return True                     # a slow Gotcha! just finished
         if _balls_left(ctx) == 0:
             log.error("  no Poke Balls left in the bag: not throwing (Y "
                       "would do nothing and A, A would pick FIGHT)")
@@ -303,8 +361,9 @@ def _make_anchor(rpc, game, axis: int = 0):
     route = _PLAYER_ROUTE.get(getattr(game, "key", ""))
     home = read_xz(rpc, route) if route else None
     if home is None:
-        log.info("  no player position for this game yet: the wiggle runs "
-                 "uncorrected and can drift slowly.")
+        log.info("  the player's position could not be read: the wiggle "
+                 "runs uncorrected and can drift slowly (gen7_tick: up / "
+                 "down sends a blind correcting push instead).")
         return None
     log.info(f"  holding the spot at x={home[0]:.0f} z={home[1]:.0f} "
              f"(+-{_ANCHOR_TOL:.0f})")
@@ -316,20 +375,21 @@ def _is_hit(ctx, pkm) -> bool:
                               and ctx.target.matches(pkm)))
 
 
-def _leave_leftover_battle(ctx, mods, windows, plan) -> bool:
-    """A restart can land inside a battle. Run from it only when no
-    un-owned record in the windows is a shiny / target: any of them could
-    be this battle's wild, so then it is left on screen. True once the
-    overworld is back."""
+def _leave_leftover_battle(ctx, mods, windows, plan,
+                           where: str = "started inside a battle") -> bool:
+    """A battle whose wild is not known: a restart that landed in one, or
+    one whose record never turned up. Run from it only when no un-owned
+    record in the windows is a shiny / target: any of them could be this
+    battle's wild, so then it is left on screen. True once the overworld
+    is back."""
     wilds = [p for _, p in scan_windows(ctx, windows, set()) if not p.ot_name]
     if not wilds or any(_is_hit(ctx, p) for p in wilds):
-        log.error("  a battle is already on screen and it may be a shiny / "
-                  "target (or no wild record could be read); finish it and "
-                  "start again from the grass.")
+        log.error(f"  {where}, and it may be a shiny / target (or no wild "
+                  f"record could be read); Bot STOPPED with it on screen.")
         ctx.request_stop("started in a battle")
         return False
-    log.info(f"  started inside a battle; none of the {len(wilds)} wild "
-             f"record(s) is a shiny / target, so running from it first")
+    log.info(f"  {where}; none of the {len(wilds)} wild record(s) is a "
+             f"shiny / target, so running from it")
     if flee(ctx, mods, plan.flee_timeout):
         return True
     if not ctx.should_stop():
@@ -362,9 +422,17 @@ def run(ctx) -> None:
         balls = _balls_left(ctx)
         log.info(f"  {balls} Poke Ball(s) in the bag" if balls is not None
                  else "  the bag could not be read: balls are not counted")
-    anchor = _make_anchor(ctx.rpc, game, plan.axis)
-    encounters = caught = 0
+    anchor = _make_anchor(ctx.rpc, game, plan.axis) if plan.tick == "auto" else None
+    if plan.tick == "off":
+        log.info("  drift fix off (gen7_tick: off): no correcting pushes")
+    elif plan.tick != "auto":
+        log.info(f"  drift fix: {plan.tick[6:]} for {plan.hold * 500:.0f} ms "
+                 f"every {plan.tick_every} pairs (gen7_tick)")
+    encounters = caught = pairs = 0
     while not ctx.should_stop():
+        pairs += 1
+        if plan.tick not in ("auto", "off") and pairs % plan.tick_every == 0:
+            ctx.input.tap(plan.tick, hold_s=plan.hold / 2)
         for button in plan.pair:
             ctx.input.tap(button, hold_s=plan.hold)
             if anchor:
@@ -383,8 +451,13 @@ def run(ctx) -> None:
         wilds = find_wild(ctx, windows, seen, plan.find_timeout)
         seen.update(p.encryption_key for _, p in wilds)
         if not wilds:
-            log.warning("  battle started but no wild record turned up; "
-                        "running anyway")
+            # Seen live as a false "battle over" right after a wild: the
+            # same battle, its wild already judged -- but a shiny caught
+            # that way would be too, so every record is checked again.
+            if not _leave_leftover_battle(ctx, mods, windows, plan,
+                                          "a battle with no new wild record"):
+                return
+            continue
         hit = None
         for addr, pkm in wilds:
             encounters += 1

@@ -390,6 +390,15 @@ random_encounters:
   # throw and the hunt stops with the battle up when it is out of balls
   # (if the bag can be read). 0.02-0.5.
   gen7_wiggle_hold: 0.08
+  # The wiggle creeps (about 2 units south a cycle where it was
+  # measured), but not everywhere. The launcher's "Drift fix" sets this:
+  #   auto - read the player's position and push back to the start spot
+  #          (Ultra Sun / Ultra Moon; plain wiggle if it cannot be read)
+  #   off  - no correcting pushes at all
+  #   up / down (or left / right) - a blind push that way, half a wiggle
+  #          long, every gen7_tick_every Left/Right pairs
+  gen7_tick: auto
+  gen7_tick_every: 15
   #
   # --- Pokémon Crystal (Virtual Console) ---------------------------
   # How the opponent's shininess is judged. The in-battle structure's

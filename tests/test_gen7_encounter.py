@@ -158,7 +158,9 @@ class World:
                 self.ctx.request_stop("out of wilds")
             else:
                 self.state = "menu"
-                self.records.append(self.wilds.pop(0))
+                wild = self.wilds.pop(0)
+                if wild is not None:        # None: a battle with no new record
+                    self.records.append(wild)
         return {"field": {"FieldRo"}, "menu": {"Battle", "Bag"},
                 "throw": {"Battle"}}[self.state]
 
@@ -272,6 +274,48 @@ def test_the_wiggle_is_equal_left_and_right(monkeypatch):
     assert all(a != b for a, b in zip(moves, moves[1:]))
 
 
+def _quick_find(monkeypatch):
+    """The record that never turns up is waited for 8 real seconds."""
+    real = g7.find_wild
+    monkeypatch.setattr(g7, "find_wild",
+                        lambda ctx, w, seen, timeout: real(ctx, w, seen, 0.05))
+
+
+def test_a_battle_with_no_new_record_is_run_from_when_nothing_is_a_hit(monkeypatch):
+    _quick_find(monkeypatch)
+    ctx, reported = run_world(monkeypatch, [Pk(10), None, Pk(12)])
+    assert reported == [10, 12]
+    assert ctx.stop_reason == "out of wilds"
+
+
+def test_a_battle_with_no_new_record_is_left_if_any_record_is_a_shiny(monkeypatch):
+    _quick_find(monkeypatch)
+    """The false "battle over" right after a shiny: what looks like a
+    new battle may be the shiny's own, so nothing is run from."""
+    ctx, reported = run_world(monkeypatch, [Pk(11, shiny=True), None],
+                              config=STOP)
+    assert ctx.stop_reason == "shiny"            # stopped on the shiny itself
+    ctx, reported = run_world(monkeypatch, [Pk(11, shiny=True), None])
+    assert ctx.stop_reason == "started in a battle"
+    assert ctx.input.events[-1] != "A"           # no RUN after it
+
+
+def test_an_up_tick_goes_in_every_n_pairs(monkeypatch):
+    cfg = {"random_encounters": {"gen7_tick": "up", "gen7_tick_every": 2}}
+    ctx, _ = run_world(monkeypatch, [Pk(10)], config=cfg)
+    moves = [e for e in ctx.input.events if e.startswith("Circle")]
+    assert moves[:7] == ["CircleLeft", "CircleRight", "CircleUp",
+                         "CircleLeft", "CircleRight", "CircleLeft",
+                         "CircleRight"]
+
+
+def test_the_tick_off_sends_only_the_wiggle(monkeypatch):
+    ctx, _ = run_world(monkeypatch, [Pk(10)],
+                       config={"random_encounters": {"gen7_tick": "off"}})
+    assert {e for e in ctx.input.events if e.startswith("Circle")} == {
+        "CircleLeft", "CircleRight"}
+
+
 def test_vertical_movement_wiggles_up_and_down(monkeypatch):
     ctx, reported = run_world(monkeypatch, [Pk(10)],
                               config={"random_encounters": {"movement": "vertical"}})
@@ -336,19 +380,58 @@ def test_wiggle_hold_is_clamped(hold, expect):
 # --------------------------------------------------------------------
 
 def test_read_xz_follows_the_route():
+    """GameManager singleton -> +0x24 -> +0xCC move-model manager ->
+    slot 0 at +0x0C -> the player, +0x3B0 x, y, z."""
     mem = Memory()
-    root, parent, player = 0x0062143C, 0x30007078, 0x33F81E20
-    mem.u32(root, parent)
-    mem.u32(parent + 0x88, player)
+    gm, resident, mgr, player = 0x08A00000, 0x08B00000, 0x08C00000, 0x33F81E20
+    mem.u32(0x006A3984, gm)
+    mem.u32(gm + 0x24, resident)
+    mem.u32(resident + 0xCC, mgr)
+    mem.u32(mgr + 0x0C, player)
     mem.u32(player, 0x0064A4F0)
     mem.put(player + 0x3B0, struct.pack("<3f", 731.5, 3.9, 1668.5))
     route = g7._PLAYER_ROUTE["USUM-USA-1.2"]
     assert g7.read_xz(mem, route) == (731.5, 1668.5)
-    mem.u32(parent + 0x88, 0)                 # null during a battle
+    mem.u32(mgr + 0x0C, 0)                    # no player model
     assert g7.read_xz(mem, route) is None
-    mem.u32(parent + 0x88, player)
+    mem.u32(mgr + 0x0C, player)
     mem.u32(player, 0x1234)                   # not the player object
     assert g7.read_xz(mem, route) is None
+
+
+def test_a_bad_route_reads_nothing_outside_the_heaps():
+    """The first route read ASCII as a pointer; a wrong link now stops
+    before reading anywhere a pointer cannot point."""
+    reads = []
+
+    class Spy(Memory):
+        def read_u32(self, addr):
+            reads.append(addr)
+            return super().read_u32(addr)
+    mem = Spy()
+    mem.u32(0x006A3984, 0x34333231 & 0x00FFFFFF)   # a code-ish address
+    assert g7.read_xz(mem, g7._PLAYER_ROUTE["USUM-USA-1.2"]) is None
+    assert reads == [0x006A3984]
+
+
+def test_one_read_without_battle_does_not_end_it():
+    """Live 2026-11-02: three times a read during the intro lacked
+    Battle and the bot "ran in 0.0s", then fled the same battle again."""
+    answers = iter([{"FieldRo"}, {"Battle"}, {"Battle", "Bag"}])
+    mods = type("M", (), {"names": lambda self: next(answers)})()
+    assert not g7.battle_over(Ctx(), mods, gap=0.0)
+    answers = iter([{"FieldRo"}] * 3)
+    assert g7.battle_over(Ctx(), mods, gap=0.0)
+
+
+def test_the_drift_fix_options():
+    p = g7.WigglePlan.from_config
+    assert p({}).tick == "auto"
+    assert p({"gen7_tick": "off"}).tick == "off"
+    assert p({"gen7_tick": "Up", "gen7_tick_every": "5"}).tick == "CircleUp"
+    assert p({"gen7_tick_every": 5}).tick_every == 5
+    assert p({"gen7_tick": "sideways", "gen7_tick_every": "x"}).tick == "auto"
+    assert p({"gen7_tick_every": 0}).tick_every == 1
 
 
 class DriftWorld:
@@ -461,3 +544,27 @@ def test_the_anchor_learns_a_slower_emulator():
     assert a.speed[0] == pytest.approx(10 * b.speed[0], rel=0.05)
     run_anchor(slow, 200)
     assert abs(slow.z) <= g7._ANCHOR_TOL + 1
+
+
+def test_the_launchers_drift_choice_reaches_the_hunt(tmp_path, monkeypatch):
+    import run as run_mod
+    import pokebot.bot as bot_mod
+
+    class Stop(Exception):
+        pass
+
+    got = {}
+
+    def fake_bot(config, **kw):
+        got.update(config)
+        raise Stop
+
+    monkeypatch.setattr(bot_mod, "Bot", fake_bot)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("mode: gen7_encounter\n", encoding="utf-8")
+    with pytest.raises(Stop):
+        run_mod.main(["--gen7-tick", "down", "--config", str(cfg)])
+    assert got["random_encounters"]["gen7_tick"] == "down"
+    assert g7.WigglePlan.from_config(got["random_encounters"]).tick == "CircleDown"
+    src = (Path(__file__).resolve().parents[1] / "launcher.py").read_text(encoding="utf-8")
+    assert '"--gen7-tick"' in src and "_drift_choices" in src

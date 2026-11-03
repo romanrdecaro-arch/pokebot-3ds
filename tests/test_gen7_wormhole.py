@@ -50,9 +50,9 @@ class Sim:
     """The game, driven only by the bot's presses."""
 
     def __init__(self, ctx, wilds, trips=2, pull_early=False,
-                 transition=0, pos_always=False):
+                 transition=0):
         self.ctx, self.wilds, self.trips = ctx, list(wilds), trips
-        self.pull_early, self.pos_always = pull_early, pos_always
+        self.pull_early = pull_early
         #: Polls the "!" and the battle intro take before Battle loads.
         self.transition, self.waited = transition, 0
         self.battle_at = None           # len(events) when Battle loaded
@@ -83,9 +83,10 @@ class Sim:
         self.battle_at = len(self.events)
 
     def pos(self, rpc=None, route=None):
-        if self.pos_always:
-            return self.pos_
-        return self.pos_ if self.state in ("altar", "world", "intro") else None
+        # The player object exists from boot: through a ride or a battle
+        # it still reads, with its last coordinates. Only the module list
+        # tells those apart.
+        return self.pos_
 
     def scan(self, ctx, windows, keys):
         return [(0x3002F9A0 + i, p) for i, p in enumerate(self.records)]
@@ -357,7 +358,7 @@ def test_not_ultra_sun_ultra_moon_stops_at_once(monkeypatch):
 def test_starting_inside_a_ride_or_battle_presses_nothing(monkeypatch):
     for state in ("ride", "battle"):
         ctx = Ctx()
-        sim = Sim(ctx, [], pos_always=True)     # only the modules tell
+        sim = Sim(ctx, [])      # its position reads: only the modules tell
         sim.state = state
         ctx.input = sim
         monkeypatch.setattr(g7.Modules, "names", lambda self: sim.names())

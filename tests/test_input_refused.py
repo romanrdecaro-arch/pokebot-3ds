@@ -80,10 +80,14 @@ def test_other_failures_do_not_blame_elevation(refused, monkeypatch,
 def test_the_real_post_path_reports_a_dead_window_without_blaming_elevation(
         monkeypatch, caplog):
     """The fakes above never run the real argtypes or last-error code."""
+    import ctypes
+    # A fixed handle can belong to a real window on the day (0x7FFF1234
+    # did, 2026-11-03): then the test fails AND posts into that window.
+    hwnd = next(h for h in range(0x7FFF1234, 0x7FFF1234 + 0x4000, 4)
+                if not ctypes.windll.user32.IsWindow(h))
     monkeypatch.setattr(platform_utils, "_elevation_warned", False)
     with caplog.at_level(logging.INFO):
-        ok = platform_utils._post_message(0x7FFF1234, 0x0400, 0x41,
-                                          0xC0000001)
+        ok = platform_utils._post_message(hwnd, 0x0400, 0x41, 0xC0000001)
         err = platform_utils._last_error()
     assert ok is False
     assert err == 1400                       # ERROR_INVALID_WINDOW_HANDLE

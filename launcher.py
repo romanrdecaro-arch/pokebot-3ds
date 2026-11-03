@@ -1909,6 +1909,32 @@ class _App(tk.Tk):
                  anchor="w", wraplength=235, justify="left"
                  ).pack(fill="x", pady=(2, 6))
 
+        # DRIFT FIX (sub-frame, only visible for the Gen 7 grass hunt).
+        # Some spots drift as the wiggle runs, some do not; this picks
+        # what corrects it (random_encounters.gen7_tick).
+        self._drift_frame = tk.Frame(hunt_card, bg=_PANEL2)
+        tk.Frame(self._drift_frame, bg=_BORDER, height=1).pack(
+            fill="x", pady=(10, 8))
+        tk.Label(self._drift_frame, text="Drift fix",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=(_FONT_SEMI, 9),
+                 anchor="w").pack(fill="x", pady=(0, 4))
+        self._drift_choices = {"Auto (hold the spot)": "auto", "Off": "off",
+                               "Up tick": "up", "Down tick": "down"}
+        self._drift_var = tk.StringVar(value="Auto (hold the spot)")
+        ttk.Combobox(self._drift_frame, textvariable=self._drift_var,
+                     values=list(self._drift_choices), state="readonly",
+                     style="Dark.TCombobox").pack(fill="x")
+        tk.Label(self._drift_frame,
+                 text="Auto pushes back to your starting spot when the "
+                      "player drifts. Off sends no extra pushes (for a "
+                      "spot that does not drift). Up / Down tick adds a "
+                      "short push that way every 15 wiggles.",
+                 bg=_PANEL2, fg=_MUTED,
+                 font=("Segoe UI", 9, "italic"),
+                 anchor="w", wraplength=235, justify="left"
+                 ).pack(fill="x", pady=(2, 6))
+
         # NOIBAT (sub-frame, only visible when method=Noibat).
         # Which way the shaking spot is from where the player saved.
         # Four ways, not the encounter mode's two axes: this holds ONE
@@ -2364,6 +2390,7 @@ class _App(tk.Tk):
         self._movement_frame.pack_forget()
         self._fishing_frame.pack_forget()
         self._noibat_frame.pack_forget()
+        self._drift_frame.pack_forget()
         if m and m.mode == "soft_reset":
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
@@ -2419,6 +2446,9 @@ class _App(tk.Tk):
         elif m and m.mode == "noibat":
             self._noibat_frame.pack(fill="x", pady=(4, 0),
                                     before=self._target_divider)
+        elif m and m.mode == "gen7_encounter":
+            self._drift_frame.pack(fill="x", pady=(4, 0),
+                                   before=self._target_divider)
 
     # ---- Live Azahar status polling ----------------------------------------
 
@@ -2650,6 +2680,9 @@ class _App(tk.Tk):
         # targeted soft-resets, so it needs the same two flags. Without
         # the trainer name it cannot tell which PK6 are YOURS, and
         # reports "No party found" on a perfectly good save.
+        if method.mode == "gen7_encounter":
+            args += ["--gen7-tick",
+                     self._drift_choices.get(self._drift_var.get(), "auto")]
         if method.mode == "noibat":
             # "Up (↑)" -> "up"
             args += ["--noibat-direction",
