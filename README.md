@@ -231,7 +231,7 @@ Fennekin / Froakie).
 | `livehex`    | Bridges Azahar to PKHeX for live box / trainer editing             |
 | `gen7_encounter` | Sun/Moon/USUM: wiggles in place in grass, Left/Right or Up/Down (`movement: vertical`); catches a shiny (Y, A, A, B×15) or stops (`on_target: stop`), runs from the rest |
 | `gen7_wormhole` | USUM: from the Altar's warp hole, rides the Ultra Warp Ride (a Circle Pad corner, then the first hole that pulls), finds the world's one Pokemon, catches a shiny of the 20 boosted species, runs from the rest and rides again. Not yet tried live |
-| `wimpod` | USUM: saved where the Wimpod come to you; never moves the player, spams A until a Wimpod battle, soft-resets if not shiny, stops on any shiny |
+| `wimpod` | USUM: saved in a Wimpod's path while it runs at you; never moves the player (A only through the title and Continue), soft-resets if not shiny, stops on any shiny |
 | `static_step` | `static_encounter` for a battle that starts on a step (USUM Ultra Space Wilds legendaries / Ultra Beasts): saved one step short, pushes `static_step` once the field is back |
 | `gen7_breed` | USUM: facing the Nursery lady, predicts each egg from the egg seed (Masuda and/or Shiny Charm), declines until the shiny one, accepts it and stops for you to save. Not yet tried live |
 

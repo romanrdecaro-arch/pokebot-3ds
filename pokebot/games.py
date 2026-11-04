@@ -514,12 +514,14 @@ def methods_for(game_key: str) -> list[Method]:
                       "yet tried live."))
             methods.append(Method(
                 "Wimpod (soft reset)", "wimpod",
-                notes="Save standing where the Wimpod come to you. The "
-                      "bot never moves the player: it spams A through the "
-                      "reset and the wait until a Wimpod starts a battle; "
-                      "not shiny soft-resets (L+R+Start) and spams A "
-                      "again. A SHINY (any species) STOPS ALL INPUT with "
-                      "the battle on screen for you to catch."))
+                notes="Save in a Wimpod's path while it is already "
+                      "running at you (an idle one ignores a player who "
+                      "stands still). The bot never moves the player: A "
+                      "only through the title and Continue, nothing on the "
+                      "field. Not shiny soft-resets (L+R+Start); a SHINY "
+                      "(any species) STOPS ALL INPUT with the battle on "
+                      "screen. Catch it without attacking: Wimp Out flees "
+                      "at half HP."))
             methods.append(Method(
                 "Ultra Space legendary / Ultra Beast (soft reset)",
                 "static_step",

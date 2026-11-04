@@ -162,10 +162,10 @@ soft_reset:
   # back after a reset, every other press is this Circle Pad push.
   # up | down | left | right. Save one step short of it, facing it.
   static_step: up
-  # Wimpod (mode wimpod, Ultra Sun / Ultra Moon): the same loop with no
-  # pushes at all. Reset again if no Wimpod battle has started this many
-  # seconds after reading resumes (the boot is part of it).
-  wimpod_timeout: 90
+  # The Wimpod hunt (mode wimpod, Ultra Sun / Ultra Moon) is this loop too,
+  # timed by static_timeout: a Wimpod saved running at the player hits
+  # about half a second after the field fades in, and a miss never comes
+  # late.
 
   # --- USUM starters (mode: usum_starters) ---------------------------
   #

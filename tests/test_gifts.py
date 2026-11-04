@@ -343,8 +343,8 @@ def test_the_launcher_passes_the_trainer_name_for_gifts():
 
 def test_the_launcher_hides_the_target_picker_for_gifts():
     """Gifts evaluates whatever it is handed; there is nothing to
-    pick. The trainer-name and press-speed controls in the same panel
-    still apply, which is why the panel is shown at all."""
+    pick. The trainer-name control in the same panel still applies,
+    which is why the panel is shown at all."""
     src = (REPO / "launcher.py").read_text(encoding="utf-8")
     assert 'elif m and m.mode == "gifts":' in src
     assert "self._sr_target_cb.pack_forget()" in src

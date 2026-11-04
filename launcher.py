@@ -1877,8 +1877,10 @@ class _App(tk.Tk):
         # rather than a fixed cadence: 0.03s is ~33 presses/second.
         # The floor is Azahar's, not ours — below ~0.01s it can see the
         # key go down and up inside one polled frame and score no press
-        # at all.
-        ps_head = tk.Frame(self._sr_rest_frame, bg=_PANEL2)
+        # at all. Shown only for the hunts that read it (_PRESS_SPEED_MODES).
+        self._press_frame = tk.Frame(self._sr_rest_frame, bg=_PANEL2)
+        self._press_frame.pack(fill="x")
+        ps_head = tk.Frame(self._press_frame, bg=_PANEL2)
         ps_head.pack(fill="x")
         tk.Label(ps_head, text="Press speed",
                  bg=_PANEL2, fg=_MUTED,
@@ -1891,7 +1893,7 @@ class _App(tk.Tk):
             bg=_PANEL2, fg=_ACCENT,
             font=(_FONT_SEMI, 9))
         self._press_val_lbl.pack(side="right")
-        tk.Scale(self._sr_rest_frame, from_=0.01, to=0.20,
+        tk.Scale(self._press_frame, from_=0.01, to=0.20,
                  resolution=0.01, orient="horizontal",
                  variable=self._press_var, showvalue=False,
                  bg=_PANEL2, fg=_TEXT, troughcolor=_PANEL,
@@ -1899,7 +1901,7 @@ class _App(tk.Tk):
                  activebackground=_ACCENT,
                  command=lambda v: self._press_val_lbl.config(
                      text=_press_rate_label(float(v)))).pack(fill="x")
-        tk.Label(self._sr_rest_frame,
+        tk.Label(self._press_frame,
                  text="Lower = faster button presses. Raise it if "
                       "attempts start timing out — that means Azahar "
                       "is dropping presses.",
@@ -2441,9 +2443,9 @@ class _App(tk.Tk):
             self._sr_target_lbl.pack_forget()
             self._sr_target_cb.pack_forget()
             self._starter_hint.config(
-                text=("SAVE standing where the Wimpod come to you. The bot "
-                      "never moves: A until a Wimpod battle, not shiny "
-                      "resets, a SHINY stops all input."
+                text=("SAVE in a Wimpod's path while it is running at you. "
+                      "The bot never moves: A only through the title and "
+                      "Continue. Not shiny resets; a SHINY stops all input."
                       if m.mode == "wimpod" else
                       "SAVE in the Ultra Space Wilds one step short of the "
                       "legendary / Ultra Beast, facing it. Not shiny "
@@ -2460,8 +2462,9 @@ class _App(tk.Tk):
                      "resets; a SHINY stops all input there — answer it "
                      "yourself, don't reset.")
         elif m and m.mode == "gifts":
-            # Same trainer-name and press-speed controls, no target
-            # picker: this mode evaluates whatever it is handed.
+            # Same trainer-name control, no target picker: this mode
+            # evaluates whatever it is handed. (No press speed either:
+            # it reads gift_press_hold.)
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
             self._sr_target_lbl.pack_forget()
@@ -2485,6 +2488,10 @@ class _App(tk.Tk):
         elif m and m.mode == "gen7_encounter":
             self._drift_frame.pack(fill="x", pady=(4, 0),
                                    before=self._target_divider)
+        if m and m.mode in self._PRESS_SPEED_MODES:
+            self._press_frame.pack(fill="x")
+        else:
+            self._press_frame.pack_forget()
 
     # ---- Live Azahar status polling ----------------------------------------
 
@@ -2634,6 +2641,11 @@ class _App(tk.Tk):
 
     # ---- Actions -----------------------------------------------------------
 
+    #: The hunts that read soft_reset.press_hold, the key --press-speed
+    #: sets. The rest have their own (static_press_hold, gift_press_hold),
+    #: so the slider would be a dead control for them.
+    _PRESS_SPEED_MODES = ("soft_reset", "usum_starters")
+
     _TARGET_FILTER_FLAG = {
         "Shiny only":               "shiny",
         "Any (first match)":        "any",
@@ -2728,6 +2740,7 @@ class _App(tk.Tk):
             tn = self._trainer_var.get().strip()
             if tn:
                 args += ["--trainer-name", tn]
+        if method.mode in self._PRESS_SPEED_MODES:
             try:
                 args += ["--press-speed",
                          f"{float(self._press_var.get()):.2f}"]

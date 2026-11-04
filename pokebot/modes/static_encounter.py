@@ -35,6 +35,12 @@ shiny. Checking that often is affordable because a check is one
 232-byte read where the last wild appeared (foe_watch.FoeWatch), with a
 full sweep every ``full_every`` checks in case the slot moved.
 
+Gen 7 also has the game's own word for it: while the Battle module is
+loaded -- or the module list cannot be read -- nothing is pressed until
+that battle's wild has been read, however far from the known slots it
+was written. A wild that cannot be read stops the hunt with the battle
+on screen; it is never reset over, since it may be the shiny.
+
 **There is no catch sequence.** On a shiny the bot stops sending input
 entirely and leaves the battle for you. A static legendary is often a
 one-shot, and the catch is worth doing by hand.
@@ -45,7 +51,13 @@ in the extra one, about one wild in six); watching only the first would
 miss those and keep pressing A -- FIGHT, then a move -- in the battle.
 
 The same loop runs named hunts (``Profile``): the Wimpod hunt is this
-one with nothing to face -- the Wimpod come to the player.
+one with nothing to face -- the Wimpod runs into the player -- so its
+presses stop at the field.
+
+Azahar crashing in its relaunch (about 1 in 650-900 resets) is survived
+the way the starter hunt does it: relaunched, or the hunt stops -- never
+pressing into nothing. Three attempts in a row with no encounter stop
+it too: that is the save, not bad luck.
 """
 from __future__ import annotations
 
@@ -53,6 +65,7 @@ import logging
 import time
 from dataclasses import dataclass, replace
 
+from ..azahar_recover import AzaharGone, Recovery
 from ..games import DEFAULT_OT_NAME
 from ..citra_rpc import RPCError
 from ..pk6_export import ensure_targets_dir
@@ -71,6 +84,12 @@ log = logging.getLogger(__name__)
 #: removes the only thing between a read and a process being freed.
 _MIN_QUIET_S = 0.05
 _MIN_GRACE_S = 0.5
+#: How long a battle (or a spotted wild) may go unread, with nothing
+#: pressed, before the hunt stops on it: gen7_encounter's find_timeout,
+#: the wait for a wild record that 25,000 live USUM battles met.
+_UNREAD_S = 8.0
+#: Attempts in a row with no encounter before the hunt stops.
+_MAX_MISSES = 3
 
 
 @dataclass(frozen=True)
@@ -106,8 +125,7 @@ class StaticPlan:
     step: str = ""
 
     @classmethod
-    def from_config(cls, cfg: dict | None, timeout_key: str = "static_timeout",
-                    timeout: float = 45.0) -> "StaticPlan":
+    def from_config(cls, cfg: dict | None) -> "StaticPlan":
         cfg = cfg or {}
         d = cls()
 
@@ -122,7 +140,8 @@ class StaticPlan:
         return cls(
             press_hold=max(_PRESS_HOLD_FLOOR,
                            num("static_press_hold", d.press_hold)),
-            encounter_timeout=max(1.0, num(timeout_key, timeout)),
+            encounter_timeout=max(1.0, num("static_timeout",
+                                           d.encounter_timeout)),
             settle=max(0.0, num("static_settle", d.settle)),
             full_every=max(1, int(num("static_full_every", d.full_every))),
             pre_reset_quiet=max(_MIN_QUIET_S,
@@ -141,26 +160,31 @@ _STEPS = {"up": "CircleUp", "down": "CircleDown", "left": "CircleLeft",
 @dataclass(frozen=True)
 class Profile:
     """What a named hunt on this loop changes: what it is called, the
-    setup it asks for, the one species it expects (0: any) and where its
-    encounter timeout is configured."""
+    setup it asks for, the one species it expects (0: any) and whether
+    the encounter needs any input once the save has loaded."""
     title: str = "static encounter soft reset"
     setup: str = ("standing in front of the Pokémon, facing it, game "
                   "SAVED there.")
     via: str = "static"
     species: int = 0
-    timeout_key: str = "static_timeout"
-    timeout: float = 45.0
+    #: The encounter comes to the player, so A is only for the title and
+    #: Continue: nothing is pressed while reads are paused after a reset
+    #: (the title waits for input), nor once the field is up, where A
+    #: can only meet the scenery -- facing the water it rides off.
+    hands_off: bool = False
 
 
 STATIC = Profile()
-#: Ultra Sun / Ultra Moon's Wimpod: the player stands still and a Wimpod
-#: comes to them, so there is nothing to face and nothing to press but A.
+#: Ultra Sun / Ultra Moon's Wimpod: one saved running at the player runs
+#: into them about half a second after the field fades in; an idle one
+#: ignores a player who stands still. A miss never comes late.
 WIMPOD = Profile(
     title="Wimpod soft reset",
-    setup=("standing where the Wimpod come to you, game SAVED there. The "
-           "bot never moves the player: A only, through the reset and the "
-           "wait."),
-    via="wimpod", species=767, timeout_key="wimpod_timeout", timeout=90.0)
+    setup=("SAVED in a Wimpod's path while it is already running at you "
+           "(an idle one ignores a player who stands still). The bot never "
+           "moves the player: A only through the title and Continue, "
+           "nothing on the field."),
+    via="wimpod", species=767, hands_off=True)
 
 
 @dataclass(frozen=True)
@@ -176,8 +200,8 @@ class Hunt:
     #: counting as the next encounter.
     seen: set
     watch: FoeWatch
-    #: Gen 7's loaded-module list, for ``StaticPlan.step``: FieldRo there
-    #: means the player stands on the field again.
+    #: Gen 7's loaded-module list: Battle there means a battle is up,
+    #: FieldRo that the player stands on the field. None before Gen 7.
     modules: object = None
 
 
@@ -191,37 +215,76 @@ class Mash:
     #: Spotted by the attempt's very first read. After a reset that
     #: means the battle came up while reading was paused.
     at_first_read: bool = False
+    #: A battle was up, and its wild could not be read in _UNREAD_S.
+    unread: bool = False
+
+
+def _names(mods) -> set | None:
+    """Gen 7's loaded modules: empty before Gen 7, None if unreadable."""
+    if mods is None:
+        return set()
+    try:
+        return mods.names()
+    except (RPCError, OSError):
+        return None
 
 
 def mash_until_wild(ctx, plan: StaticPlan, watch: FoeWatch,
-                    reads_from: float, field=None) -> Mash:
+                    reads_from: float, mods=None,
+                    hands_off: bool = False) -> Mash:
     """Press A until the foe window holds a wild the hunt has not seen.
 
-    Presses never wait. Reads wait for ``reads_from`` -- the end of the
-    reload grace -- and from then on the window is checked before every
-    press, so no press follows a check that saw a battle.
+    Presses never wait for reads. Reads wait for ``reads_from`` -- the
+    end of the reload grace -- and from then on the window is checked
+    before every press, so no press follows a check that saw a battle.
 
-    With ``plan.step``, every other press becomes that push once
-    ``field()`` says the player stands on the field again -- never
-    before: on the title and Continue screens a push would move the
-    cursor off Continue. (The player's position cannot say it: the
-    player object exists from boot.)
+    ``mods`` (Gen 7): no press while the Battle module is loaded, or the
+    list cannot be read. Every window is swept instead until the wild
+    turns up; after _UNREAD_S without one the Mash says ``unread``.
+
+    With ``plan.step``, every other press becomes that push while FieldRo
+    says the player stands on the field -- never before: on the title and
+    Continue screens a push would move the cursor off Continue. (The
+    player's position cannot say it: the player object exists from
+    boot.) ``hands_off`` presses nothing during the grace or on the field.
+
+    No Azahar window to press into -- or to read from -- raises
+    AzaharGone.
     """
     deadline = max(time.monotonic(), reads_from) + plan.encounter_timeout
     presses = reads = 0
     on_field = False
-    while not ctx.should_stop() and time.monotonic() < deadline:
-        if time.monotonic() >= reads_from:
+    held_at = 0.0               # when the battle not yet read was first seen
+    while not ctx.should_stop():
+        now = time.monotonic()
+        if now >= reads_from:
             reads += 1
-            if watch.check():
+            names = _names(mods)
+            if names is None and not ctx.input.target_alive():
+                raise AzaharGone()       # unreadable because it is gone
+            held = names is None or "Battle" in names
+            if watch.check(full=held):
                 return Mash(True, presses, time.monotonic(), reads == 1)
-            if plan.step and field and not on_field and reads % 5 == 1:
-                try:
-                    on_field = bool(field())
-                except (RPCError, OSError):
-                    pass
-        button = plan.step if on_field and presses % 2 else "A"
-        _note_path(ctx, ctx.input.tap(button, hold_s=plan.press_hold))
+            if held:
+                held_at = held_at or now
+                if now - held_at > _UNREAD_S:
+                    return Mash(False, presses, unread=True)
+                ctx._stop_evt.wait(plan.press_hold)
+                continue
+            held_at = 0.0
+            on_field = "FieldRo" in names
+        if now >= deadline:
+            break
+        if hands_off and (now < reads_from or on_field):
+            ctx._stop_evt.wait(plan.press_hold)
+            continue
+        button = plan.step if plan.step and on_field and presses % 2 else "A"
+        path = ctx.input.tap(button, hold_s=plan.press_hold)
+        _note_path(ctx, path)
+        if path == "none":
+            # No window to press into: Azahar crashed. Pressing on would
+            # only burn the timeout, then reset into nothing, forever.
+            raise AzaharGone()
         presses += 1
     return Mash(False, presses)
 
@@ -241,7 +304,7 @@ def read_wild(ctx, hunt: Hunt):
             return hot, pkm
     fresh = [(a, p) for a, p in
              scan_windows(ctx, hunt.windows, hunt.party_keys)
-             if p.encryption_key not in hunt.seen]
+             if p.encryption_key not in hunt.seen and not (p.ot_name or "")]
     return pick_opponent(fresh)
 
 
@@ -293,7 +356,7 @@ def step_from(cfg: dict) -> str:
 
 def run(ctx, step: str = "", profile: Profile = STATIC) -> None:
     cfg = ctx.config.get("soft_reset", {}) or {}
-    plan = StaticPlan.from_config(cfg, profile.timeout_key, profile.timeout)
+    plan = StaticPlan.from_config(cfg)
     if step:
         plan = replace(plan, step=step)
 
@@ -305,32 +368,57 @@ def run(ctx, step: str = "", profile: Profile = STATIC) -> None:
 
     log.info(f"Mode: {profile.title}")
     log.info(f"  Setup: {profile.setup}")
-    log.info(f"  Spamming A ({plan.press_hold * 1000:.0f} ms presses) "
-             f"until the battle starts. Not shiny: L+R+Start and "
+    log.info(f"  Spamming A ({plan.press_hold * 1000:.0f} ms presses)"
+             f"{' through the title and Continue' if profile.hands_off else ''}"
+             f" until the battle starts. Not shiny: L+R+Start and "
              f"straight back to spamming. SHINY: the bot STOPS ALL "
              f"INPUT — no catch, the battle is left for you.")
     hunt = _start(ctx, cfg, plan)
     if hunt is None:
         return
+    if (plan.step or profile.hands_off) and hunt.modules is None:
+        log.error("  this hunt tells the field from the title by Gen 7's "
+                  "module list (Sun / Moon / Ultra Sun / Ultra Moon).")
+        ctx.request_stop("not a Gen 7 game")
+        return
     if plan.step:
-        if hunt.modules is None:
-            log.error("  stepping needs Gen 7's module list (Sun / Moon / "
-                      "Ultra Sun / Ultra Moon).")
-            ctx.request_stop("no player position for stepping")
-            return
         log.info(f"  Once the field is back after a reset, every other "
                  f"press is {plan.step[6:]} on the Circle Pad: a step onto "
                  f"the encounter.")
+    # Worked out now, while Azahar is alive to say where it lives.
+    recovery = Recovery.for_hunt(ctx)
 
-    attempt = 0
+    attempt = misses = 0
     reset_at = 0.0
     reads_from = 0.0              # nothing reset yet: reading is safe
     while not ctx.should_stop():
         attempt += 1
         log.info(f"{profile.via.capitalize()} attempt #{attempt}")
         ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
-        if _attempt(ctx, plan, hunt, attempt, reset_at, reads_from, profile):
+        try:
+            outcome = _attempt(ctx, plan, hunt, attempt, reset_at,
+                               reads_from, profile)
+        except AzaharGone:
+            from .usum_starters import _recover   # it imports this module
+            nxt = _recover(ctx, plan, recovery, attempt)
+            if nxt is None:
+                return
+            # The fresh boot IS the reset: no L+R+Start on top of it.
+            reset_at, reads_from = nxt
+            continue
+        if outcome == "over":
             return
+        if outcome != "miss":
+            misses = 0
+        else:
+            misses += 1
+            if recovery is not None and recovery.dismiss_dialogs():
+                misses = 0               # it was the dialog, not the save
+            elif misses >= _MAX_MISSES:
+                log.error(f"  no encounter in {misses} attempts in a row. "
+                          f"Check the save: {profile.setup} Stopping.")
+                ctx.request_stop("no encounter")
+                return
         nxt = reset(ctx, plan, reset_at)
         if nxt is None:
             return
@@ -348,6 +436,17 @@ def _start(ctx, cfg: dict, plan: StaticPlan) -> Hunt | None:
         ctx.request_stop("foe_base not configured")
         return None
     windows = foe_windows(o)
+    mods = Modules(ctx.rpc) if getattr(ctx.game, "generation", None) == 7 \
+        else None
+    names = _names(mods)
+    if names is None or "Battle" in names:
+        # Its wild would go into ``seen`` unjudged, and A into its menu.
+        log.error("  a battle is on screen (or the game's module list "
+                  "could not be read). The bot never presses into a "
+                  "battle it has not read: finish or reset it yourself, "
+                  "then start again from the field.")
+        ctx.request_stop("started in a battle")
+        return None
     _focus_if_needed(ctx)
 
     # Once, not every attempt. A reset reloads the same save, so the
@@ -363,38 +462,48 @@ def _start(ctx, cfg: dict, plan: StaticPlan) -> Hunt | None:
     watch = FoeWatch(ctx, windows[0][0], windows[0][1], party_keys, seen,
                      full_every=plan.full_every, windows=windows)
     # A leftover wild sits in the wild slot, so look there first -- and
-    # with two windows, at every slot a wild has been left in.
+    # at every slot the game is known to write its wild to.
     stale = pick_opponent(before)
     if stale is not None:
         watch.hot = stale[0]
-    if len(windows) > 1:
-        left = [a for a, p in before if not (p.ot_name or "")]
-        watch.slots = list(dict.fromkeys(
-            list(getattr(o, "wild_slots", ()) or ()) + left))
+    watch.slots = list(getattr(o, "wild_slots", ()) or ())
     log.info(f"  {len(seen)} record(s) already in {len(windows)} foe "
              f"window(s) — ignored.")
-    return Hunt(windows, party_keys, seen, watch,
-                Modules(ctx.rpc)
-                if getattr(ctx.game, "generation", None) == 7 else None)
+    return Hunt(windows, party_keys, seen, watch, mods)
 
 
 def _attempt(ctx, plan: StaticPlan, hunt: Hunt, attempt: int,
              reset_at: float, reads_from: float,
-             profile: Profile = STATIC) -> bool:
-    """One encounter. True means the hunt is over: a hit, or stopped."""
-    field = (lambda: "FieldRo" in hunt.modules.names()) if hunt.modules else None
-    mash = mash_until_wild(ctx, plan, hunt.watch, reads_from, field)
+             profile: Profile = STATIC) -> str:
+    """One encounter: "over" (a hit, or stopped), "miss" (no battle in
+    the timeout) or "next" (judged, not wanted: reset)."""
+    mash = mash_until_wild(ctx, plan, hunt.watch, reads_from, hunt.modules,
+                           profile.hands_off)
     if ctx.should_stop():
-        return True
+        return "over"
+    if not (mash.found or mash.unread):
+        _report_miss(ctx, plan, attempt, mash, profile)
+        return "miss"
     wild = None
     if mash.found:
         ctx._stop_evt.wait(plan.settle)          # nothing pressed here
+        end = time.monotonic() + _UNREAD_S
+        while not ctx.should_stop():
+            wild = read_wild(ctx, hunt)
+            if wild is not None or time.monotonic() > end:
+                break
+            ctx._stop_evt.wait(0.2)              # nor here
         if ctx.should_stop():
-            return True
-        wild = read_wild(ctx, hunt)
+            return "over"
     if wild is None:
-        _report_miss(ctx, plan, attempt, mash, profile)
-        return False
+        log.error(f"  attempt {attempt}: a battle is up (or the game stopped "
+                  f"answering reads) and its wild could not be read. It may "
+                  f"be the shiny, so it is NOT reset over: Bot STOPPED with "
+                  f"it on screen. Check it yourself.")
+        ctx.dashboard.broadcast("read_failure", attempt=attempt,
+                                reason="wild not read")
+        ctx.request_stop("wild not read")
+        return "over"
 
     addr, pkm = wild
     hunt.seen.add(pkm.encryption_key)
@@ -402,12 +511,12 @@ def _attempt(ctx, plan: StaticPlan, hunt: Hunt, attempt: int,
     _log_timing(mash, reset_at)
     if pkm.shiny or (ctx.target and ctx.target.matches(pkm)):
         _stop_on(ctx, pkm, addr, attempt, profile)
-        return True
+        return "over"
     _report_encounter(ctx, pkm, addr, attempt, profile.via)
     if profile.species and pkm.species != profile.species:
         log.warning(f"  expected #{profile.species}, got #{pkm.species}. "
                     f"Check the save: {profile.setup}")
-    return False
+    return "next"
 
 
 def _log_timing(mash: Mash, reset_at: float) -> None:
@@ -427,17 +536,11 @@ def _log_timing(mash: Mash, reset_at: float) -> None:
 
 def _report_miss(ctx, plan: StaticPlan, attempt: int, mash: Mash,
                  profile: Profile = STATIC) -> None:
-    if mash.found:
-        log.warning(f"  attempt {attempt}: the encounter was gone before "
-                    f"it could be read. Resetting.")
-        reason = "encounter vanished before it was read"
-    else:
-        log.warning(f"  attempt {attempt}: no encounter in "
-                    f"{plan.encounter_timeout:.0f}s ({mash.presses} A "
-                    f"presses). Check the save: {profile.setup} "
-                    f"Resetting.")
-        reason = "no encounter while pressing A"
-    ctx.dashboard.broadcast("read_failure", attempt=attempt, reason=reason)
+    log.warning(f"  attempt {attempt}: no encounter in "
+                f"{plan.encounter_timeout:.0f}s ({mash.presses} A "
+                f"presses). Check the save: {profile.setup}")
+    ctx.dashboard.broadcast("read_failure", attempt=attempt,
+                            reason="no encounter while pressing A")
 
 
 def _stop_on(ctx, pkm, addr: int, attempt: int,

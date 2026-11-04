@@ -17,7 +17,8 @@ address if the slot moves, which it does between sessions.
 Gen 7 writes its wild to one of two windows (USUM, 25,300 logged wilds:
 0x3254F4AC in the main one 83% of the time, 0x3002F9A0 / 0x30039888 in
 the extra one the rest), so with ``windows`` the full scan covers them
-all and the cheap check also re-reads every slot a wild has used.
+all, and the cheap check also reads every slot in ``slots`` -- the
+game's known wild slots, from the first check on.
 """
 from __future__ import annotations
 
@@ -26,10 +27,6 @@ import logging
 from .observe import read_pk6_at, scan_nonparty
 
 log = logging.getLogger(__name__)
-
-#: Most slots the cheap check re-reads when there are several windows:
-#: Gen 7's four known wild slots plus room for two found by a scan.
-_MAX_SLOTS = 6
 
 
 class FoeWatch:
@@ -55,9 +52,9 @@ class FoeWatch:
         # finds it again if the slot moved.
         self.full_every = max(1, int(full_every))
         self.hot: int = 0
-        #: With several windows: where un-owned records have turned up,
-        #: newest first, so a wild in the other window is seen at the
-        #: next check, not the next full scan. Unused with one window.
+        #: Where the game is known to write its wild (GameOffsets.
+        #: wild_slots), read by every cheap check, ``hot`` or not. Fixed:
+        #: a slot learned and later dropped is how one went unwatched.
         self.slots: list = []
         self._since_full = 0
         self.fast_checks = 0
@@ -73,12 +70,13 @@ class FoeWatch:
                     and pkm.encryption_key not in self.seen)
 
     def _fast(self) -> bool:
-        """One read at the last known wild address (and, with several
-        windows, one at each other slot a wild has used)."""
-        if not self.hot:
+        """One read at the last known wild address, and one at each known
+        wild slot."""
+        addrs = [a for a in dict.fromkeys([self.hot] + self.slots) if a]
+        if not addrs:
             return False
         self.fast_checks += 1
-        for addr in [self.hot] + [a for a in self.slots if a != self.hot]:
+        for addr in addrs:
             if self._is_new(read_pk6_at(self.ctx, addr)):
                 self.hot = addr
                 return True
@@ -101,9 +99,6 @@ class FoeWatch:
             # Remember where records live even when nothing is new, so
             # the cheap path has somewhere to look next time.
             self.hot = self.hot or addr
-            if (len(self.windows) > 1 and addr not in self.slots
-                    and not (getattr(pkm, "ot_name", "") or "")):
-                self.slots = (self.slots + [addr])[-_MAX_SLOTS:]
             # scan_nonparty already drops party members, but the test
             # for "is this new" lives in _is_new and both paths must
             # answer the same way -- a check that disagrees with
@@ -115,12 +110,14 @@ class FoeWatch:
         self.hot = newest[0]
         return True
 
-    def check(self) -> bool:
-        """True the moment a wild the hunt has not seen is present."""
+    def check(self, full: bool = False) -> bool:
+        """True the moment a wild the hunt has not seen is present.
+        ``full``: sweep every window now, not at the next full_every."""
         if self._fast():
             return True
         self._since_full += 1
-        if self.hot and self._since_full < self.full_every:
+        if (not full and (self.hot or self.slots)
+                and self._since_full < self.full_every):
             return False
         return self._full()
 

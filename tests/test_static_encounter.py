@@ -19,7 +19,10 @@ What it models, because each is a way this hunt goes wrong:
 * the battle MENU comes up a moment after the wild is written, and an
   A from then on is "Fight" -- the one press this hunt must never make;
 * every read is timestamped, so a read inside the window in which
-  reading crashed Azahar is caught.
+  reading crashed Azahar is caught;
+* Gen 7's module list: Battle while a battle is up, FieldRo once the
+  title and Continue are behind the player;
+* Azahar dying in a relaunch: no window to press into, no reads.
 """
 from __future__ import annotations
 
@@ -36,6 +39,8 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from pokebot.citra_rpc import RPCError  # noqa: E402
+from pokebot.modes import foe_watch as fw  # noqa: E402
 from pokebot.modes import observe  # noqa: E402
 from pokebot.modes import soft_reset as sr  # noqa: E402
 from pokebot.modes import static_encounter as se  # noqa: E402
@@ -54,13 +59,15 @@ TID = 0x1D1C                   # the player's; a wild in battle carries it
 PARTY = [SimpleNamespace(encryption_key=0x0BADF00D, species=260)]
 
 
-def record(*, key: int, pid: int, species: int = 643) -> bytes:
+def record(*, key: int, pid: int, species: int = 643, ot: str = "") -> bytes:
     """A plaintext 232-byte PK6 with a correct checksum."""
     d = bytearray(232)
     struct.pack_into("<I", d, 0x00, key)
     struct.pack_into("<H", d, 0x08, species)
     struct.pack_into("<H", d, 0x0C, TID)
     struct.pack_into("<I", d, 0x18, pid)
+    name = ot.encode("utf-16-le")
+    d[0xB0:0xB0 + len(name)] = name
     struct.pack_into("<H", d, 0x06, calc_checksum(bytes(d)))
     return bytes(d)
 
@@ -109,14 +116,18 @@ class Game:
         self.resets: list[float] = []
         self.spawns: list[float] = []
         self.fight = 0
+        self.field_presses = 0                # A with the field up, no battle
+        self.crash_on_reset = None            # this reset kills Azahar
+        self.crashed = False
+        self.taps_into_nothing = 0
 
     def put(self, addr, data):
-        if EXTRA <= addr < EXTRA + EXTRA_LEN:
-            off = addr - EXTRA
-            self.extra[off:off + len(data)] = data
-            return
-        off = addr - FOE
-        self.mem[off:off + len(data)] = data
+        for base, buf in ((FOE, self.mem), (EXTRA, self.extra)):
+            off = addr - base
+            if 0 <= off and off + len(data) <= len(buf):
+                buf[off:off + len(data)] = data
+                return
+        # Anywhere else is somewhere the bot never reads.
 
     def _tick(self, now):
         if (self.battle is None and self.spawn_at is not None
@@ -133,13 +144,18 @@ class Game:
     # -- controller -----------------------------------------------------
     def tap(self, button, hold_s=0.05):
         now = clock()
+        if self.crashed:
+            self.taps_into_nothing += 1
+            return "none"
         self._tick(now)
         self.inputs.append((now, button))
         if button == "A":
             if self.battle is not None:
                 if now >= self.menu_at:
                     self.fight += 1
-            elif self.spawn_at is None and now >= self.booted_at:
+            elif self.spawn_at is not None:
+                self.field_presses += 1
+            elif now >= self.booted_at:
                 self.presses += 1
                 if self.presses >= self.presses_needed:
                     self.spawn_at = now + self.delay
@@ -153,8 +169,13 @@ class Game:
     def needs_focus(self):
         return False
 
+    def target_alive(self):
+        return not self.crashed
+
     def soft_reset(self, hold_s=0.5):
         now = clock()
+        if self.crashed:
+            return
         self.inputs.append((now, "RESET"))
         self.resets.append(now)
         self.booted_at = now + self.boot
@@ -162,10 +183,35 @@ class Game:
         self.menu_at = None
         self.presses = 0
         # Memory is deliberately left alone, as on the console.
+        if self.crash_on_reset == len(self.resets):
+            self.crashed = True               # Azahar died relaunching
+
+    def relaunch(self):
+        """What a fresh Azahar on the ROM looks like: a cold boot."""
+        self.crashed = False
+        self.booted_at = clock() + self.boot
+        self.battle = self.battle_slot = self.spawn_at = None
+        self.menu_at = None
+        self.presses = 0
+        self.mem[:] = bytes(len(self.mem))
+        self.extra[:] = bytes(len(self.extra))
+
+    def modules(self):
+        """Gen 7's loaded modules, read like any memory: timestamped."""
+        now = clock()
+        if self.crashed:
+            raise RPCError("Azahar is gone")
+        self._tick(now)
+        self.reads.append((now, 0, 0))
+        if self.battle is not None:
+            return {"Battle"}
+        return {"FieldRo"} if self.spawn_at is not None else set()
 
     # -- memory (ctx.rpc) -----------------------------------------------
     def read(self, addr, n):
         now = clock()
+        if self.crashed:
+            raise RPCError("Azahar is gone")
         self._tick(now)
         self.reads.append((now, addr, n))
         if (self.battle is not None and self.first_read_t is None
@@ -197,6 +243,7 @@ class Ctx:
         self._stop_evt = threading.Event()
         self.events: list[tuple] = []
         self.ran_away = False
+        self.reason = ""
         self._deadline = time.monotonic() + seconds
 
         class Off:
@@ -231,6 +278,7 @@ class Ctx:
         return False
 
     def request_stop(self, reason=""):
+        self.reason = self.reason or reason
         self._stop_evt.set()
 
     def kinds(self):
@@ -263,6 +311,20 @@ def wired(monkeypatch):
         return list(PARTY)
 
     monkeypatch.setattr(se, "get_party", get_party)
+
+    class GameModules:
+        """The module list the fake game itself reports."""
+
+        def __init__(self, rpc):
+            self.rpc = rpc
+
+        def names(self):
+            return self.rpc.modules()
+
+    monkeypatch.setattr(se, "Modules", GameModules)
+    # No test may look for, or relaunch, the real emulator.
+    monkeypatch.setattr(se.Recovery, "for_hunt",
+                        classmethod(lambda cls, ctx: None))
     monkeypatch.setattr(se, "broadcast_party",
                         lambda ctx, p: {m.encryption_key for m in p})
     monkeypatch.setattr(se, "_report_encounter",
@@ -435,6 +497,53 @@ def test_a_leftover_shiny_from_before_the_hunt_is_ignored(wired):
     assert len(game.resets) == 1
 
 
+def test_a_leftover_shiny_in_the_extra_window_is_ignored(wired):
+    """Gen 7: the start-up scan covers every window, not just the main."""
+    stale = Mon(shiny=True)
+    game = Game([Mon(), Mon(shiny=True)])
+    game.put(EXTRA_SLOT, stale.bytes)
+    run(Ctx(game, gen7=True))
+
+    assert stale.key not in keys(wired), "stopped on the leftover shiny"
+    assert len(game.resets) == 1
+
+
+def test_a_battle_on_screen_at_start_gets_no_input_at_all(wired):
+    """Started again over the shiny it stopped on (or a Wimpod that ran
+    in first): its record would go into ``seen`` unjudged and A into its
+    menu. Nothing is sent; the battle is left for the player."""
+    game = Game([Mon(shiny=True), Mon()])
+    game.spawn_at = 0.0                       # the battle is already up
+    ctx = Ctx(game, gen7=True)
+    run(ctx)
+
+    assert game.battle is not None, "precondition: a battle was up"
+    assert game.inputs == [], f"sent {game.inputs[:5]}"
+    assert ctx.reason == "started in a battle"
+
+
+def test_a_wild_spotted_but_never_read_is_not_reset_over(wired, monkeypatch):
+    """It may be the shiny: the hunt stops with it on screen."""
+    monkeypatch.setattr(se, "_UNREAD_S", 0.3)
+    monkeypatch.setattr(se, "read_wild", lambda ctx, hunt: None)
+    game = Game([Mon(), Mon(shiny=True)])
+    ctx = Ctx(game)
+    run(ctx)
+
+    assert game.resets == [], "reset over a wild it never read"
+    assert ctx.reason == "wild not read"
+
+
+def test_read_wild_never_takes_an_owned_record_for_the_wild(wired):
+    """A battle copy the party read missed has an OT; a wild never has."""
+    game = Game([])
+    game.put(SLOT, record(key=0x55555555, pid=(TID << 16) | 1, ot="Roman"))
+    ctx = Ctx(game)
+    watch = se.FoeWatch(ctx, FOE, FOE_LEN, set(), set())
+    hunt = se.Hunt([(FOE, FOE_LEN)], set(), set(), watch)
+    assert se.read_wild(ctx, hunt) is None
+
+
 def test_the_players_own_battle_copy_is_never_the_wild(wired):
     """Written when each battle starts, above the wild slot -- and
     shiny, so mistaking it for the wild would stop the hunt on it."""
@@ -469,6 +578,84 @@ def test_no_encounter_resets_and_tries_again(wired):
     assert len(game.resets) == 1
     assert "read_failure" in ctx.kinds()
     assert "target_hit" in ctx.kinds()
+
+
+def test_three_attempts_in_a_row_with_no_encounter_stop_the_hunt(wired):
+    """That is the save, not bad luck: resetting forever fixes nothing."""
+    game = Game([Mon(shiny=True)], presses=10 ** 9)
+    ctx = Ctx(game, cfg={**FAST, "static_timeout": 0.3})
+    run(ctx)
+
+    assert len(game.resets) == 2
+    assert ctx.reason == "no encounter"
+
+
+# ----------------------------------------------------------------------
+# Azahar crashing in its own relaunch (~1 in 650-900 resets)
+# ----------------------------------------------------------------------
+class FakeRecovery:
+    def __init__(self, game, ok=True):
+        self.game, self.ok, self.revives = game, ok, 0
+
+    def dismiss_dialogs(self):
+        return []
+
+    def revive(self, ctx):
+        self.revives += 1
+        if self.ok:
+            self.game.relaunch()
+        return self.ok
+
+
+def with_recovery(monkeypatch, recovery):
+    monkeypatch.setattr(se.Recovery, "for_hunt",
+                        classmethod(lambda cls, ctx: recovery))
+
+
+def test_a_crash_is_survived_and_the_relaunch_is_the_reset(wired,
+                                                           monkeypatch):
+    game = Game([Mon(), Mon(shiny=True)])
+    game.crash_on_reset = 1
+    rec = FakeRecovery(game)
+    with_recovery(monkeypatch, rec)
+    ctx = Ctx(game)
+    run(ctx)
+
+    assert rec.revives == 1
+    assert "target_hit" in ctx.kinds(), "the hunt did not carry on"
+    assert len(game.resets) == 1, "reset again straight after relaunching"
+    assert game.taps_into_nothing == 1, "the first tap is the probe"
+
+
+def test_with_no_recovery_a_crash_stops_the_hunt_at_once(wired):
+    """Not timeout after timeout of pressing into nothing."""
+    game = Game([Mon(), Mon(shiny=True)])
+    game.crash_on_reset = 1
+    ctx = Ctx(game, cfg={**FAST, "static_timeout": 60.0})
+    t0 = time.monotonic()
+    run(ctx)
+
+    assert time.monotonic() - t0 < 5.0
+    assert ("read_failure", "Azahar crashed") in [
+        (k, kw.get("reason")) for k, kw in ctx.events]
+    assert game.taps_into_nothing == 1
+
+
+def test_the_wimpod_hunt_notices_a_crash_without_pressing(wired,
+                                                         monkeypatch):
+    """It presses nothing while reads are paused, so no tap can find the
+    window gone: the failed reads after the grace, and target_alive, do."""
+    game = Game([wimpod(), wimpod(shiny=True)])
+    game.crash_on_reset = 1
+    rec = FakeRecovery(game)
+    with_recovery(monkeypatch, rec)
+    ctx = Ctx(game, gen7=True)
+    se.run_wimpod(ctx)
+
+    assert not ctx.ran_away
+    assert rec.revives == 1
+    assert "target_hit" in ctx.kinds()
+    assert game.taps_into_nothing == 0
 
 
 # ----------------------------------------------------------------------
@@ -518,6 +705,68 @@ def test_a_gen7_wild_that_switches_windows_is_still_caught_at_once(wired):
 
     assert len(game.resets) == 5
     assert game.fight == 0
+
+
+def test_a_gen7_battle_gets_no_press_wherever_its_wild_was_written(wired):
+    """The cheap check reads the known slots. A wild written anywhere else
+    still gets no A: the Battle module stops the presses and every
+    window is swept at once (here a sweep would otherwise be 1000 checks
+    away)."""
+    odd = EXTRA + 0x1000
+    game = Game([Mon(), Mon(), Mon(shiny=True)], slots=[SLOT, odd, odd],
+                intro=0.15)
+    run(Ctx(game, gen7=True, cfg={**FAST, "static_full_every": 1000}))
+
+    assert len(game.resets) == 2
+    assert game.fight == 0, f"{game.fight} A press(es) chose Fight"
+
+
+def test_a_gen7_battle_whose_wild_cannot_be_read_stops_the_hunt(wired,
+                                                               monkeypatch):
+    """Written outside every window: no press, no reset -- it may be the
+    shiny. The hunt stops with the battle on screen."""
+    monkeypatch.setattr(se, "_UNREAD_S", 0.3)
+    game = Game([Mon(), Mon(shiny=True)], slots=[SLOT, 0x40000000],
+                intro=0.15)
+    ctx = Ctx(game, gen7=True)
+    run(ctx)
+
+    assert len(game.resets) == 1, "reset over the battle it could not read"
+    assert game.fight == 0
+    assert ctx.reason == "wild not read"
+
+
+def test_the_known_slots_are_read_from_the_first_check_and_kept(
+        monkeypatch):
+    """Not a 3-window sweep before every press until a first wild sets
+    ``hot``; and no scan ever changes them (a learned list once evicted
+    the busiest slot)."""
+    reads = []
+    monkeypatch.setattr(fw, "read_pk6_at", lambda ctx, a: reads.append(a))
+    stale = [observe._decode(Mon().bytes) for _ in range(8)]
+    monkeypatch.setattr(
+        fw, "scan_nonparty",
+        lambda ctx, base, n, keys: ([(base + 0x200 * i, p)
+                                     for i, p in enumerate(stale)]
+                                    if base == EXTRA else []))
+    w = fw.FoeWatch(None, FOE, FOE_LEN, set(), set(), full_every=20,
+                    windows=[(FOE, FOE_LEN), (EXTRA, EXTRA_LEN)])
+    w.slots = [SLOT, EXTRA_SLOT]
+    for _ in range(5):
+        assert not w.check()
+    assert reads == [SLOT, EXTRA_SLOT] * 5
+    assert w.full_scans == 0
+    assert w.check(full=True)                 # 8 records nobody has seen
+    assert w.slots == [SLOT, EXTRA_SLOT], "a scan changed the known slots"
+
+
+def test_usum_reads_every_wild_slot_its_battles_were_logged_in():
+    from pokebot.games import GAMES
+
+    # The three slots 25,300 logged USUM wilds used, and PKMN-NTR's
+    # WildOffset2.
+    assert {0x3254F4AC, 0x3002F9A0, 0x30039888, 0x32663BF0} <= set(
+        GAMES["USUM-USA-1.2"].offsets.wild_slots)
 
 
 def test_one_window_games_read_only_their_window(wired):
@@ -610,6 +859,21 @@ def test_the_launcher_passes_the_trainer_name():
         launcher_modes_given_the_trainer_name())
 
 
+def test_the_press_speed_slider_is_only_for_hunts_that_read_it():
+    """--press-speed sets soft_reset.press_hold. The static hunts read
+    static_press_hold and gifts gift_press_hold, so for them the slider,
+    and its 'raise it if attempts time out' advice, did nothing."""
+    import re
+
+    src = (REPO / "launcher.py").read_text(encoding="utf-8")
+    m = re.search(r"_PRESS_SPEED_MODES = \(([^)]*)\)", src)
+    assert m, "the launcher's _PRESS_SPEED_MODES was not found"
+    assert set(re.findall(r'"(\w+)"', m.group(1))) == {"soft_reset",
+                                                       "usum_starters"}
+    assert re.search(r"if method\.mode in self\._PRESS_SPEED_MODES:\s*\n"
+                     r"\s*try:\s*\n\s*args \+= \[\"--press-speed\"", src)
+
+
 # ----------------------------------------------------------------------
 # Wimpod: the same loop, the player never moves
 # ----------------------------------------------------------------------
@@ -618,9 +882,11 @@ def wimpod(species=767, shiny=False):
 
 
 def test_wimpod_resets_until_a_shiny_and_never_moves_the_player(wired):
+    """A configured static_step must not leak in: the fake reports the
+    field, so a push would really be sent."""
     game = Game([wimpod(), wimpod(), wimpod(shiny=True)],
                 slots=[SLOT, EXTRA_SLOT, SLOT], intro=0.15)
-    ctx = Ctx(game, gen7=True)
+    ctx = Ctx(game, gen7=True, cfg={**FAST, "static_step": "up"})
     se.run_wimpod(ctx)
 
     assert not ctx.ran_away
@@ -628,6 +894,27 @@ def test_wimpod_resets_until_a_shiny_and_never_moves_the_player(wired):
     assert game.fight == 0
     assert "target_hit" in ctx.kinds()
     assert {b for _, b in game.inputs} <= {"A", "RESET"}, "moved or pushed"
+
+
+def test_wimpod_presses_nothing_on_the_field_or_while_reads_are_paused(
+        wired):
+    """The Wimpod needs no input once the save loads. A on the field only
+    meets the scenery (facing the water it rides off), and A in the grace
+    is blind -- at Azahar's speed limit it can reach the battle menu."""
+    game = Game([wimpod(), wimpod(), wimpod(shiny=True)], intro=0.15)
+    se.run_wimpod(Ctx(game, gen7=True))
+
+    assert len(game.resets) == 2
+    assert game.field_presses == 0, f"{game.field_presses} A on the field"
+    grace, quiet, eps = (FAST["reload_read_grace"], FAST["pre_reset_quiet"],
+                         0.03)
+    for r in game.resets:
+        blind = [t - r for t, b in game.inputs
+                 if b == "A" and r < t < r + grace]
+        assert not blind, f"A {blind[0]:.3f}s after a reset, reads paused"
+        bad = [t - r for t, _, _ in game.reads
+               if r - quiet + eps < t < r + grace - eps]
+        assert not bad, f"read at {bad[0]:+.3f}s from a reset"
 
 
 def test_wimpod_stops_on_a_shiny_of_any_species(wired):
@@ -644,15 +931,6 @@ def test_wimpod_warns_when_something_else_turns_up(wired, caplog):
         se.run_wimpod(Ctx(game, gen7=True))
     assert any("expected #767, got #10" in r.getMessage()
                for r in caplog.records)
-
-
-def test_wimpod_reads_its_own_timeout():
-    p = se.StaticPlan.from_config({"wimpod_timeout": 120, "static_timeout": 5},
-                                  se.WIMPOD.timeout_key, se.WIMPOD.timeout)
-    assert p.encounter_timeout == 120.0
-    d = se.StaticPlan.from_config({}, se.WIMPOD.timeout_key, se.WIMPOD.timeout)
-    assert d.encounter_timeout == se.WIMPOD.timeout
-    assert se.StaticPlan.from_config({"static_timeout": 5}).encounter_timeout == 5
 
 
 def test_wimpod_is_offered_for_ultra_sun_ultra_moon():
@@ -679,11 +957,11 @@ class _StepWorld:
         self.events.append(button)
         return "postmessage"
 
-    def field(self):
+    def names(self):
         self.reads += 1
-        return self.reads > self.menu_reads
+        return {"FieldRo"} if self.reads > self.menu_reads else set()
 
-    def check(self):
+    def check(self, full=False):
         return self.events.count("CircleUp") >= self.need
 
 
@@ -698,11 +976,11 @@ def test_the_step_waits_for_the_field_then_goes_between_the_a_presses(monkeypatc
     world = _StepWorld()
     monkeypatch.setattr(se, "_note_path", lambda ctx, path: None)
     plan = se.StaticPlan(step="CircleUp", press_hold=0.0)
-    mash = se.mash_until_wild(_step_ctx(world), plan, world, 0.0, field=world.field)
+    mash = se.mash_until_wild(_step_ctx(world), plan, world, 0.0, mods=world)
     assert mash.found
     first = world.events.index("CircleUp")
     # every press before the field came back was A (Continue stays picked)
-    assert set(world.events[:first]) == {"A"} and first >= 25
+    assert set(world.events[:first]) == {"A"} and first > world.menu_reads
     assert world.events[first:] == ["CircleUp", "A", "CircleUp", "A", "CircleUp"]
 
 
@@ -710,7 +988,7 @@ def test_without_a_step_it_is_only_a(monkeypatch):
     world = _StepWorld(menu_reads=0, pushes_to_battle=99)
     monkeypatch.setattr(se, "_note_path", lambda ctx, path: None)
     plan = se.StaticPlan(press_hold=0.0, encounter_timeout=0.05)
-    se.mash_until_wild(_step_ctx(world), plan, world, 0.0, field=world.field)
+    se.mash_until_wild(_step_ctx(world), plan, world, 0.0, mods=world)
     assert set(world.events) == {"A"}
 
 
