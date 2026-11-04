@@ -18,6 +18,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
+from pokebot.citra_rpc import RPCError  # noqa: E402
 from pokebot.modes import gen7_encounter as g7  # noqa: E402
 from test_xy_starter_screen import Memory  # noqa: E402
 
@@ -70,6 +71,28 @@ class FakeInput:
 
     def tap(self, button, hold_s=0.05):
         self.events.append(button)
+
+
+class DyingInput(FakeInput):
+    """Azahar crashes after ``live`` presses: from then on there is no
+    window, so a tap returns "none" at once (the real driver's answer)."""
+
+    def __init__(self, ctx, live):
+        super().__init__()
+        self.ctx, self.live, self.into_nothing = ctx, live, 0
+
+    @property
+    def dead(self):
+        return len(self.events) >= self.live
+
+    def tap(self, button, hold_s=0.05):
+        if self.dead:
+            self.into_nothing += 1
+            if self.into_nothing > 1000:      # the old loop never stopped
+                self.ctx.request_stop("spun")
+            return "none"
+        self.events.append(button)
+        return "postmessage"
 
 
 class FakeDashboard:
@@ -169,14 +192,22 @@ class World:
 
 
 def run_world(monkeypatch, wilds, generation=7, config=None, breaks=0,
-              leftover=None, balls=None):
+              leftover=None, balls=None, dead_after=None):
     ctx = Ctx(generation)
     ctx.config = config or {}
+    if dead_after is not None:
+        ctx.input = DyingInput(ctx, dead_after)
     vertical = (ctx.config.get("random_encounters") or {}).get("movement") == "vertical"
     world = World(ctx, wilds, breaks=breaks, leftover=leftover,
                   trigger="CircleDown" if vertical else "CircleRight")
     monkeypatch.setattr(g7, "_balls_left", lambda ctx: balls)  # None: unread
-    monkeypatch.setattr(g7.Modules, "names", lambda self: world.names())
+
+    def names(self):
+        if getattr(ctx.input, "dead", False):
+            raise RPCError("Azahar is gone")        # every read fails too
+        return world.names()
+
+    monkeypatch.setattr(g7.Modules, "names", names)
     monkeypatch.setattr(g7, "scan_windows", world.scan)
     monkeypatch.setattr(g7, "read_xz", lambda rpc, route: None)   # no anchor
     monkeypatch.setattr(g7, "ensure_targets_dir", lambda: None)
@@ -361,6 +392,24 @@ def test_a_leftover_battle_without_a_hit_is_run_from_then_the_hunt_goes_on(monke
     assert ev[:3] == ["B", "DpadDown", "A"]   # ran from the leftover first
     assert 9 not in reported                  # never judged as a new wild
     assert reported == [11] and "Y" in ev
+
+
+def test_azahar_dying_mid_wiggle_stops_the_hunt_at_once(monkeypatch):
+    """Taps returning at once and reads failing: the wiggle loop used to
+    spin on that, flat out and silent, until someone noticed."""
+    ctx, reported = run_world(monkeypatch, [Pk(10)], dead_after=4)
+    assert ctx.stop_reason == "Azahar crashed"
+    assert ctx.input.into_nothing == 1, "the first dead tap is the probe"
+    assert reported == []
+
+
+def test_azahar_dying_mid_flee_is_not_a_failed_flee(monkeypatch):
+    """Not 60 s of pressing into nothing, then "the battle is on screen"
+    -- there is no screen. (Seen live 11-03 20:27.)"""
+    ctx, reported = run_world(monkeypatch, [Pk(10), Pk(11)], dead_after=7)
+    assert reported == [10]
+    assert ctx.stop_reason == "Azahar crashed"
+    assert ctx.input.into_nothing == 1
 
 
 def test_flee_gives_up_at_the_timeout(monkeypatch):

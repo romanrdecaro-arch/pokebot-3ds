@@ -43,6 +43,7 @@ import struct
 import time
 from dataclasses import dataclass
 
+from ..azahar_recover import AzaharGone
 from ..bag7 import BAG, BALLS, read_bag
 from ..citra_rpc import RPCError
 from ..pk6_export import ensure_targets_dir
@@ -238,7 +239,7 @@ class Anchor:
                 continue
             held = min(max(abs(err) / speed, 0.02), 0.25)
             before = read_xz(self.rpc, self.route)
-            ctx.input.tap(toward_plus if err > 0 else toward_minus, hold_s=held)
+            _tap(ctx, toward_plus if err > 0 else toward_minus, hold_s=held)
             after = read_xz(self.rpc, self.route)
             if before and after:
                 self._learn(axis, abs(after[axis] - before[axis]), held)
@@ -271,6 +272,14 @@ def find_wild(ctx, windows, seen: set, timeout: float) -> list:
     return []
 
 
+def _tap(ctx, button: str, hold_s: float) -> None:
+    """One press. With no Azahar window to press into (it crashed), the
+    tap returns at once and every read fails: carrying on would spin on
+    that, silently, until someone noticed."""
+    if ctx.input.tap(button, hold_s=hold_s) == "none":
+        raise AzaharGone("no Azahar window to press into: it crashed")
+
+
 def flee(ctx, mods: Modules, timeout: float) -> bool:
     """Run from the battle: B backs out of anything, Down puts the cursor
     on RUN and A takes it, each time the command menu is up. True once
@@ -285,11 +294,11 @@ def flee(ctx, mods: Modules, timeout: float) -> bool:
             return True
         if "Bag" in names:                  # the command menu is up
             for button in ("B", "DpadDown", "A"):
-                ctx.input.tap(button, hold_s=0.06)
+                _tap(ctx, button, hold_s=0.06)
                 ctx._stop_evt.wait(0.15)
             ctx._stop_evt.wait(0.6)
         else:
-            ctx.input.tap("B", hold_s=0.06)  # move the text along
+            _tap(ctx, "B", hold_s=0.06)  # move the text along
             ctx._stop_evt.wait(0.2)
     return False
 
@@ -321,13 +330,13 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
         if "Battle" not in now and battle_over(ctx, mods):
             return True
         if "Bag" not in now:                # text still running
-            ctx.input.tap("B", hold_s=0.06)
+            _tap(ctx, "B", hold_s=0.06)
             ctx._stop_evt.wait(0.2)
             continue
         if throws == plan.catch_tries:
             return False
         for _ in range(plan.settle_taps):
-            ctx.input.tap("B", hold_s=0.06)
+            _tap(ctx, "B", hold_s=0.06)
             ctx._stop_evt.wait(plan.dismiss_gap)
         if "Battle" not in names() and battle_over(ctx, mods):
             return True                     # a slow Gotcha! just finished
@@ -338,10 +347,10 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
         throws += 1
         log.info(f"  throwing ball {throws} of {plan.catch_tries}")
         for button in ("Y", "A", "A"):
-            ctx.input.tap(button, hold_s=0.06)
+            _tap(ctx, button, hold_s=0.06)
             ctx._stop_evt.wait(plan.throw_gap)
         for _ in range(15):
-            ctx.input.tap("B", hold_s=0.06)
+            _tap(ctx, "B", hold_s=0.06)
             ctx._stop_evt.wait(plan.dismiss_gap)
         end = time.monotonic() + plan.flee_timeout   # per ball, not per catch
     return False
@@ -399,6 +408,16 @@ def _leave_leftover_battle(ctx, mods, windows, plan,
 
 
 def run(ctx) -> None:
+    try:
+        _run(ctx)
+    except AzaharGone:
+        log.error("  Azahar is GONE -- it crashed. Nothing more is being "
+                  "pressed. Start Azahar, load the save and start the hunt "
+                  "again.")
+        ctx.request_stop("Azahar crashed")
+
+
+def _run(ctx) -> None:
     log.info("Mode: Gen 7 random encounters (wiggle in place)")
     game = ctx.game
     if getattr(game, "generation", None) != 7:
@@ -432,9 +451,9 @@ def run(ctx) -> None:
     while not ctx.should_stop():
         pairs += 1
         if plan.tick not in ("auto", "off") and pairs % plan.tick_every == 0:
-            ctx.input.tap(plan.tick, hold_s=plan.hold / 2)
+            _tap(ctx, plan.tick, hold_s=plan.hold / 2)
         for button in plan.pair:
-            ctx.input.tap(button, hold_s=plan.hold)
+            _tap(ctx, button, hold_s=plan.hold)
             if anchor:
                 anchor.sample()
         try:
