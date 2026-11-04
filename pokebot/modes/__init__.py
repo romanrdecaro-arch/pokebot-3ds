@@ -10,6 +10,7 @@ from .gifts import run as run_gifts
 from .noibat import run as run_noibat
 from .static_encounter import run as run_static_encounter
 from .static_encounter import run_step as run_static_step
+from .static_encounter import run_wimpod
 from .usum_starters import run as run_usum_starters
 from .gen7_encounter import run as run_gen7_encounter
 from .gen7_breed import run as run_gen7_breed
@@ -34,6 +35,7 @@ MODES = {
     "noibat":      run_noibat,
     "static_encounter": run_static_encounter,
     "static_step": run_static_step,
+    "wimpod": run_wimpod,
     "usum_starters": run_usum_starters,
     "gen7_encounter": run_gen7_encounter,
     "gen7_breed": run_gen7_breed,

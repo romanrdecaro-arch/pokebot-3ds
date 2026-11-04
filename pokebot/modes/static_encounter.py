@@ -38,6 +38,14 @@ full sweep every ``full_every`` checks in case the slot moved.
 **There is no catch sequence.** On a shiny the bot stops sending input
 entirely and leaves the battle for you. A static legendary is often a
 one-shot, and the catch is worth doing by hand.
+
+**Every window the game declares is watched.** Gen 7 writes its wild to
+one of two (USUM: 0x3254F4AC in the main window, 0x3002F9A0 / 0x30039888
+in the extra one, about one wild in six); watching only the first would
+miss those and keep pressing A -- FIGHT, then a move -- in the battle.
+
+The same loop runs named hunts (``Profile``): the Wimpod hunt is this
+one with nothing to face -- the Wimpod come to the player.
 """
 from __future__ import annotations
 
@@ -50,8 +58,8 @@ from ..citra_rpc import RPCError
 from ..pk6_export import ensure_targets_dir
 from .foe_watch import FoeWatch
 from .gen7_encounter import Modules
-from .observe import (_report_encounter, broadcast_party, get_party,
-                      pick_opponent, read_pk6_at, scan_nonparty)
+from .observe import (_report_encounter, broadcast_party, foe_windows,
+                      get_party, pick_opponent, read_pk6_at, scan_windows)
 from .soft_reset import (_PRE_RESET_QUIET_S, _PRESS_HOLD_FLOOR,
                          _PRESS_HOLD_S, _RELOAD_READ_GRACE_S,
                          _RESET_COOLDOWN_S, _focus_if_needed, _note_path)
@@ -98,7 +106,8 @@ class StaticPlan:
     step: str = ""
 
     @classmethod
-    def from_config(cls, cfg: dict | None) -> "StaticPlan":
+    def from_config(cls, cfg: dict | None, timeout_key: str = "static_timeout",
+                    timeout: float = 45.0) -> "StaticPlan":
         cfg = cfg or {}
         d = cls()
 
@@ -113,8 +122,7 @@ class StaticPlan:
         return cls(
             press_hold=max(_PRESS_HOLD_FLOOR,
                            num("static_press_hold", d.press_hold)),
-            encounter_timeout=max(1.0, num("static_timeout",
-                                           d.encounter_timeout)),
+            encounter_timeout=max(1.0, num(timeout_key, timeout)),
             settle=max(0.0, num("static_settle", d.settle)),
             full_every=max(1, int(num("static_full_every", d.full_every))),
             pre_reset_quiet=max(_MIN_QUIET_S,
@@ -131,10 +139,35 @@ _STEPS = {"up": "CircleUp", "down": "CircleDown", "left": "CircleLeft",
 
 
 @dataclass(frozen=True)
+class Profile:
+    """What a named hunt on this loop changes: what it is called, the
+    setup it asks for, the one species it expects (0: any) and where its
+    encounter timeout is configured."""
+    title: str = "static encounter soft reset"
+    setup: str = ("standing in front of the Pokémon, facing it, game "
+                  "SAVED there.")
+    via: str = "static"
+    species: int = 0
+    timeout_key: str = "static_timeout"
+    timeout: float = 45.0
+
+
+STATIC = Profile()
+#: Ultra Sun / Ultra Moon's Wimpod: the player stands still and a Wimpod
+#: comes to them, so there is nothing to face and nothing to press but A.
+WIMPOD = Profile(
+    title="Wimpod soft reset",
+    setup=("standing where the Wimpod come to you, game SAVED there. The "
+           "bot never moves the player: A only, through the reset and the "
+           "wait."),
+    via="wimpod", species=767, timeout_key="wimpod_timeout", timeout=90.0)
+
+
+@dataclass(frozen=True)
 class Hunt:
     """What the hunt reads. Fixed for the run, except ``seen``."""
-    foe_base: int
-    foe_len: int
+    #: Every (base, length) the game can write its wild to.
+    windows: list
     party_keys: set
     #: Every key already accounted for: the window as it was at the
     #: start, plus one wild per attempt. Shared with ``watch``. A reset
@@ -207,8 +240,7 @@ def read_wild(ctx, hunt: Hunt):
                 and pkm.encryption_key not in hunt.party_keys):
             return hot, pkm
     fresh = [(a, p) for a, p in
-             scan_nonparty(ctx, hunt.foe_base, hunt.foe_len,
-                           hunt.party_keys)
+             scan_windows(ctx, hunt.windows, hunt.party_keys)
              if p.encryption_key not in hunt.seen]
     return pick_opponent(fresh)
 
@@ -247,14 +279,21 @@ def run_step(ctx) -> None:
     run(ctx, step=step_from(cfg))
 
 
+def run_wimpod(ctx) -> None:
+    """Ultra Sun / Ultra Moon: stand still and let a Wimpod come. Not
+    shiny: soft reset and spam A until the next one. Shiny (any species):
+    stop all input with the battle on screen."""
+    run(ctx, profile=WIMPOD)
+
+
 def step_from(cfg: dict) -> str:
     """soft_reset.static_step as a Circle Pad button; up when unset."""
     return _STEPS.get(str(cfg.get("static_step") or "up").lower(), "CircleUp")
 
 
-def run(ctx, step: str = "") -> None:
+def run(ctx, step: str = "", profile: Profile = STATIC) -> None:
     cfg = ctx.config.get("soft_reset", {}) or {}
-    plan = StaticPlan.from_config(cfg)
+    plan = StaticPlan.from_config(cfg, profile.timeout_key, profile.timeout)
     if step:
         plan = replace(plan, step=step)
 
@@ -264,9 +303,8 @@ def run(ctx, step: str = "") -> None:
     if hasattr(ctx, "_party_sig"):
         ctx._party_sig = None
 
-    log.info("Mode: static encounter soft reset")
-    log.info("  Setup: standing in front of the Pokémon, facing it, "
-             "game SAVED there.")
+    log.info(f"Mode: {profile.title}")
+    log.info(f"  Setup: {profile.setup}")
     log.info(f"  Spamming A ({plan.press_hold * 1000:.0f} ms presses) "
              f"until the battle starts. Not shiny: L+R+Start and "
              f"straight back to spamming. SHINY: the bot STOPS ALL "
@@ -289,16 +327,17 @@ def run(ctx, step: str = "") -> None:
     reads_from = 0.0              # nothing reset yet: reading is safe
     while not ctx.should_stop():
         attempt += 1
-        log.info(f"Static encounter attempt #{attempt}")
+        log.info(f"{profile.via.capitalize()} attempt #{attempt}")
         ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
-        if _attempt(ctx, plan, hunt, attempt, reset_at, reads_from):
+        if _attempt(ctx, plan, hunt, attempt, reset_at, reads_from, profile):
             return
         nxt = reset(ctx, plan, reset_at)
         if nxt is None:
             return
         reset_at, reads_from = nxt
 
-    log.info(f"Static encounter hunt stopped after {attempt} attempt(s).")
+    log.info(f"{profile.title.capitalize()} stopped after {attempt} "
+             f"attempt(s).")
 
 
 def _start(ctx, cfg: dict, plan: StaticPlan) -> Hunt | None:
@@ -308,7 +347,7 @@ def _start(ctx, cfg: dict, plan: StaticPlan) -> Hunt | None:
         log.error("foe_base not configured; aborting.")
         ctx.request_stop("foe_base not configured")
         return None
-    foe_len = getattr(o, "foe_scan_len", 0) or 0x20000
+    windows = foe_windows(o)
     _focus_if_needed(ctx)
 
     # Once, not every attempt. A reset reloads the same save, so the
@@ -318,24 +357,30 @@ def _start(ctx, cfg: dict, plan: StaticPlan) -> Hunt | None:
                       cfg.get("trainer_name", DEFAULT_OT_NAME))
     party_keys = broadcast_party(ctx, party)
 
-    # Whatever is in the foe window now predates the hunt.
-    before = scan_nonparty(ctx, o.foe_base, foe_len, party_keys)
+    # Whatever is in the foe windows now predates the hunt.
+    before = scan_windows(ctx, windows, party_keys)
     seen = {p.encryption_key for _, p in before}
-    watch = FoeWatch(ctx, o.foe_base, foe_len, party_keys, seen,
-                     full_every=plan.full_every)
-    # A leftover wild sits in the wild slot, so look there first.
+    watch = FoeWatch(ctx, windows[0][0], windows[0][1], party_keys, seen,
+                     full_every=plan.full_every, windows=windows)
+    # A leftover wild sits in the wild slot, so look there first -- and
+    # with two windows, at every slot a wild has been left in.
     stale = pick_opponent(before)
     if stale is not None:
         watch.hot = stale[0]
-    log.info(f"  {len(seen)} record(s) already in the foe window — "
-             f"ignored.")
-    return Hunt(o.foe_base, foe_len, party_keys, seen, watch,
+    if len(windows) > 1:
+        left = [a for a, p in before if not (p.ot_name or "")]
+        watch.slots = list(dict.fromkeys(
+            list(getattr(o, "wild_slots", ()) or ()) + left))
+    log.info(f"  {len(seen)} record(s) already in {len(windows)} foe "
+             f"window(s) — ignored.")
+    return Hunt(windows, party_keys, seen, watch,
                 Modules(ctx.rpc)
                 if getattr(ctx.game, "generation", None) == 7 else None)
 
 
 def _attempt(ctx, plan: StaticPlan, hunt: Hunt, attempt: int,
-             reset_at: float, reads_from: float) -> bool:
+             reset_at: float, reads_from: float,
+             profile: Profile = STATIC) -> bool:
     """One encounter. True means the hunt is over: a hit, or stopped."""
     field = (lambda: "FieldRo" in hunt.modules.names()) if hunt.modules else None
     mash = mash_until_wild(ctx, plan, hunt.watch, reads_from, field)
@@ -348,7 +393,7 @@ def _attempt(ctx, plan: StaticPlan, hunt: Hunt, attempt: int,
             return True
         wild = read_wild(ctx, hunt)
     if wild is None:
-        _report_miss(ctx, plan, attempt, mash)
+        _report_miss(ctx, plan, attempt, mash, profile)
         return False
 
     addr, pkm = wild
@@ -356,9 +401,12 @@ def _attempt(ctx, plan: StaticPlan, hunt: Hunt, attempt: int,
     hunt.watch.hot = addr
     _log_timing(mash, reset_at)
     if pkm.shiny or (ctx.target and ctx.target.matches(pkm)):
-        _stop_on(ctx, pkm, addr, attempt)
+        _stop_on(ctx, pkm, addr, attempt, profile)
         return True
-    _report_encounter(ctx, pkm, addr, attempt, "static")
+    _report_encounter(ctx, pkm, addr, attempt, profile.via)
+    if profile.species and pkm.species != profile.species:
+        log.warning(f"  expected #{profile.species}, got #{pkm.species}. "
+                    f"Check the save: {profile.setup}")
     return False
 
 
@@ -377,7 +425,8 @@ def _log_timing(mash: Mash, reset_at: float) -> None:
                     "grace: lower Azahar's speed limit.")
 
 
-def _report_miss(ctx, plan: StaticPlan, attempt: int, mash: Mash) -> None:
+def _report_miss(ctx, plan: StaticPlan, attempt: int, mash: Mash,
+                 profile: Profile = STATIC) -> None:
     if mash.found:
         log.warning(f"  attempt {attempt}: the encounter was gone before "
                     f"it could be read. Resetting.")
@@ -385,19 +434,19 @@ def _report_miss(ctx, plan: StaticPlan, attempt: int, mash: Mash) -> None:
     else:
         log.warning(f"  attempt {attempt}: no encounter in "
                     f"{plan.encounter_timeout:.0f}s ({mash.presses} A "
-                    f"presses). Check you are standing in front of the "
-                    f"Pokémon, facing it, with the game saved there. "
+                    f"presses). Check the save: {profile.setup} "
                     f"Resetting.")
         reason = "no encounter while pressing A"
     ctx.dashboard.broadcast("read_failure", attempt=attempt, reason=reason)
 
 
-def _stop_on(ctx, pkm, addr: int, attempt: int) -> None:
+def _stop_on(ctx, pkm, addr: int, attempt: int,
+             profile: Profile = STATIC) -> None:
     """Stop, then say so. Nothing in here sends input."""
     # The stop is the instruction, so it goes first.
-    ctx.request_stop("shiny static encounter")
+    ctx.request_stop(f"shiny {profile.via} encounter")
     # Logs it and writes its .pk6 to targets/ -- a read, not an input.
-    _report_encounter(ctx, pkm, addr, attempt, "static")
+    _report_encounter(ctx, pkm, addr, attempt, profile.via)
     filter_hit = bool(ctx.target and ctx.target.matches(pkm))
     reason = ctx.target.describe(pkm) if filter_hit else "shiny"
     bar = "*" * 30

@@ -64,6 +64,10 @@ class GameOffsets:
     # Gen 7 keeps its SOS ally in a different part of memory from the
     # opponent, so a single window sees one or the other, never both.
     foe_extra:      tuple = ()
+    # Where the wild itself is written, inside those windows (PKMN-NTR's
+    # WildOffset1-4): watched from the first check, so a wild in a slot
+    # not used yet this session is not left to the periodic full scan.
+    wild_slots:     tuple = ()
 
     # Battle state
     in_battle_flag: int = 0   # u8/u32 that flips when a battle starts
@@ -243,8 +247,12 @@ _GEN7_FOE_EXTRA = (
 )
 
 
+#: WildOffset1 / WildOffset2, the same in all four games.
+_GEN7_WILD = (0x3254F4AC, 0x32663BF0)
+
+
 def _gen7_offsets(trainer_block: int, party_live: int,
-                  sos_state: int,
+                  sos_state: int, wild_slots: tuple,
                   received_slot: int = 0) -> GameOffsets:
     return GameOffsets(
         party_base=trainer_block + _GEN7_PARTY_FROM_TB,
@@ -254,6 +262,7 @@ def _gen7_offsets(trainer_block: int, party_live: int,
         foe_base=_GEN7_FOE_BASE,
         foe_scan_len=_GEN7_FOE_LEN,
         foe_extra=_GEN7_FOE_EXTRA,
+        wild_slots=_GEN7_WILD + wild_slots,
         sos_state=sos_state,
     )
 
@@ -270,7 +279,8 @@ _register(Game(
     # SOS state block from projectpokemon.org's Gen7 RAM Map (published
     # as USUM addresses; SM's location differs).
     offsets=_gen7_offsets(_SM_TB, party_live=0x34195E10,
-                          sos_state=0x30038C44),
+                          sos_state=0x30038C44,
+                          wild_slots=(0x3003969C, 0x3002F7B8)),
     notes=_GEN7_NOTES,
 ))
 
@@ -286,6 +296,7 @@ _register(Game(
     # at all until the game was saved.
     offsets=_gen7_offsets(_USUM_TB, party_live=0x33F7FA44,
                           sos_state=0x30038E20,
+                          wild_slots=(0x30039888, 0x3002F9A0),
                           received_slot=0x329C2C74),
     notes=_GEN7_NOTES,
 ))
@@ -501,6 +512,14 @@ def methods_for(game_key: str) -> list[Method]:
                       "a Quick or Ultra Ball; bring a strong lead). A "
                       "shiny legendary / Ultra Beast stops all input. Not "
                       "yet tried live."))
+            methods.append(Method(
+                "Wimpod (soft reset)", "wimpod",
+                notes="Save standing where the Wimpod come to you. The "
+                      "bot never moves the player: it spams A through the "
+                      "reset and the wait until a Wimpod starts a battle; "
+                      "not shiny soft-resets (L+R+Start) and spams A "
+                      "again. A SHINY (any species) STOPS ALL INPUT with "
+                      "the battle on screen for you to catch."))
             methods.append(Method(
                 "Ultra Space legendary / Ultra Beast (soft reset)",
                 "static_step",

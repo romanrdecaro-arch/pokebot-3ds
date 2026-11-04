@@ -46,6 +46,9 @@ clock = time.perf_counter
 FOE = 0x08800000
 FOE_LEN = 0x20000
 SLOT = FOE + 0x3F50            # where the live Omega Ruby run found Reshiram
+#: Gen 7's second foe window (USUM: about one wild in six lands here).
+EXTRA, EXTRA_LEN = 0x30028000, 0x18000
+EXTRA_SLOT = 0x3002F9A0
 TID = 0x1D1C                   # the player's; a wild in battle carries it
 
 PARTY = [SimpleNamespace(encryption_key=0x0BADF00D, species=260)]
@@ -91,6 +94,7 @@ class Game:
         self.slots = list(slots or ())
         self.at_battle = list(at_battle)      # (addr, bytes) per battle
         self.mem = bytearray(FOE_LEN)
+        self.extra = bytearray(EXTRA_LEN)
         self.presses_needed = presses
         self.delay, self.boot, self.intro = delay, boot, intro
         self.booted_at = 0.0                  # starts in the overworld
@@ -107,6 +111,10 @@ class Game:
         self.fight = 0
 
     def put(self, addr, data):
+        if EXTRA <= addr < EXTRA + EXTRA_LEN:
+            off = addr - EXTRA
+            self.extra[off:off + len(data)] = data
+            return
         off = addr - FOE
         self.mem[off:off + len(data)] = data
 
@@ -167,6 +175,9 @@ class Game:
         off = addr - FOE
         if 0 <= off and off + n <= FOE_LEN:
             return bytes(self.mem[off:off + n])
+        off = addr - EXTRA
+        if 0 <= off and off + n <= EXTRA_LEN:
+            return bytes(self.extra[off:off + n])
         return bytes(n)
 
 
@@ -177,7 +188,8 @@ FAST = {"trainer_name": "Roman", "static_press_hold": 0.01,
 
 
 class Ctx:
-    def __init__(self, game, cfg=None, target=None, seconds=10.0):
+    def __init__(self, game, cfg=None, target=None, seconds=10.0,
+                 gen7=False):
         self.input = game
         self.rpc = game
         self.target = target
@@ -190,12 +202,15 @@ class Ctx:
         class Off:
             foe_base = FOE
             foe_scan_len = FOE_LEN
+            foe_extra = ((EXTRA, EXTRA_LEN),) if gen7 else ()
+            wild_slots = (SLOT, EXTRA_SLOT) if gen7 else ()
             party_base = 0x08C814AC
             party_stride = 260
 
         class G:
             offsets = Off()
-            key = "OR-USA"
+            key = "USUM-USA-1.2" if gen7 else "OR-USA"
+            generation = 7 if gen7 else 6
 
         self.game = G()
         events = self.events
@@ -478,6 +493,40 @@ def test_a_wild_that_turns_up_somewhere_new_is_still_found(wired):
     assert game.fight == 0
 
 
+def test_a_gen7_wild_in_the_second_window_is_found_before_the_menu(wired):
+    """USUM writes about one wild in six to 0x3002F9A0, outside the main
+    window. Watching only that one, the hunt saw nothing there and kept
+    pressing A -- FIGHT, then a move -- into the battle."""
+    game = Game([Mon(), Mon(), Mon(shiny=True)],
+                slots=[SLOT, EXTRA_SLOT, EXTRA_SLOT], intro=0.15)
+    ctx = Ctx(game, gen7=True)
+    run(ctx)
+
+    assert len(game.resets) == 2
+    assert game.fight == 0, f"{game.fight} A press(es) chose Fight"
+    assert "target_hit" in ctx.kinds()
+
+
+def test_a_gen7_wild_that_switches_windows_is_still_caught_at_once(wired):
+    """Once a wild has used both slots, the cheap check reads both: no
+    sweep (and no blind presses) is needed when it switches again."""
+    slots = [SLOT, EXTRA_SLOT, SLOT, EXTRA_SLOT, SLOT, EXTRA_SLOT]
+    game = Game([Mon() for _ in range(5)] + [Mon(shiny=True)], slots=slots,
+                intro=0.1)
+    run(Ctx(game, gen7=True, cfg={**FAST, "static_full_every": 1000},
+            seconds=20.0))
+
+    assert len(game.resets) == 5
+    assert game.fight == 0
+
+
+def test_one_window_games_read_only_their_window(wired):
+    """Gen 6 declares one window: nothing else is ever read."""
+    game = Game([Mon(), Mon(shiny=True)])
+    run(Ctx(game))
+    assert all(FOE <= a and a + n <= FOE + FOE_LEN for _, a, n in game.reads)
+
+
 def test_once_the_slot_is_known_a_check_is_one_read(wired):
     """The press rate rests on it: on the console a sweep is ~128 RPC
     round trips, a slot read is one."""
@@ -557,7 +606,62 @@ def launcher_modes_given_the_trainer_name() -> set[str]:
 
 def test_the_launcher_passes_the_trainer_name():
     """The party's own keys are excluded from wild detection by OT."""
-    assert "static_encounter" in launcher_modes_given_the_trainer_name()
+    assert {"static_encounter", "static_step", "wimpod"} <= (
+        launcher_modes_given_the_trainer_name())
+
+
+# ----------------------------------------------------------------------
+# Wimpod: the same loop, the player never moves
+# ----------------------------------------------------------------------
+def wimpod(species=767, shiny=False):
+    return Mon(shiny=shiny, species=species)
+
+
+def test_wimpod_resets_until_a_shiny_and_never_moves_the_player(wired):
+    game = Game([wimpod(), wimpod(), wimpod(shiny=True)],
+                slots=[SLOT, EXTRA_SLOT, SLOT], intro=0.15)
+    ctx = Ctx(game, gen7=True)
+    se.run_wimpod(ctx)
+
+    assert not ctx.ran_away
+    assert len(game.resets) == 2
+    assert game.fight == 0
+    assert "target_hit" in ctx.kinds()
+    assert {b for _, b in game.inputs} <= {"A", "RESET"}, "moved or pushed"
+
+
+def test_wimpod_stops_on_a_shiny_of_any_species(wired):
+    game = Game([wimpod(), wimpod(species=10, shiny=True)], intro=0.15)
+    ctx = Ctx(game, gen7=True)
+    se.run_wimpod(ctx)
+    assert len(game.resets) == 1
+    assert "target_hit" in ctx.kinds()
+
+
+def test_wimpod_warns_when_something_else_turns_up(wired, caplog):
+    game = Game([wimpod(species=10), wimpod(shiny=True)], intro=0.15)
+    with caplog.at_level(logging.WARNING):
+        se.run_wimpod(Ctx(game, gen7=True))
+    assert any("expected #767, got #10" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_wimpod_reads_its_own_timeout():
+    p = se.StaticPlan.from_config({"wimpod_timeout": 120, "static_timeout": 5},
+                                  se.WIMPOD.timeout_key, se.WIMPOD.timeout)
+    assert p.encounter_timeout == 120.0
+    d = se.StaticPlan.from_config({}, se.WIMPOD.timeout_key, se.WIMPOD.timeout)
+    assert d.encounter_timeout == se.WIMPOD.timeout
+    assert se.StaticPlan.from_config({"static_timeout": 5}).encounter_timeout == 5
+
+
+def test_wimpod_is_offered_for_ultra_sun_ultra_moon():
+    from pokebot.games import methods_for
+    from pokebot.modes import MODES
+
+    assert "wimpod" in MODES
+    assert "wimpod" in [m.mode for m in methods_for("USUM-USA-1.2")]
+    assert "wimpod" not in [m.mode for m in methods_for("OR-USA")]
 
 
 # ----------------------------------------------------------------------

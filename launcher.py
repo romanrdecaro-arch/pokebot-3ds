@@ -2435,6 +2435,19 @@ class _App(tk.Tk):
                 text="Stand in front of the Pokémon, facing it, and SAVE "
                      "there. Not shiny resets; a SHINY stops all input "
                      "and leaves the battle for you to catch.")
+        elif m and m.mode in ("wimpod", "static_step"):
+            self._starter_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
+            self._sr_target_lbl.pack_forget()
+            self._sr_target_cb.pack_forget()
+            self._starter_hint.config(
+                text=("SAVE standing where the Wimpod come to you. The bot "
+                      "never moves: A until a Wimpod battle, not shiny "
+                      "resets, a SHINY stops all input."
+                      if m.mode == "wimpod" else
+                      "SAVE in the Ultra Space Wilds one step short of the "
+                      "legendary / Ultra Beast, facing it. Not shiny "
+                      "resets; a SHINY stops all input."))
         elif m and m.mode == "usum_starters":
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
@@ -2711,7 +2724,7 @@ class _App(tk.Tk):
             args += ["--noibat-direction",
                      self._noibat_dir_var.get().split()[0].lower()]
         if method.mode in ("soft_reset", "gifts", "static_encounter",
-                           "usum_starters"):
+                           "usum_starters", "static_step", "wimpod"):
             tn = self._trainer_var.get().strip()
             if tn:
                 args += ["--trainer-name", tn]
