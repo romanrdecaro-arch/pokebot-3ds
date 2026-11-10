@@ -2461,6 +2461,17 @@ class _App(tk.Tk):
                      "starter is read at the nickname question. Not shiny "
                      "resets; a SHINY stops all input there — answer it "
                      "yourself, don't reset.")
+        elif m and m.mode == "gen7_gifts":
+            self._starter_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
+            self._sr_target_lbl.pack_forget()
+            self._sr_target_cb.pack_forget()
+            self._starter_hint.config(
+                text="Leave a PARTY SLOT OPEN, stand facing whoever gives "
+                     "the Pokémon, and SAVE there. Spams A until it is in "
+                     "the party; not shiny resets. A SHINY stops all input "
+                     "at the nickname question — answer it yourself, then "
+                     "save.")
         elif m and m.mode == "gifts":
             # Same trainer-name control, no target picker: this mode
             # evaluates whatever it is handed. (No press speed either:
@@ -2644,7 +2655,7 @@ class _App(tk.Tk):
     #: The hunts that read soft_reset.press_hold, the key --press-speed
     #: sets. The rest have their own (static_press_hold, gift_press_hold),
     #: so the slider would be a dead control for them.
-    _PRESS_SPEED_MODES = ("soft_reset", "usum_starters")
+    _PRESS_SPEED_MODES = ("soft_reset", "usum_starters", "gen7_gifts")
 
     _TARGET_FILTER_FLAG = {
         "Shiny only":               "shiny",
@@ -2736,7 +2747,8 @@ class _App(tk.Tk):
             args += ["--noibat-direction",
                      self._noibat_dir_var.get().split()[0].lower()]
         if method.mode in ("soft_reset", "gifts", "static_encounter",
-                           "usum_starters", "static_step", "wimpod"):
+                           "usum_starters", "static_step", "wimpod",
+                           "gen7_gifts"):
             tn = self._trainer_var.get().strip()
             if tn:
                 args += ["--trainer-name", tn]

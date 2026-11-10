@@ -869,7 +869,8 @@ def test_the_press_speed_slider_is_only_for_hunts_that_read_it():
     m = re.search(r"_PRESS_SPEED_MODES = \(([^)]*)\)", src)
     assert m, "the launcher's _PRESS_SPEED_MODES was not found"
     assert set(re.findall(r'"(\w+)"', m.group(1))) == {"soft_reset",
-                                                       "usum_starters"}
+                                                       "usum_starters",
+                                                       "gen7_gifts"}
     assert re.search(r"if method\.mode in self\._PRESS_SPEED_MODES:\s*\n"
                      r"\s*try:\s*\n\s*args \+= \[\"--press-speed\"", src)
 

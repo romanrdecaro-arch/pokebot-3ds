@@ -447,7 +447,7 @@ def _run(ctx) -> None:
     elif plan.tick != "auto":
         log.info(f"  drift fix: {plan.tick[6:]} for {plan.hold * 500:.0f} ms "
                  f"every {plan.tick_every} pairs (gen7_tick)")
-    encounters = caught = pairs = 0
+    tally, pairs = Tally(), 0
     while not ctx.should_stop():
         pairs += 1
         if plan.tick not in ("auto", "off") and pairs % plan.tick_every == 0:
@@ -477,49 +477,65 @@ def _run(ctx) -> None:
                                           "a battle with no new wild record"):
                 return
             continue
-        hit = None
-        for addr, pkm in wilds:
-            encounters += 1
-            _report_encounter(ctx, pkm, addr, encounters, "gen7 wiggle")
-            if _is_hit(ctx, pkm) and hit is None:
-                hit = pkm
-        if hit is not None and plan.catch:
-            what = "SHINY" if hit.shiny else "TARGET"
-            log.info(f"  {what} #{hit.species}: catching it")
-            if not catch(ctx, mods, plan):
-                if ctx.should_stop():
-                    return
-                log.error(f"  {what} still in battle after "
-                          f"{plan.catch_tries} ball(s); Bot STOPPED with the "
-                          f"battle on screen. Catch it yourself.")
-                ctx.request_stop("catch failed")
-                return
-            caught += 1
-            log.info(f"  CAUGHT #{caught}: {what} #{hit.species} after "
-                     f"{encounters} encounter(s); wiggling again")
-            ctx.dashboard.broadcast("target_caught", species=hit.species,
-                                    shiny=bool(hit.shiny), count=encounters,
-                                    caught=caught)
-            continue
-        if hit is not None:
-            ctx.request_stop("shiny" if hit.shiny else "target")
-            bar = "*" * 30
-            for line in (bar,
-                         f"  {'SHINY' if hit.shiny else 'TARGET'} #{hit.species} "
-                         f"after {encounters} encounter(s)",
-                         "  Bot STOPPED: no further input. The battle is on "
-                         "screen; catch it yourself.",
-                         bar):
-                log.info(line)
+        if not settle(ctx, mods, plan, wilds, tally, "gen7 wiggle", "wiggling"):
             return
-        fled_at = time.monotonic()
-        if not flee(ctx, mods, plan.flee_timeout):
+    log.info(f"Gen 7 hunt stopped after {tally.encounters} encounter(s).")
+
+
+@dataclass
+class Tally:
+    encounters: int = 0
+    caught: int = 0
+
+
+def settle(ctx, mods: Modules, plan: WigglePlan, wilds: list, tally: Tally,
+           via: str, resume: str) -> bool:
+    """Report the battle's wilds; catch a shiny / target (or stop with it
+    on screen, on_target: stop), run from anything else. True when the
+    hunt goes on (``resume`` names what it goes back to)."""
+    hit = None
+    for addr, pkm in wilds:
+        tally.encounters += 1
+        _report_encounter(ctx, pkm, addr, tally.encounters, via)
+        if _is_hit(ctx, pkm) and hit is None:
+            hit = pkm
+    if hit is not None and plan.catch:
+        what = "SHINY" if hit.shiny else "TARGET"
+        log.info(f"  {what} #{hit.species}: catching it")
+        if not catch(ctx, mods, plan):
             if ctx.should_stop():
-                return
-            log.error(f"  could not run within {plan.flee_timeout:.0f}s; "
-                      f"stopping with the battle on screen.")
-            ctx.request_stop("flee failed")
-            return
-        log.info(f"  ran from it in {time.monotonic() - fled_at:.1f}s; "
-                 f"wiggling again")
-    log.info(f"Gen 7 hunt stopped after {encounters} encounter(s).")
+                return False
+            log.error(f"  {what} still in battle after "
+                      f"{plan.catch_tries} ball(s); Bot STOPPED with the "
+                      f"battle on screen. Catch it yourself.")
+            ctx.request_stop("catch failed")
+            return False
+        tally.caught += 1
+        log.info(f"  CAUGHT #{tally.caught}: {what} #{hit.species} after "
+                 f"{tally.encounters} encounter(s); {resume} again")
+        ctx.dashboard.broadcast("target_caught", species=hit.species,
+                                shiny=bool(hit.shiny),
+                                count=tally.encounters, caught=tally.caught)
+        return True
+    if hit is not None:
+        ctx.request_stop("shiny" if hit.shiny else "target")
+        bar = "*" * 30
+        for line in (bar,
+                     f"  {'SHINY' if hit.shiny else 'TARGET'} #{hit.species} "
+                     f"after {tally.encounters} encounter(s)",
+                     "  Bot STOPPED: no further input. The battle is on "
+                     "screen; catch it yourself.",
+                     bar):
+            log.info(line)
+        return False
+    fled_at = time.monotonic()
+    if not flee(ctx, mods, plan.flee_timeout):
+        if ctx.should_stop():
+            return False
+        log.error(f"  could not run within {plan.flee_timeout:.0f}s; "
+                  f"stopping with the battle on screen.")
+        ctx.request_stop("flee failed")
+        return False
+    log.info(f"  ran from it in {time.monotonic() - fled_at:.1f}s; "
+             f"{resume} again")
+    return True

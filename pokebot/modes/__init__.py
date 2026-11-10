@@ -12,6 +12,8 @@ from .static_encounter import run as run_static_encounter
 from .static_encounter import run_step as run_static_step
 from .static_encounter import run_wimpod
 from .usum_starters import run as run_usum_starters
+from .usum_starters import run_gift as run_gen7_gifts
+from .gen7_fishing import run as run_gen7_fishing
 from .gen7_encounter import run as run_gen7_encounter
 from .gen7_breed import run as run_gen7_breed
 from .gen7_wormhole import run as run_gen7_wormhole
@@ -37,6 +39,8 @@ MODES = {
     "static_step": run_static_step,
     "wimpod": run_wimpod,
     "usum_starters": run_usum_starters,
+    "gen7_gifts": run_gen7_gifts,
+    "gen7_fishing": run_gen7_fishing,
     "gen7_encounter": run_gen7_encounter,
     "gen7_breed": run_gen7_breed,
     "gen7_wormhole": run_gen7_wormhole,

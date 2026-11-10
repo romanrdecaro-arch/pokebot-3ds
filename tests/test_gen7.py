@@ -378,7 +378,8 @@ def test_gen7_offers_manual_mode_and_no_gen6_hunt(key):
     assert modes[0] == "observe"
     assert set(modes) <= {"observe", "gen7_encounter", "static_encounter",
                           "usum_starters", "gen7_breed", "gen7_wormhole",
-                          "static_step", "wimpod"}
+                          "static_step", "wimpod", "gen7_gifts",
+                          "gen7_fishing"}
 
 
 def test_gen6_menus_are_unchanged():

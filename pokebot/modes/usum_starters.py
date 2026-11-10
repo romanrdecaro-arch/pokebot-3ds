@@ -39,12 +39,17 @@ starter a reset left in RAM cannot come back as a new one.
 
 No species check: whichever starter arrives is judged, and a shiny of
 any of the three is the win.
+
+``run_gift`` is the same hunt for any other gift (Type: Null, Cosmog,
+Poipole, a fossil, ...): no Left taps, only A, and the team already in
+the party is marked seen before the first press -- the save is not
+empty, so "a record with the player's OT" is not enough on its own.
 """
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..azahar_recover import AzaharGone, Recovery
 from ..games import DEFAULT_OT_NAME
@@ -226,26 +231,48 @@ def mash_until_starter(ctx, plan: StarterPlan, watch: StarterWatch,
     return None
 
 
-def run(ctx) -> None:
+def run_gift(ctx) -> None:
+    """Gift Pokemon soft reset: spam A until a new Pokemon is in the
+    party, stop on shiny, reset on anything else."""
+    run(ctx, gift=True)
+
+
+def run(ctx, gift: bool = False) -> None:
     cfg = ctx.config.get("soft_reset", {}) or {}
     plan = StarterPlan.from_config(cfg)
+    what = "gift" if gift else "starter"
+    if gift:
+        plan = replace(plan, left_every=0)     # A only: the giver is faced
     ensure_targets_dir()
     # broadcast_party suppresses identical signatures, so a stale one
     # would freeze the launcher strip on the previous run's team.
     if hasattr(ctx, "_party_sig"):
         ctx._party_sig = None
 
-    log.info("Mode: USUM starter soft reset")
-    log.info("  Setup: SAVED in the tall grass before choosing, with an "
-             "EMPTY party.")
-    log.info(f"  Spamming A and tapping {plan.left_button} (A "
-             f"{plan.press_hold * 1000:.0f} ms, Left "
-             f"{plan.left_hold * 1000:.0f} ms) until a starter is in "
-             f"hand -- read at the nickname screen. Not shiny: L+R+Start "
-             f"and straight back to it. SHINY: the bot STOPS ALL INPUT.")
+    if gift:
+        log.info("Mode: USUM gift Pokemon soft reset")
+        log.info("  Setup: SAVED facing whoever gives the Pokemon, with a "
+                 "free PARTY SLOT.")
+        log.info(f"  Spamming A ({plan.press_hold * 1000:.0f} ms) until a "
+                 f"new Pokemon is in the party. Not shiny: L+R+Start and "
+                 f"straight back to it. SHINY: the bot STOPS ALL INPUT.")
+    else:
+        log.info("Mode: USUM starter soft reset")
+        log.info("  Setup: SAVED in the tall grass before choosing, with an "
+                 "EMPTY party.")
+        log.info(f"  Spamming A and tapping {plan.left_button} (A "
+                 f"{plan.press_hold * 1000:.0f} ms, Left "
+                 f"{plan.left_hold * 1000:.0f} ms) until a starter is in "
+                 f"hand -- read at the nickname screen. Not shiny: L+R+Start "
+                 f"and straight back to it. SHINY: the bot STOPS ALL INPUT.")
     watch = _start(ctx, cfg, plan)
     if watch is None:
         return
+    if gift:
+        # The saved team comes back with the same keys on every reload.
+        watch.seen.update(p.encryption_key for _, p in watch.owned())
+        log.info(f"  {len(watch.seen)} Pokemon already in the party: "
+                 f"never judged.")
     # Worked out now, while Azahar is alive to say where it lives.
     recovery = Recovery.for_hunt(ctx)
 
@@ -253,7 +280,7 @@ def run(ctx) -> None:
     reset_at = reads_from = 0.0      # nothing reset yet: reading is safe
     while not ctx.should_stop():
         attempt += 1
-        log.info(f"USUM starter attempt #{attempt}")
+        log.info(f"USUM {what} attempt #{attempt}")
         ctx.dashboard.broadcast("soft_reset_attempt", count=attempt)
         try:
             got = mash_until_starter(ctx, plan, watch, reads_from)
@@ -270,21 +297,21 @@ def run(ctx) -> None:
             misses += 1
             if recovery is not None and recovery.dismiss_dialogs():
                 misses = 0               # it was the dialog, not the save
-            elif _missed(ctx, plan, attempt, misses):
+            elif _missed(ctx, plan, attempt, misses, what):
                 return
         else:
             misses = 0
             watch.seen.add(got.pkm.encryption_key)
-            _report(ctx, attempt, got, reset_at)
+            _report(ctx, attempt, got, reset_at, what)
             if got.pkm.shiny or (ctx.target and ctx.target.matches(got.pkm)):
-                _stop_on(ctx, got, attempt)
+                _stop_on(ctx, got, attempt, what)
                 return
         nxt = reset_and_resume(ctx, plan, reset_at)
         if nxt is None:
             return
         reset_at, reads_from = nxt
 
-    log.info(f"USUM starter hunt stopped after {attempt} attempt(s).")
+    log.info(f"USUM {what} hunt stopped after {attempt} attempt(s).")
 
 
 def _start(ctx, cfg: dict, plan: StarterPlan) -> StarterWatch | None:
@@ -311,32 +338,38 @@ def _start(ctx, cfg: dict, plan: StarterPlan) -> StarterWatch | None:
     return StarterWatch(ctx, windows, player_ot, set(), plan)
 
 
-def _report(ctx, attempt: int, got: Received, reset_at: float) -> None:
+def _report(ctx, attempt: int, got: Received, reset_at: float,
+            what: str = "starter") -> None:
     pkm = got.pkm
     _broadcast_candidate(ctx, attempt, pkm)
     broadcast_party(ctx, [pkm])
     after = (f"{got.at - reset_at:.1f}s after the reset, " if reset_at
              else "")
-    log.info(f"  starter: #{pkm.species} {pkm.nickname or ''} "
+    log.info(f"  {what}: #{pkm.species} {pkm.nickname or ''} "
              f"{'★SHINY★ ' if pkm.shiny else ''}nature={pkm.nature} "
              f"IVs={pkm.ivs} PID={pkm.pid:08X} PSV={pkm.psv} "
              f"TSV={pkm.tsv} — {after}{got.presses} presses, "
              f"@{got.addr:#010x}")
 
 
-def _missed(ctx, plan: StarterPlan, attempt: int, misses: int) -> bool:
+def _missed(ctx, plan: StarterPlan, attempt: int, misses: int,
+            what: str = "starter") -> bool:
     """Say so; True when it is time to stop rather than reset again."""
     ctx.dashboard.broadcast("read_failure", attempt=attempt,
-                            reason="no starter received")
+                            reason=f"no {what} received")
     if misses >= plan.max_misses:
-        log.error(f"  no new starter in {misses} attempts in a row. Either "
-                  f"the save is not in the grass before choosing (a save "
-                  f"made AFTER choosing brings the same starter back every "
-                  f"time), or Azahar is not receiving input "
+        save = ("the save is not in the grass before choosing (a save "
+                "made AFTER choosing brings the same starter back every "
+                "time)" if what == "starter" else
+                "the save is not facing the giver before the gift, the "
+                "party is full (the gift went to a box), or it is a trade "
+                "(another trainer's OT is never seen)")
+        log.error(f"  no new {what} in {misses} attempts in a row. Either "
+                  f"{save}, or Azahar is not receiving input "
                   f"(scripts/test_input.py). Stopping.")
-        ctx.request_stop("no starter received")
+        ctx.request_stop(f"no {what} received")
         return True
-    log.warning(f"  attempt {attempt}: no starter in "
+    log.warning(f"  attempt {attempt}: no {what} in "
                 f"{plan.receive_timeout:.0f}s. Resetting.")
     return False
 
@@ -358,18 +391,19 @@ def _recover(ctx, plan: StarterPlan, recovery, attempt: int):
     return now, now + plan.reload_grace
 
 
-def _stop_on(ctx, got: Received, attempt: int) -> None:
+def _stop_on(ctx, got: Received, attempt: int,
+             what: str = "starter") -> None:
     """Stop, then say so. Nothing in here sends input."""
     pkm = got.pkm
     # The stop is the instruction, so it goes first.
-    ctx.request_stop("shiny usum starter")
+    ctx.request_stop(f"shiny usum {what}")
     # A read, not an input: the record goes to targets/ as a .pk7.
-    save_target_pk6(ctx, got.addr, pkm, "shiny" if pkm.shiny else "starter")
+    save_target_pk6(ctx, got.addr, pkm, "shiny" if pkm.shiny else what)
     reason = ("shiny" if pkm.shiny else ctx.target.describe(pkm))
     bar = "*" * 30
     for line in (
         bar,
-        f"  {reason.upper()} STARTER #{pkm.species} — attempt #{attempt}",
+        f"  {reason.upper()} {what.upper()} #{pkm.species} — attempt #{attempt}",
         "  Bot STOPPED — no further input. It is waiting at \"Would you",
         "  like to give it a nickname?\": answer it yourself, and do NOT",
         "  reset. Save as soon as the game lets you.",

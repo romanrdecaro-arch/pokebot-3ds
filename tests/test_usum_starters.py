@@ -644,7 +644,7 @@ def test_usum_offers_the_starter_hunt_and_sm_does_not():
     assert [m.mode for m in games.methods_for(KEY)] == [
         "observe", "gen7_encounter", "gen7_encounter", "static_encounter",
         "usum_starters", "gen7_breed", "gen7_wormhole", "wimpod",
-        "static_step"]
+        "static_step", "gen7_gifts", "gen7_fishing"]
     assert [m.mode for m in games.methods_for("SM-USA-1.2")] == [
         "observe", "gen7_encounter", "gen7_encounter"]
     assert [m.movement for m in games.methods_for(KEY)[1:3]] == [
@@ -662,3 +662,43 @@ def test_the_launcher_passes_the_trainer_name_and_press_speed():
     m = re.search(r"if method\.mode in \(([^)]*)\):\s*\n\s*tn = "
                   r"self\._trainer_var", src)
     assert m and "usum_starters" in re.findall(r'"(\w+)"', m.group(1))
+
+
+# ----------------------------------------------------------------------
+# Gift Pokemon: the same hunt, A only, with a team already in the party
+# ----------------------------------------------------------------------
+class GiftGame(Game):
+    """Facing the giver: A alone starts it (nothing to step into), and
+    the saved team sits in the live party through every reload."""
+
+    def __init__(self, gifts, team, **kw):
+        super().__init__(gifts, **kw)
+        self.team = team
+        self.mem[OFF.party_live] = team.bytes
+
+    def _tick(self, now):
+        super()._tick(now)
+        self.mem[OFF.party_live] = self.team.bytes
+
+    def tap(self, button, hold_s=0.05):
+        self.stepped = True
+        return super().tap(button, hold_s)
+
+
+def test_a_gift_hunt_never_judges_the_team_and_stops_on_the_shiny(wired):
+    game = GiftGame([Starter(species=772), Starter(species=772, shiny=True)],
+                    Starter(species=25))
+    ctx = Ctx(game)
+    us.run_gift(ctx)
+
+    assert not ctx.ran_away, "the hunt never stopped on its own"
+    assert [s for s, _ in ctx.judged()] == [772, 772]
+    assert len(game.resets) == 1
+    assert wired == [772]
+    assert "CircleLeft" not in [b for _, b, _ in game.inputs]
+
+
+def test_the_gift_mode_is_registered():
+    from pokebot.modes import MODES
+
+    assert MODES["gen7_gifts"] is us.run_gift

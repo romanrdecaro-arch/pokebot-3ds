@@ -530,6 +530,24 @@ def methods_for(game_key: str) -> list[Method]:
                       "the reset, then steps Up (soft_reset.static_step) "
                       "until the battle; not shiny soft-resets. A SHINY "
                       "STOPS ALL INPUT with the battle on screen."))
+            methods.append(Method(
+                "Gift Pokémon (soft reset)", "gen7_gifts",
+                notes="Save facing whoever gives the Pokémon, with a free "
+                      "party slot. Spams A until a new Pokémon is in the "
+                      "party (your team is ignored) and reads it before "
+                      "the nickname question is answered; not shiny "
+                      "soft-resets. A SHINY STOPS ALL INPUT. Trades are "
+                      "not seen (another trainer's OT). Not yet tried "
+                      "live."))
+            methods.append(Method(
+                "Fishing", "gen7_fishing",
+                notes="Stand facing a fishing spot. A casts; a bite is "
+                      "hooked with A the moment its wild is read, and a "
+                      "cast with nothing gets B, B and a recast. A shiny "
+                      "is caught with the quick Poke Ball "
+                      "(random_encounters.on_target: stop leaves it on "
+                      "screen); anything else is run from. Not yet tried "
+                      "live."))
         return methods
     if game is not None and game.generation == 2:
         # Gen 2 gets its own manual mode. The Gen 6/7 methods below all
