@@ -133,6 +133,7 @@ def _answer(ctx, base: int, seed: tuple, accept: bool) -> tuple | None:
             for _ in range(_CLEAR):             # B never starts a new talk
                 ctx.input.tap("B", hold_s=0.06)
                 ctx._stop_evt.wait(_GAP)
+            ctx._stop_evt.wait(1.0)  # extra settle before next talk
             return now.seed
         ctx.input.tap("A" if accept else "B", hold_s=0.06)
     return None
