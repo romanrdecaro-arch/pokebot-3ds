@@ -11,6 +11,7 @@ from .noibat import run as run_noibat
 from .static_encounter import run as run_static_encounter
 from .static_encounter import run_step as run_static_step
 from .static_encounter import run_wimpod
+from .static_encounter import run_sandygast
 from .usum_starters import run as run_usum_starters
 from .usum_starters import run_gift as run_gen7_gifts
 from .gen7_fishing import run as run_gen7_fishing
@@ -38,6 +39,7 @@ MODES = {
     "static_encounter": run_static_encounter,
     "static_step": run_static_step,
     "wimpod": run_wimpod,
+    "sandygast": run_sandygast,
     "usum_starters": run_usum_starters,
     "gen7_gifts": run_gen7_gifts,
     "gen7_fishing": run_gen7_fishing,

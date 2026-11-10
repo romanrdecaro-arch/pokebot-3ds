@@ -944,6 +944,34 @@ def test_wimpod_is_offered_for_ultra_sun_ultra_moon():
 
 
 # ----------------------------------------------------------------------
+# Sandygast: only a shiny Sandygast stops; Staryu, shiny or not, resets
+# ----------------------------------------------------------------------
+def test_sandygast_resets_over_a_shiny_staryu_and_stops_on_a_shiny_sandygast(
+        wired, caplog):
+    game = Game([Mon(species=120, shiny=True), Mon(species=769),
+                 Mon(species=769, shiny=True)], intro=0.15)
+    ctx = Ctx(game, gen7=True)
+    with caplog.at_level(logging.WARNING):
+        se.run(ctx, profile=se.SANDYGAST)
+
+    assert not ctx.ran_away
+    assert len(game.resets) == 2
+    assert game.fight == 0
+    assert ctx.kinds().count("target_hit") == 1
+    assert any("SHINY #120" in r.getMessage() and "RESET OVER" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_sandygast_steps_and_is_offered_for_ultra_sun_ultra_moon():
+    from pokebot.games import methods_for
+    from pokebot.modes import MODES
+
+    assert MODES["sandygast"] is se.run_sandygast
+    assert "sandygast" in [m.mode for m in methods_for("USUM-USA-1.2")]
+    assert "sandygast" not in [m.mode for m in methods_for("SM-USA-1.2")]
+
+
+# ----------------------------------------------------------------------
 # Stepping onto the encounter (Ultra Space Wilds legendaries / UBs)
 # ----------------------------------------------------------------------
 class _StepWorld:

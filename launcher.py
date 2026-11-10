@@ -2437,6 +2437,16 @@ class _App(tk.Tk):
                 text="Stand in front of the Pokémon, facing it, and SAVE "
                      "there. Not shiny resets; a SHINY stops all input "
                      "and leaves the battle for you to catch.")
+        elif m and m.mode == "sandygast":
+            self._starter_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
+            self._sr_target_lbl.pack_forget()
+            self._sr_target_cb.pack_forget()
+            self._starter_hint.config(
+                text="SAVE on Hano Beach at the edge of the sand, facing "
+                     "into it. Steps Up until a battle; only a SHINY "
+                     "SANDYGAST stops all input — Staryu (even shiny) is "
+                     "reset over.")
         elif m and m.mode in ("wimpod", "static_step"):
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
@@ -2748,7 +2758,7 @@ class _App(tk.Tk):
                      self._noibat_dir_var.get().split()[0].lower()]
         if method.mode in ("soft_reset", "gifts", "static_encounter",
                            "usum_starters", "static_step", "wimpod",
-                           "gen7_gifts"):
+                           "gen7_gifts", "sandygast"):
             tn = self._trainer_var.get().strip()
             if tn:
                 args += ["--trainer-name", tn]

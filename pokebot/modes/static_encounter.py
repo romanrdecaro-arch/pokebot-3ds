@@ -172,6 +172,10 @@ class Profile:
     #: (the title waits for input), nor once the field is up, where A
     #: can only meet the scenery -- facing the water it rides off.
     hands_off: bool = False
+    #: Stop ONLY for this species (0: any). A shiny of anything else is
+    #: reset over -- its .pk7 is already in targets/ (_report_encounter)
+    #: -- the way the X/Y Noibat hunt ignores the cave's other shinies.
+    only: int = 0
 
 
 STATIC = Profile()
@@ -185,6 +189,14 @@ WIMPOD = Profile(
            "moves the player: A only through the title and Continue, "
            "nothing on the field."),
     via="wimpod", species=767, hands_off=True)
+#: Ultra Sun / Ultra Moon's Sandygast (#769) on Hano Beach: the Ultra Space
+#: legendary hunt (a step onto the encounter, mode static_step) for the
+#: beach's sand, where Staryu (#120) turns up too and is always reset over.
+SANDYGAST = Profile(
+    title="Sandygast soft reset",
+    setup=("SAVED on Hano Beach at the edge of the sand where Sandygast "
+           "turns up, facing into it (soft_reset.static_step, default up)."),
+    via="sandygast", only=769)
 
 
 @dataclass(frozen=True)
@@ -349,6 +361,14 @@ def run_wimpod(ctx) -> None:
     run(ctx, profile=WIMPOD)
 
 
+def run_sandygast(ctx) -> None:
+    """Ultra Sun / Ultra Moon, Hano Beach: step into the sand until a
+    battle; a shiny Sandygast stops all input, anything else (a shiny
+    Staryu included) is soft reset."""
+    cfg = ctx.config.get("soft_reset", {}) or {}
+    run(ctx, step=step_from(cfg), profile=SANDYGAST)
+
+
 def step_from(cfg: dict) -> str:
     """soft_reset.static_step as a Circle Pad button; up when unset."""
     return _STEPS.get(str(cfg.get("static_step") or "up").lower(), "CircleUp")
@@ -509,7 +529,17 @@ def _attempt(ctx, plan: StaticPlan, hunt: Hunt, attempt: int,
     hunt.seen.add(pkm.encryption_key)
     hunt.watch.hot = addr
     _log_timing(mash, reset_at)
-    if pkm.shiny or (ctx.target and ctx.target.matches(pkm)):
+    hit = pkm.shiny or (ctx.target and ctx.target.matches(pkm))
+    if hit and profile.only and pkm.species != profile.only:
+        _report_encounter(ctx, pkm, addr, attempt, profile.via)  # saves it
+        log.warning(f"  SHINY #{pkm.species} -- but this hunt only wants "
+                    f"#{profile.only}, so it is being RESET OVER (its .pk7 "
+                    f"is in targets/).")
+        ctx.dashboard.broadcast("read_failure", attempt=attempt,
+                                reason=f"shiny #{pkm.species}, not "
+                                       f"#{profile.only}: reset over")
+        return "next"
+    if hit:
         _stop_on(ctx, pkm, addr, attempt, profile)
         return "over"
     _report_encounter(ctx, pkm, addr, attempt, profile.via)

@@ -531,6 +531,15 @@ def methods_for(game_key: str) -> list[Method]:
                       "until the battle; not shiny soft-resets. A SHINY "
                       "STOPS ALL INPUT with the battle on screen."))
             methods.append(Method(
+                "Sandygast (soft reset)", "sandygast",
+                notes="Save on Hano Beach at the edge of the sand where "
+                      "Sandygast turns up, facing into it. Spams A "
+                      "through the reset, then steps Up "
+                      "(soft_reset.static_step) until the battle. Only a "
+                      "SHINY SANDYGAST STOPS ALL INPUT; Staryu, shiny or "
+                      "not, is soft-reset over (a shiny one's .pk7 is "
+                      "kept in targets/). Not yet tried live."))
+            methods.append(Method(
                 "Gift Pokémon (soft reset)", "gen7_gifts",
                 notes="Save facing whoever gives the Pokémon, with a free "
                       "party slot. Spams A until a new Pokémon is in the "
