@@ -369,18 +369,20 @@ import queue
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
 
-# Dark palette: off-black base and one cool grey family, so surfaces
-# step up in even increments instead of jumping from pure black. One
-# accent (a softened Pokeball red) marks the primary action and the
-# active tab only; green/amber/red are status colours, never decoration.
-_BG     = "#0f1012"   # window background
-_PANEL  = "#141518"   # sidebar and right pane
-_PANEL2 = "#1b1d21"   # cards and table
-_PANEL3 = "#25272c"   # inputs, disabled buttons, hover
-_BORDER = "#2a2d33"
+# Brand palette: Raven Black #080402, Poppy Red #E0091F, Powder Blue
+# #B6DFF5. Surfaces step up from Raven Black in even, warm increments.
+# Poppy Red marks the primary action and the active tab only; Powder
+# Blue marks live readouts and focus. Green/amber/red are status
+# colours, never decoration.
+_BG     = "#080402"   # window background (Raven Black)
+_PANEL  = "#110c0a"   # sidebar and right pane
+_PANEL2 = "#1a1412"   # cards and table
+_PANEL3 = "#251e1b"   # inputs, disabled buttons, hover
+_BORDER = "#362d29"
 _TEXT   = "#ecedef"
-_MUTED  = "#8b9099"   # secondary text, 5.6:1 on _PANEL2
-_ACCENT = "#e5484d"   # primary action
+_MUTED  = "#958e8b"   # secondary text, ~5.8:1 on _PANEL2
+_ACCENT = "#e0091f"   # primary action (Poppy Red), white text 5:1
+_ACCENT2 = "#b6dff5"  # readouts and focus (Powder Blue)
 _GOOD   = "#3dd68c"
 _WARN   = "#f5c451"
 _DANGER = "#ff6369"
@@ -1135,7 +1137,7 @@ class _RecentlySeen(tk.Frame):
         style.map("Seen.Treeview.Heading", background=[("active", _PANEL3)])
         # Keep a selected row readable instead of the default blue.
         style.map("Seen.Treeview",
-                  background=[("selected", "#33343a")],
+                  background=[("selected", "#1f2c35")],
                   foreground=[("selected", _TEXT)])
 
     # ---- counters ----------------------------------------------------------
@@ -1868,7 +1870,7 @@ class _App(tk.Tk):
                  bg=_PANEL, fg=_TEXT, insertbackground=_TEXT,
                  bd=0, relief="flat", highlightthickness=1,
                  highlightbackground=_BORDER,
-                 highlightcolor=_ACCENT,
+                 highlightcolor=_ACCENT2,
                  font=("Segoe UI", 10)).pack(fill="x", pady=(2, 8),
                                               ipady=4)
 
@@ -1890,7 +1892,7 @@ class _App(tk.Tk):
             _seed.get("press_hold", 0.03)))
         self._press_val_lbl = tk.Label(
             ps_head, text=_press_rate_label(self._press_var.get()),
-            bg=_PANEL2, fg=_ACCENT,
+            bg=_PANEL2, fg=_ACCENT2,
             font=(_FONT_SEMI, 9))
         self._press_val_lbl.pack(side="right")
         tk.Scale(self._press_frame, from_=0.01, to=0.20,
@@ -2000,7 +2002,7 @@ class _App(tk.Tk):
                  anchor="w").pack(side="left")
         self._flee_var = tk.DoubleVar(value=5.0)
         self._flee_val_lbl = tk.Label(
-            fd_head, text="5.0 s", bg=_PANEL2, fg=_ACCENT,
+            fd_head, text="5.0 s", bg=_PANEL2, fg=_ACCENT2,
             font=(_FONT_SEMI, 9))
         self._flee_val_lbl.pack(side="right")
         tk.Scale(self._movement_frame, from_=0.5, to=12.0,
@@ -2039,7 +2041,7 @@ class _App(tk.Tk):
                  anchor="w").pack(side="left")
         self._fish_flee_var = tk.DoubleVar(value=9.0)
         self._fish_flee_lbl = tk.Label(
-            ff_head, text="9.0 s", bg=_PANEL2, fg=_ACCENT,
+            ff_head, text="9.0 s", bg=_PANEL2, fg=_ACCENT2,
             font=(_FONT_SEMI, 9))
         self._fish_flee_lbl.pack(side="right")
         tk.Scale(self._fishing_frame, from_=3.0, to=12.0,
@@ -2327,7 +2329,7 @@ class _App(tk.Tk):
         self._log_box.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
         for tag, col in (("good", _GOOD), ("warn", _WARN),
-                         ("error", _DANGER), ("accent", _ACCENT),
+                         ("error", _DANGER), ("accent", _ACCENT2),
                          ("muted", _MUTED)):
             self._log_box.tag_config(tag, foreground=col)
 
