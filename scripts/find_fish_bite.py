@@ -221,10 +221,10 @@ def record(args):
 
 # -- analyze ------------------------------------------------------------
 def analyze_file(path, top=25):
-    d = np.load(path)
+    d = dict(np.load(path))              # npz access decompresses each time
     addr, label = d["addr"], d["label"]
     labels = json.loads(str(d["labels"]))
-    n_casts = sum(1 for k in d.files if k.startswith("t"))
+    n_casts = sum(1 for k in d if k.startswith("t"))
     print(f"\n{n_casts} cast(s), {len(addr)} changing bytes")
     scored = []
     for j in range(len(addr)):
