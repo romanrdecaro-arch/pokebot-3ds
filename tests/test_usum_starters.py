@@ -66,6 +66,7 @@ class Starter:
 
 
 class Game:
+    step_button = "CircleLeft"
     """A USUM save in Route 1's grass, on the game's own clock.
 
     After a reset the title boots for ``boot`` seconds. Then nothing
@@ -141,7 +142,7 @@ class Game:
                 self.answered += 1             # opens the keyboard
         elif booted and not self.stepped:
             # Standing in the grass. Only the Circle Pad walks.
-            self.stepped = button == "CircleLeft"
+            self.stepped = button == self.step_button
         elif (booted and button == "A" and self.receive_at is None):
             self.presses += 1
             if self.presses >= self.presses_needed:
@@ -644,7 +645,7 @@ def test_usum_offers_the_starter_hunt_and_sm_does_not():
     assert [m.mode for m in games.methods_for(KEY)] == [
         "observe", "gen7_encounter", "gen7_encounter", "static_encounter",
         "usum_starters", "gen7_breed", "gen7_wormhole", "wimpod",
-        "static_step", "sandygast", "gen7_gifts", "gen7_fishing"]
+        "static_step", "sandygast", "gen7_gifts", "type_null", "gen7_fishing"]
     assert [m.mode for m in games.methods_for("SM-USA-1.2")] == [
         "observe", "gen7_encounter", "gen7_encounter"]
     assert [m.movement for m in games.methods_for(KEY)[1:3]] == [
@@ -702,3 +703,36 @@ def test_the_gift_mode_is_registered():
     from pokebot.modes import MODES
 
     assert MODES["gen7_gifts"] is us.run_gift
+
+
+# ----------------------------------------------------------------------
+# Type: Null: the gift hunt, but a Right step is needed to reach Gladion
+# ----------------------------------------------------------------------
+class TypeNullGame(GiftGame):
+    """Nothing happens until the player steps Right toward Gladion."""
+    step_button = "CircleRight"
+
+    def tap(self, button, hold_s=0.05):
+        return Game.tap(self, button, hold_s)
+
+
+def test_type_null_steps_right_then_stops_on_the_shiny(wired):
+    game = TypeNullGame([Starter(species=772),
+                         Starter(species=772, shiny=True)],
+                        Starter(species=25))
+    ctx = Ctx(game)
+    us.run_type_null(ctx)
+
+    assert not ctx.ran_away, "the hunt never stopped on its own"
+    assert [s for s, _ in ctx.judged()] == [772, 772]
+    assert len(game.resets) == 1
+    pressed = [b for _, b, _ in game.inputs]
+    assert "CircleRight" in pressed and "CircleLeft" not in pressed
+
+
+def test_type_null_is_registered_and_flagged_shiny_locked():
+    from pokebot.modes import MODES
+
+    assert MODES["type_null"] is us.run_type_null
+    m = next(m for m in games.methods_for(KEY) if m.mode == "type_null")
+    assert m.shiny_locked

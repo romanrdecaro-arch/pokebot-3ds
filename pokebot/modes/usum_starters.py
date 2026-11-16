@@ -237,12 +237,25 @@ def run_gift(ctx) -> None:
     run(ctx, gift=True)
 
 
-def run(ctx, gift: bool = False) -> None:
+def run_type_null(ctx) -> None:
+    """Type: Null: tap Right toward Gladion and spam A until it is in the
+    party, stop on shiny (or a target filter match), reset on anything else.
+
+    Right is interleaved with the A stream like the starter hunt's Left,
+    because a single tap would be swallowed by the boot logos.
+    """
+    run(ctx, gift=True, step="CircleRight")
+
+
+def run(ctx, gift: bool = False, step: str = "") -> None:
     cfg = ctx.config.get("soft_reset", {}) or {}
     plan = StarterPlan.from_config(cfg)
     what = "gift" if gift else "starter"
     if gift:
-        plan = replace(plan, left_every=0)     # A only: the giver is faced
+        # A only when the giver is faced; a step stream (Type: Null) keeps
+        # the starter's A/step cadence with its own direction.
+        plan = (replace(plan, left_button=step, left_every=max(1, plan.left_every))
+                if step else replace(plan, left_every=0))
     ensure_targets_dir()
     # broadcast_party suppresses identical signatures, so a stale one
     # would freeze the launcher strip on the previous run's team.
@@ -253,7 +266,9 @@ def run(ctx, gift: bool = False) -> None:
         log.info("Mode: USUM gift Pokemon soft reset")
         log.info("  Setup: SAVED facing whoever gives the Pokemon, with a "
                  "free PARTY SLOT.")
-        log.info(f"  Spamming A ({plan.press_hold * 1000:.0f} ms) until a "
+        log.info(f"  Spamming A ({plan.press_hold * 1000:.0f} ms)"
+                 + (f" and tapping {step}" if step else "")
+                 + f" until a "
                  f"new Pokemon is in the party. Not shiny: L+R+Start and "
                  f"straight back to it. SHINY: the bot STOPS ALL INPUT.")
     else:

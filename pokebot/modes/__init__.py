@@ -14,6 +14,7 @@ from .static_encounter import run_wimpod
 from .static_encounter import run_sandygast
 from .usum_starters import run as run_usum_starters
 from .usum_starters import run_gift as run_gen7_gifts
+from .usum_starters import run_type_null
 from .gen7_fishing import run as run_gen7_fishing
 from .gen7_encounter import run as run_gen7_encounter
 from .gen7_breed import run as run_gen7_breed
@@ -42,6 +43,7 @@ MODES = {
     "sandygast": run_sandygast,
     "usum_starters": run_usum_starters,
     "gen7_gifts": run_gen7_gifts,
+    "type_null": run_type_null,
     "gen7_fishing": run_gen7_fishing,
     "gen7_encounter": run_gen7_encounter,
     "gen7_breed": run_gen7_breed,
