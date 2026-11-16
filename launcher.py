@@ -2493,8 +2493,8 @@ class _App(tk.Tk):
                 text="Leave a PARTY SLOT OPEN, stand just left of Gladion "
                      "and SAVE there. Taps Right and spams A until Type: "
                      "Null is in the party; not shiny resets. A SHINY stops "
-                     "all input at the nickname question. Shiny-locked in "
-                     "USUM: set an IV/nature target.")
+                     "all input at the nickname question — answer it "
+                     "yourself, then save.")
         elif m and m.mode == "gifts":
             # Same trainer-name control, no target picker: this mode
             # evaluates whatever it is handed. (No press speed either:

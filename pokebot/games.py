@@ -549,13 +549,12 @@ def methods_for(game_key: str) -> list[Method]:
                       "not seen (another trainer's OT). Not yet tried "
                       "live."))
             methods.append(Method(
-                "Type: Null (soft reset)", "type_null", shiny_locked=True,
+                "Type: Null (soft reset)", "type_null",
                 notes="Save one step left of Gladion with a free party "
                       "slot. Taps Right (Circle Pad) and spams A until "
                       "Type: Null is in the party, read before the "
                       "nickname question; not shiny soft-resets. A SHINY "
-                      "STOPS ALL INPUT. Shiny-locked in USUM: use a "
-                      "nature/IV target filter. Not yet tried live."))
+                      "STOPS ALL INPUT. Not yet tried live."))
             methods.append(Method(
                 "Fishing", "gen7_fishing",
                 notes="Stand facing a fishing spot. A casts; a bite is "

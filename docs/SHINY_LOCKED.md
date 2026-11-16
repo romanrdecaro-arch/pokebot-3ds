@@ -28,7 +28,6 @@ start the bot, but here's the canonical list for reference (source:
 - Solgaleo (Sun) / Lunala (Moon)
 - Cosmog (gift, evolves into Solgaleo/Lunala)
 - The four Tapu guardians (Koko, Lele, Bulu, Fini)
-- Type: Null (gift) and Silvally
 - Necrozma
 - All Ultra Beasts on first encounter (Nihilego, Buzzwole, Pheromosa,
   Xurkitree, Celesteela, Kartana, Guzzlord)
@@ -40,7 +39,6 @@ start the bot, but here's the canonical list for reference (source:
 - Solgaleo (Ultra Sun) / Lunala (Ultra Moon)
 - Cosmog (gift)
 - The four Tapu guardians
-- Type: Null (gift)
 - Necrozma (in all forms tied to the main story)
 - Most Ultra Beasts encountered through the main story (Stakataka,
   Blacephalon, etc.)

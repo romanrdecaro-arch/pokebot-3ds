@@ -730,9 +730,10 @@ def test_type_null_steps_right_then_stops_on_the_shiny(wired):
     assert "CircleRight" in pressed and "CircleLeft" not in pressed
 
 
-def test_type_null_is_registered_and_flagged_shiny_locked():
+def test_type_null_is_registered_and_not_flagged_shiny_locked():
     from pokebot.modes import MODES
 
     assert MODES["type_null"] is us.run_type_null
+    # Serebii's USUM lock list does not include it (only SwSh locks it).
     m = next(m for m in games.methods_for(KEY) if m.mode == "type_null")
-    assert m.shiny_locked
+    assert not m.shiny_locked
