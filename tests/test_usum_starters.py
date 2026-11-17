@@ -48,8 +48,8 @@ clock = time.perf_counter
 KEY = "USUM-USA-1.2"
 OFF = games.GAMES[KEY].offsets
 TB = games.LIVEHEX_REFERENCES[KEY]["trainer_block"]
-SLOTS = {"received": OFF.received_slot, "live": OFF.party_live,
-         "save": OFF.party_base}
+SLOTS = {"received": OFF.received_slot, "gift": OFF.gift_slot,
+         "live": OFF.party_live, "save": OFF.party_base}
 
 
 class Starter:
@@ -638,6 +638,7 @@ def test_left_every_sets_the_pattern():
 
 def test_the_received_slot_is_the_one_found_live():
     assert OFF.received_slot == 0x329C2C74
+    assert OFF.gift_slot == 0x329E180C
     assert games.GAMES["SM-USA-1.2"].offsets.received_slot == 0
 
 
@@ -717,9 +718,10 @@ class TypeNullGame(GiftGame):
 
 
 def test_type_null_steps_right_then_stops_on_the_shiny(wired):
+    # Live, Type: Null waits at gift_slot, outside the starter's window.
     game = TypeNullGame([Starter(species=772),
                          Starter(species=772, shiny=True)],
-                        Starter(species=25))
+                        Starter(species=25), where=("gift",))
     ctx = Ctx(game)
     us.run_type_null(ctx)
 

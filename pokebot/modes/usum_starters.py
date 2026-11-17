@@ -143,12 +143,13 @@ class StarterPlan:
 
 
 def watch_windows(o) -> list[tuple[int, int]]:
-    """Where the starter can turn up: the nickname-screen slot first,
-    then the live party copy -- each a small window, never a sweep of
-    Gen 7's 256 MB heap. The save-block party is not watched: it did
+    """Where the starter can turn up: the nickname-screen slots first
+    (a starter's, then an NPC gift's), then the live party copy -- each
+    a small window, never a sweep of Gen 7's 256 MB heap. The save-block party is not watched: it did
     not change until the game was saved."""
     out = []
-    for addr in (getattr(o, "received_slot", 0), getattr(o, "party_live", 0)):
+    for addr in (getattr(o, "received_slot", 0), getattr(o, "gift_slot", 0),
+                 getattr(o, "party_live", 0)):
         if addr:
             out.append((addr - _PARTY_HINT_SPAN, addr + _PARTY_HINT_SPAN))
     return out
