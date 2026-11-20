@@ -142,13 +142,16 @@ class StarterPlan:
         return self.left_hold if button == self.left_button else self.press_hold
 
 
-def watch_windows(o) -> list[tuple[int, int]]:
+def watch_windows(o, gift: bool = False) -> list[tuple[int, int]]:
     """Where the starter can turn up: the nickname-screen slots first
-    (a starter's, then an NPC gift's), then the live party copy -- each
-    a small window, never a sweep of Gen 7's 256 MB heap. The save-block party is not watched: it did
-    not change until the game was saved."""
+    (a starter's; for a gift hunt also an NPC gift's and Poipole's), then
+    the live party copy -- each a small window, never a sweep of Gen 7's
+    256 MB heap. The save-block party is not watched: it did not change
+    until the game was saved."""
+    gift_slots = ((getattr(o, "gift_slot", 0), getattr(o, "poipole_slot", 0))
+                  if gift else ())
     out = []
-    for addr in (getattr(o, "received_slot", 0), getattr(o, "gift_slot", 0),
+    for addr in (getattr(o, "received_slot", 0), *gift_slots,
                  getattr(o, "party_live", 0)):
         if addr:
             out.append((addr - _PARTY_HINT_SPAN, addr + _PARTY_HINT_SPAN))
@@ -288,7 +291,7 @@ def run(ctx, gift: bool = False, step: str = "") -> None:
                  f"{plan.left_hold * 1000:.0f} ms) until a starter is in "
                  f"hand -- read at the nickname screen. Not shiny: L+R+Start "
                  f"and straight back to it. SHINY: the bot STOPS ALL INPUT.")
-    watch = _start(ctx, cfg, plan)
+    watch = _start(ctx, cfg, plan, gift)
     if watch is None:
         return
     if gift:
@@ -337,13 +340,14 @@ def run(ctx, gift: bool = False, step: str = "") -> None:
     log.info(f"USUM {what} hunt stopped after {attempt} attempt(s).")
 
 
-def _start(ctx, cfg: dict, plan: StarterPlan) -> StarterWatch | None:
+def _start(ctx, cfg: dict, plan: StarterPlan,
+           gift: bool = False) -> StarterWatch | None:
     """Name the trainer and find the windows.
 
     A starter already in hand when the bot starts is not refused: it is
     the game's real state, so attempt 1 simply judges it.
     """
-    windows = watch_windows(ctx.game.offsets)
+    windows = watch_windows(ctx.game.offsets, gift)
     if not windows:
         log.error("This game has no starter slot or live party address "
                   "configured; aborting.")

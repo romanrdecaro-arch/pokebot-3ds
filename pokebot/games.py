@@ -54,6 +54,8 @@ class GameOffsets:
     # The same for an NPC's gift (Gen 7: Type: Null), which the game
     # keeps apart from the starter's.
     gift_slot:      int = 0
+    # Poipole's gift (USUM) waits at its own address, apart from both.
+    poipole_slot:   int = 0
 
     # Wild / battle foe (the Pokémon currently fighting you). In Gen 6
     # the encounter is NOT at a fixed sub-offset — PKMN-NTR reads a
@@ -257,13 +259,15 @@ _GEN7_WILD = (0x3254F4AC, 0x32663BF0)
 def _gen7_offsets(trainer_block: int, party_live: int,
                   sos_state: int, wild_slots: tuple,
                   received_slot: int = 0,
-                  gift_slot: int = 0) -> GameOffsets:
+                  gift_slot: int = 0,
+                  poipole_slot: int = 0) -> GameOffsets:
     return GameOffsets(
         party_base=trainer_block + _GEN7_PARTY_FROM_TB,
         party_stride=260,
         party_live=party_live,
         received_slot=received_slot,
         gift_slot=gift_slot,
+        poipole_slot=poipole_slot,
         foe_base=_GEN7_FOE_BASE,
         foe_scan_len=_GEN7_FOE_LEN,
         foe_extra=_GEN7_FOE_EXTRA,
@@ -301,11 +305,15 @@ _register(Game(
     # at all until the game was saved. gift_slot found live on Ultra
     # Sun (2026-11-16): Type: Null waits there at its nickname keyboard,
     # 0x1EB98 past received_slot, where the starter's window never saw it.
+    # poipole_slot found live on Ultra Sun (2026-11-19): Poipole is there
+    # ~11 s after the reset with its nickname unset and its final PID (6
+    # resets), but only reaches party_live ~22 s in, after the keyboard.
     offsets=_gen7_offsets(_USUM_TB, party_live=0x33F7FA44,
                           sos_state=0x30038E20,
                           wild_slots=(0x30039888, 0x3002F9A0),
                           received_slot=0x329C2C74,
-                          gift_slot=0x329E180C),
+                          gift_slot=0x329E180C,
+                          poipole_slot=0x32991F5C),
     notes=_GEN7_NOTES,
 ))
 

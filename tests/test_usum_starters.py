@@ -49,6 +49,7 @@ KEY = "USUM-USA-1.2"
 OFF = games.GAMES[KEY].offsets
 TB = games.LIVEHEX_REFERENCES[KEY]["trainer_block"]
 SLOTS = {"received": OFF.received_slot, "gift": OFF.gift_slot,
+         "poipole": OFF.poipole_slot,
          "live": OFF.party_live, "save": OFF.party_base}
 
 
@@ -639,6 +640,7 @@ def test_left_every_sets_the_pattern():
 def test_the_received_slot_is_the_one_found_live():
     assert OFF.received_slot == 0x329C2C74
     assert OFF.gift_slot == 0x329E180C
+    assert OFF.poipole_slot == 0x32991F5C
     assert games.GAMES["SM-USA-1.2"].offsets.received_slot == 0
 
 
@@ -743,11 +745,11 @@ def test_type_null_is_registered_and_not_flagged_shiny_locked():
 
 
 # ----------------------------------------------------------------------
-# Poipole: the gift hunt as-is, A only, read at gift_slot
+# Poipole: the gift hunt as-is, A only, read at poipole_slot
 # ----------------------------------------------------------------------
 def test_poipole_spams_a_only_and_stops_on_the_shiny(wired):
     game = GiftGame([Starter(species=803), Starter(species=803, shiny=True)],
-                    Starter(species=25), where=("gift",))
+                    Starter(species=25), where=("poipole",))
     ctx = Ctx(game)
     us.run_poipole(ctx)
 
