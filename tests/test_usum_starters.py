@@ -646,7 +646,8 @@ def test_usum_offers_the_starter_hunt_and_sm_does_not():
     assert [m.mode for m in games.methods_for(KEY)] == [
         "observe", "gen7_encounter", "gen7_encounter", "static_encounter",
         "usum_starters", "gen7_breed", "gen7_wormhole", "wimpod",
-        "static_step", "sandygast", "gen7_gifts", "type_null", "gen7_fishing"]
+        "static_step", "sandygast", "gen7_gifts", "type_null", "poipole",
+        "gen7_fishing"]
     assert [m.mode for m in games.methods_for("SM-USA-1.2")] == [
         "observe", "gen7_encounter", "gen7_encounter"]
     assert [m.movement for m in games.methods_for(KEY)[1:3]] == [
@@ -739,3 +740,25 @@ def test_type_null_is_registered_and_not_flagged_shiny_locked():
     # Serebii's USUM lock list does not include it (only SwSh locks it).
     m = next(m for m in games.methods_for(KEY) if m.mode == "type_null")
     assert not m.shiny_locked
+
+
+# ----------------------------------------------------------------------
+# Poipole: the gift hunt as-is, A only, read at gift_slot
+# ----------------------------------------------------------------------
+def test_poipole_spams_a_only_and_stops_on_the_shiny(wired):
+    game = GiftGame([Starter(species=803), Starter(species=803, shiny=True)],
+                    Starter(species=25), where=("gift",))
+    ctx = Ctx(game)
+    us.run_poipole(ctx)
+
+    assert not ctx.ran_away, "the hunt never stopped on its own"
+    assert [s for s, _ in ctx.judged()] == [803, 803]
+    assert len(game.resets) == 1
+    pressed = [b for _, b, _ in game.inputs]
+    assert "CircleRight" not in pressed and "CircleLeft" not in pressed
+
+
+def test_poipole_is_registered():
+    from pokebot.modes import MODES
+
+    assert MODES["poipole"] is us.run_poipole

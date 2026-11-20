@@ -248,6 +248,13 @@ def run_type_null(ctx) -> None:
     run(ctx, gift=True, step="CircleRight")
 
 
+def run_poipole(ctx) -> None:
+    """Poipole: the plain gift hunt, A only -- saved already facing the
+    Ultra Recon Squad member, so no step is needed. Stop on shiny,
+    reset on anything else."""
+    run(ctx, gift=True)
+
+
 def run(ctx, gift: bool = False, step: str = "") -> None:
     cfg = ctx.config.get("soft_reset", {}) or {}
     plan = StarterPlan.from_config(cfg)

@@ -871,7 +871,8 @@ def test_the_press_speed_slider_is_only_for_hunts_that_read_it():
     assert set(re.findall(r'"(\w+)"', m.group(1))) == {"soft_reset",
                                                        "usum_starters",
                                                        "gen7_gifts",
-                                                       "type_null"}
+                                                       "type_null",
+                                                       "poipole"}
     assert re.search(r"if method\.mode in self\._PRESS_SPEED_MODES:\s*\n"
                      r"\s*try:\s*\n\s*args \+= \[\"--press-speed\"", src)
 
