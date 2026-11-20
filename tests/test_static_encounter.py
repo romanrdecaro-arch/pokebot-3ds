@@ -1029,3 +1029,48 @@ def test_static_step_is_read_only_by_the_step_mode():
     assert se.step_from({"static_step": "sideways"}) == "CircleUp"
     # a plain static hunt (X/Y, ORAS, USUM on A) never pushes
     assert se.StaticPlan.from_config({"static_step": "left"}).step == ""
+
+
+# ----------------------------------------------------------------------
+# UB grass: wiggle in place (no A on the field), any shiny stops
+# ----------------------------------------------------------------------
+class _GrassWorld(_StepWorld):
+    def check(self, full=False):
+        return sum(e.startswith("Circle") for e in self.events) >= self.need
+
+
+def test_the_wiggle_waits_for_the_field_then_alternates_with_no_a(monkeypatch):
+    world = _GrassWorld(pushes_to_battle=4)
+    monkeypatch.setattr(se, "_note_path", lambda ctx, path: None)
+    plan = se.StaticPlan(press_hold=0.0, wiggle=("CircleLeft", "CircleRight"),
+                         wiggle_hold=0.0)
+    mash = se.mash_until_wild(_step_ctx(world), plan, world, 0.0, mods=world)
+    assert mash.found
+    first = world.events.index("CircleLeft")
+    # one A per read until FieldRo shows (read menu_reads + 1), then no A
+    assert world.events[:first] == ["A"] * world.menu_reads
+    assert world.events[first:] == ["CircleLeft", "CircleRight"] * 2
+
+
+def test_ub_grass_resets_over_non_shinies_and_stops_on_any_shiny(wired):
+    game = Game([Mon(species=806), Mon(species=10),
+                 Mon(species=214, shiny=True)], intro=0.15)
+    ctx = Ctx(game, gen7=True)
+    se.run_ub_grass(ctx)
+
+    assert not ctx.ran_away
+    assert len(game.resets) == 2
+    assert game.fight == 0
+    assert game.field_presses == 0, f"{game.field_presses} A on the field"
+    assert {b for _, b in game.inputs if b.startswith("Circle")} <= {
+        "CircleLeft", "CircleRight"}
+    assert ctx.kinds().count("target_hit") == 1
+
+
+def test_ub_grass_is_offered_for_ultra_sun_ultra_moon():
+    from pokebot.games import methods_for
+    from pokebot.modes import MODES
+
+    assert MODES["ub_grass"] is se.run_ub_grass
+    assert "ub_grass" in [m.mode for m in methods_for("USUM-USA-1.2")]
+    assert "ub_grass" not in [m.mode for m in methods_for("SM-USA-1.2")]

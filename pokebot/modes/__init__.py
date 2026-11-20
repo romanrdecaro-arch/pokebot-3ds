@@ -12,6 +12,7 @@ from .static_encounter import run as run_static_encounter
 from .static_encounter import run_step as run_static_step
 from .static_encounter import run_wimpod
 from .static_encounter import run_sandygast
+from .static_encounter import run_ub_grass
 from .usum_starters import run as run_usum_starters
 from .usum_starters import run_gift as run_gen7_gifts
 from .usum_starters import run_type_null
@@ -42,6 +43,7 @@ MODES = {
     "static_step": run_static_step,
     "wimpod": run_wimpod,
     "sandygast": run_sandygast,
+    "ub_grass": run_ub_grass,
     "usum_starters": run_usum_starters,
     "gen7_gifts": run_gen7_gifts,
     "type_null": run_type_null,

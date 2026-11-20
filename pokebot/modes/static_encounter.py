@@ -70,7 +70,7 @@ from ..games import DEFAULT_OT_NAME
 from ..citra_rpc import RPCError
 from ..pk6_export import ensure_targets_dir
 from .foe_watch import FoeWatch
-from .gen7_encounter import Modules
+from .gen7_encounter import Modules, WigglePlan
 from .observe import (_report_encounter, broadcast_party, foe_windows,
                       get_party, pick_opponent, read_pk6_at, scan_windows)
 from .soft_reset import (_PRE_RESET_QUIET_S, _PRESS_HOLD_FLOOR,
@@ -123,6 +123,11 @@ class StaticPlan:
     #: the Ultra Space Wilds legendaries and Ultra Beasts (mode
     #: static_step only). "" for none.
     step: str = ""
+    #: Once the field is up, push these two in turn (no A) -- gen7_encounter's
+    #: wiggle in place, for a battle that starts in tall grass (mode
+    #: ub_grass). () for none.
+    wiggle: tuple = ()
+    wiggle_hold: float = 0.08
 
     @classmethod
     def from_config(cls, cfg: dict | None) -> "StaticPlan":
@@ -176,6 +181,9 @@ class Profile:
     #: reset over -- its .pk7 is already in targets/ (_report_encounter)
     #: -- the way the X/Y Noibat hunt ignores the cave's other shinies.
     only: int = 0
+    #: Once on the field, wiggle in place like gen7_encounter
+    #: (random_encounters.gen7_wiggle_hold / movement) instead of A.
+    wiggle: bool = False
 
 
 STATIC = Profile()
@@ -197,6 +205,16 @@ SANDYGAST = Profile(
     setup=("SAVED on Hano Beach at the edge of the sand where Sandygast "
            "turns up, facing into it (soft_reset.static_step, default up)."),
     via="sandygast", only=769)
+#: Ultra Sun's Blacephalon (#806) / Ultra Moon's Stakataka (#805) in Poni
+#: Grove's tall grass (post-game; not shiny-locked: PKHeX
+#: Encounters7USUM). Poni Grove's other grass Pokemon turn up too, so any
+#: shiny stops the hunt.
+UB_GRASS = Profile(
+    title="Ultra Beast grass soft reset",
+    setup=("SAVED in Poni Grove tall grass (Blacephalon in Ultra Sun, "
+           "Stakataka in Ultra Moon), with grass on both sides and no NPC "
+           "next to you."),
+    via="ub_grass", wiggle=True)
 
 
 @dataclass(frozen=True)
@@ -264,7 +282,7 @@ def mash_until_wild(ctx, plan: StaticPlan, watch: FoeWatch,
     AzaharGone.
     """
     deadline = max(time.monotonic(), reads_from) + plan.encounter_timeout
-    presses = reads = 0
+    presses = reads = wiggles = 0
     on_field = False
     held_at = 0.0               # when the battle not yet read was first seen
     while not ctx.should_stop():
@@ -290,8 +308,13 @@ def mash_until_wild(ctx, plan: StaticPlan, watch: FoeWatch,
         if hands_off and (now < reads_from or on_field):
             ctx._stop_evt.wait(plan.press_hold)
             continue
-        button = plan.step if plan.step and on_field and presses % 2 else "A"
-        path = ctx.input.tap(button, hold_s=plan.press_hold)
+        hold = plan.press_hold
+        if plan.wiggle and on_field:
+            button, hold = plan.wiggle[wiggles % 2], plan.wiggle_hold
+            wiggles += 1
+        else:
+            button = plan.step if plan.step and on_field and presses % 2 else "A"
+        path = ctx.input.tap(button, hold_s=hold)
         _note_path(ctx, path)
         if path == "none":
             # No window to press into: Azahar crashed. Pressing on would
@@ -369,6 +392,13 @@ def run_sandygast(ctx) -> None:
     run(ctx, step=step_from(cfg), profile=SANDYGAST)
 
 
+def run_ub_grass(ctx) -> None:
+    """Ultra Sun / Ultra Moon, Poni Grove: wiggle in the grass until a
+    battle; any shiny stops all input (no catch), anything else is soft
+    reset."""
+    run(ctx, profile=UB_GRASS)
+
+
 def step_from(cfg: dict) -> str:
     """soft_reset.static_step as a Circle Pad button; up when unset."""
     return _STEPS.get(str(cfg.get("static_step") or "up").lower(), "CircleUp")
@@ -379,6 +409,9 @@ def run(ctx, step: str = "", profile: Profile = STATIC) -> None:
     plan = StaticPlan.from_config(cfg)
     if step:
         plan = replace(plan, step=step)
+    if profile.wiggle:
+        w = WigglePlan.from_config(ctx.config.get("random_encounters"))
+        plan = replace(plan, wiggle=w.pair, wiggle_hold=w.hold)
 
     ensure_targets_dir()
     # broadcast_party suppresses identical signatures, so a stale one
@@ -396,7 +429,7 @@ def run(ctx, step: str = "", profile: Profile = STATIC) -> None:
     hunt = _start(ctx, cfg, plan)
     if hunt is None:
         return
-    if (plan.step or profile.hands_off) and hunt.modules is None:
+    if (plan.step or plan.wiggle or profile.hands_off) and hunt.modules is None:
         log.error("  this hunt tells the field from the title by Gen 7's "
                   "module list (Sun / Moon / Ultra Sun / Ultra Moon).")
         ctx.request_stop("not a Gen 7 game")
@@ -405,6 +438,11 @@ def run(ctx, step: str = "", profile: Profile = STATIC) -> None:
         log.info(f"  Once the field is back after a reset, every other "
                  f"press is {plan.step[6:]} on the Circle Pad: a step onto "
                  f"the encounter.")
+    if plan.wiggle:
+        log.info(f"  Once the field is back after a reset, no A: "
+                 f"{plan.wiggle[0][6:]} / {plan.wiggle[1][6:]} Circle Pad "
+                 f"pushes of {plan.wiggle_hold:.2f}s wiggle in place "
+                 f"(random_encounters.gen7_wiggle_hold).")
     # Worked out now, while Azahar is alive to say where it lives.
     recovery = Recovery.for_hunt(ctx)
 

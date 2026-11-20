@@ -648,7 +648,8 @@ def test_usum_offers_the_starter_hunt_and_sm_does_not():
     assert [m.mode for m in games.methods_for(KEY)] == [
         "observe", "gen7_encounter", "gen7_encounter", "static_encounter",
         "usum_starters", "gen7_breed", "gen7_wormhole", "wimpod",
-        "static_step", "sandygast", "gen7_gifts", "type_null", "poipole",
+        "static_step", "sandygast", "ub_grass", "gen7_gifts", "type_null",
+        "poipole",
         "gen7_fishing"]
     assert [m.mode for m in games.methods_for("SM-USA-1.2")] == [
         "observe", "gen7_encounter", "gen7_encounter"]

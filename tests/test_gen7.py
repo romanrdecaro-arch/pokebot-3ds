@@ -380,7 +380,7 @@ def test_gen7_offers_manual_mode_and_no_gen6_hunt(key):
                           "usum_starters", "gen7_breed", "gen7_wormhole",
                           "static_step", "wimpod", "gen7_gifts",
                           "gen7_fishing", "sandygast", "type_null",
-                          "poipole"}
+                          "poipole", "ub_grass"}
 
 
 def test_gen6_menus_are_unchanged():

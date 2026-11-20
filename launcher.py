@@ -2449,6 +2449,15 @@ class _App(tk.Tk):
                      "into it. Steps Up until a battle; only a SHINY "
                      "SANDYGAST stops all input — Staryu (even shiny) is "
                      "reset over.")
+        elif m and m.mode == "ub_grass":
+            self._starter_frame.pack(fill="x", pady=(4, 0),
+                                     before=self._target_divider)
+            self._sr_target_lbl.pack_forget()
+            self._sr_target_cb.pack_forget()
+            self._starter_hint.config(
+                text="SAVE in Poni Grove tall grass, no NPC next to you. "
+                     "Wiggles Left / Right until a battle; not shiny "
+                     "resets, a SHINY stops all input (no catch).")
         elif m and m.mode in ("wimpod", "static_step"):
             self._starter_frame.pack(fill="x", pady=(4, 0),
                                      before=self._target_divider)
@@ -2784,7 +2793,7 @@ class _App(tk.Tk):
         if method.mode in ("soft_reset", "gifts", "static_encounter",
                            "usum_starters", "static_step", "wimpod",
                            "gen7_gifts", "sandygast", "type_null",
-                           "poipole"):
+                           "poipole", "ub_grass"):
             tn = self._trainer_var.get().strip()
             if tn:
                 args += ["--trainer-name", tn]
