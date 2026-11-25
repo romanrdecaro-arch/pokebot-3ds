@@ -287,9 +287,11 @@ _register(Game(
     generation=7,
     # SOS state block from projectpokemon.org's Gen7 RAM Map (published
     # as USUM addresses; SM's location differs).
+    # 0x30038CC0: an SOS ally (Haunter called by a Mimikyu), seen live
+    # on Sun v1.0 2026-11-24; PKMN-NTR's two were not used that time.
     offsets=_gen7_offsets(_SM_TB, party_live=0x34195E10,
                           sos_state=0x30038C44,
-                          wild_slots=(0x3003969C, 0x3002F7B8)),
+                          wild_slots=(0x3003969C, 0x3002F7B8, 0x30038CC0)),
     notes=_GEN7_NOTES,
 ))
 
