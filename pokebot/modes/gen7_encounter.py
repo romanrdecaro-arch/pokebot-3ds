@@ -71,7 +71,13 @@ _MAX_MODULES = 64
 #: in code.bin's read-only segment (ASCII "xp\0" "0" there makes
 #: 0x30007078), so it found the player through whatever that heap
 #: address held in one session, and read nothing in every session after.
-_PLAYER_ROUTE = {"USUM-USA-1.2": (0x006A3984, (0x24, 0xCC, 0x0C), 0x0064A4F0)}
+#:
+#: Sun / Moon v1.0 (live on Sun 2026-11-24): the same chain from SM's
+#: GameManager global 0x0067206C (its constructor 0x3EF6E0 is USUM's
+#: 0x4019E8 byte for byte, literals masked); vtables from SM's RTTI
+#: (manager 0x0061B7C4, player 0x0061B6D8). Same offsets throughout.
+_PLAYER_ROUTE = {"SM-USA-1.2": (0x0067206C, (0x24, 0xCC, 0x0C), 0x0061B6D8),
+                 "USUM-USA-1.2": (0x006A3984, (0x24, 0xCC, 0x0C), 0x0064A4F0)}
 _POS_OFF = 0x3B0
 #: Where a pointer on the route may point: the heaps, not code or zero.
 _HEAP = (0x08000000, 0x40000000)
