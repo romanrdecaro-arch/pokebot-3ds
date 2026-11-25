@@ -358,9 +358,9 @@ def catch(ctx, mods: Modules, plan: WigglePlan) -> bool:
 
 def _balls_left(ctx) -> int | None:
     """Poke Balls in the bag, or None when the bag cannot be read."""
-    base = BAG.get(getattr(ctx.game, "key", ""))
+    spot = BAG.get(getattr(ctx.game, "key", ""))
     try:
-        bag = read_bag(ctx.rpc, base) if base else None
+        bag = read_bag(ctx.rpc, *spot) if spot else None
     except (RPCError, OSError):
         return None
     return None if bag is None else sum(n for i, n in bag.items() if i in BALLS)

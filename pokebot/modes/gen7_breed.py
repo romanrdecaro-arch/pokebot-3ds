@@ -97,7 +97,7 @@ def _shiny_charm(ctx, setting) -> bool:
     if isinstance(setting, bool):
         return setting
     try:
-        bag = read_bag(ctx.rpc, BAG[ctx.game.key])
+        bag = read_bag(ctx.rpc, *BAG[ctx.game.key])
     except (RPCError, OSError):
         bag = None
     found = None if bag is None else SHINY_CHARM in bag

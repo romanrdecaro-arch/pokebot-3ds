@@ -224,6 +224,21 @@ def test_a_bag_that_does_not_read_as_one_is_not_trusted():
     assert bag7.read_bag(World(Ctx(), 5, bag=ITEMS), BAG)[4] == 99
 
 
+def test_sun_moon_reads_its_own_shorter_bag():
+    """SM's MyItem is 0xDE0 at PKMN-NTR's SM ItemsOffset; reading USUM's
+    0xE28 would run into the next block and fail the bag check."""
+    reads = []
+
+    class Rpc:
+        def read(self, addr, n):
+            reads.append((addr, n))
+            return struct.pack("<II", 4 | 99 << 10, 0) * (n // 8)
+
+    assert bag7.read_bag(Rpc(), *bag7.BAG["SM-USA-1.2"]) is None  # < 5 kinds
+    assert reads == [(0x330D5934, 0xDE0)]
+    assert bag7.BAG["USUM-USA-1.2"] == (BAG, 0xE28)
+
+
 def test_without_masuda_or_the_charm_nothing_is_touched(monkeypatch):
     ctx, w = run(monkeypatch, 5, langs=(2, 2))
     assert ctx.stop_reason == "no Masuda / Shiny Charm"

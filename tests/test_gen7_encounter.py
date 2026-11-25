@@ -271,9 +271,9 @@ def test_an_empty_bag_throws_nothing(monkeypatch):
 
 def test_balls_are_counted_from_the_bag(monkeypatch):
     bag = {4: 60, 2: 5, 17: 3, 576: 1}       # Poke, Ultra, a Potion, Dream
-    monkeypatch.setattr(g7, "read_bag", lambda rpc, base: bag)
+    monkeypatch.setattr(g7, "read_bag", lambda rpc, base, length: bag)
     assert g7._balls_left(Ctx()) == 66
-    monkeypatch.setattr(g7, "read_bag", lambda rpc, base: None)
+    monkeypatch.setattr(g7, "read_bag", lambda rpc, base, length: None)
     assert g7._balls_left(Ctx()) is None
 
 
