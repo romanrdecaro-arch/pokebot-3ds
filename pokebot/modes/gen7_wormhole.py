@@ -536,8 +536,10 @@ def _world_for(worlds: list, arrival, plan: WormholePlan) -> World:
 def run(ctx) -> None:
     log.info("Mode: Ultra Warp Ride shiny hunt (Ultra Sun / Ultra Moon)")
     game = ctx.game
-    route = _PLAYER_ROUTE.get(getattr(game, "key", ""))
-    if getattr(game, "generation", None) != 7 or route is None:
+    key = getattr(game, "key", "")
+    route = _PLAYER_ROUTE.get(key)
+    # Sun / Moon has a route too, but no Ultra Warp Ride.
+    if key != "USUM-USA-1.2" or route is None:
         log.error("  this mode is for Ultra Sun / Ultra Moon (US v1.2).")
         ctx.request_stop(f"{STOP}not Ultra Sun / Ultra Moon")
         return

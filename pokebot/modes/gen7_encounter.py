@@ -184,16 +184,20 @@ class Modules:
 def read_xz(rpc, route) -> tuple[float, float] | None:
     """The player's (x, z), or None when the route does not lead to the
     player object. Every pointer is checked to point into a heap first,
-    so a bad route reads nothing outside them."""
+    so a bad route reads nothing outside them. A dropped read is None
+    too: Azahar can stall for ~45 s and then answer again."""
     root, offsets, vtable = route
-    p = rpc.read_u32(root)
-    for off in offsets:
-        if not _HEAP[0] <= p < _HEAP[1]:
+    try:
+        p = rpc.read_u32(root)
+        for off in offsets:
+            if not _HEAP[0] <= p < _HEAP[1]:
+                return None
+            p = rpc.read_u32(p + off)
+        if not _HEAP[0] <= p < _HEAP[1] or rpc.read_u32(p) != vtable:
             return None
-        p = rpc.read_u32(p + off)
-    if not _HEAP[0] <= p < _HEAP[1] or rpc.read_u32(p) != vtable:
+        x, _, z = struct.unpack("<3f", rpc.read(p + _POS_OFF, 12))
+    except (RPCError, OSError):
         return None
-    x, _, z = struct.unpack("<3f", rpc.read(p + _POS_OFF, 12))
     if not (math.isfinite(x) and math.isfinite(z)):
         return None
     return x, z

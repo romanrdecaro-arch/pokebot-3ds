@@ -448,6 +448,16 @@ def test_read_xz_follows_the_route():
     assert g7.read_xz(mem, route) is None
 
 
+def test_a_stalled_azahar_reads_as_no_position_not_a_crash():
+    """Azahar stopped answering for ~45 s twice on Sun (2026-11-24); a
+    dropped read must leave the wiggle running, not end the hunt."""
+    class Stalled(Memory):
+        def read_u32(self, addr):
+            raise RPCError("ReadMemory failed after 3 retries")
+    for key in ("SM-USA-1.2", "USUM-USA-1.2"):
+        assert g7.read_xz(Stalled(), g7._PLAYER_ROUTE[key]) is None
+
+
 def test_a_bad_route_reads_nothing_outside_the_heaps():
     """The first route read ASCII as a pointer; a wrong link now stops
     before reading anywhere a pointer cannot point."""
