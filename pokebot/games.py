@@ -289,12 +289,13 @@ _register(Game(
     # as USUM addresses; SM's location differs).
     # SOS allies seen live on Sun v1.0: 0x30038CC0 (Haunter called by a
     # Mimikyu, 2026-11-24) and 0x3002F99C (Hakamo-o after a Kommo-o,
-    # 2026-11-25), then 0x3002FB80 one 484-byte record on (a second
-    # Bounsweet called in the same battle); PKMN-NTR's two were not used.
+    # 2026-11-25), then a Bounsweet SOS chain rotating its allies through
+    # 0x3002F99C / 0x3002FB80 / 0x3002FD64 (484-byte records) and
+    # PKMN-NTR's 0x3003969C.
     offsets=_gen7_offsets(_SM_TB, party_live=0x34195E10,
                           sos_state=0x30038C44,
                           wild_slots=(0x3003969C, 0x3002F7B8, 0x30038CC0,
-                                      0x3002F99C, 0x3002FB80)),
+                                      0x3002F99C, 0x3002FB80, 0x3002FD64)),
     notes=_GEN7_NOTES,
 ))
 
